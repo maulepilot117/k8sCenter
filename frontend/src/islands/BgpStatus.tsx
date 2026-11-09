@@ -1,10 +1,11 @@
+/** @jsxImportSource react */
 import { Card } from "@/components/ui/Card.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
 import type { CiliumBGPResponse } from "@/lib/cilium-types.ts";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
 import { panelState } from "@/lib/networking-state.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 export default function BgpStatus() {
   const { data, loading, error, failure, refetch, lastFetchedAt } =
@@ -12,27 +13,28 @@ export default function BgpStatus() {
       interval: 60_000,
       shouldContinuePolling: (d) => d.configured,
     });
+  const isClient = useIsClient();
 
-  if (!IS_BROWSER || loading.value) {
-    return <div class="animate-pulse h-40 bg-elevated rounded-lg" />;
+  if (!isClient || loading) {
+    return <div className="animate-pulse h-40 bg-elevated rounded-lg" />;
   }
 
-  if (error.value) {
+  if (error) {
     return (
       <Card title="BGP Peering">
         <PanelStateNotice
-          state={panelState(failure.value, "BGP status")}
+          state={panelState(failure, "BGP status")}
           onRetry={refetch}
         />
       </Card>
     );
   }
 
-  const resp = data.value;
+  const resp = data;
   if (!resp?.configured) {
     return (
       <Card title="BGP Peering" className="opacity-50">
-        <p class="text-sm text-text-muted">BGP is not configured.</p>
+        <p className="text-sm text-text-muted">BGP is not configured.</p>
       </Card>
     );
   }
@@ -45,7 +47,7 @@ export default function BgpStatus() {
 
   return (
     <Card title="BGP Peering">
-      <div class="flex justify-between items-center -mt-2 mb-3">
+      <div className="flex justify-between items-center -mt-2 mb-3">
         <StatusBadge
           label={
             allEstablished
@@ -55,12 +57,13 @@ export default function BgpStatus() {
           tone={allEstablished ? "ok" : established > 0 ? "warn" : "crit"}
         />
       </div>
-      <div class="space-y-2">
+      <div className="space-y-2">
         {peers.map((peer, i) => (
-          <div key={i} class="flex items-center justify-between text-sm">
-            <div class="flex items-center gap-2">
+          // biome-ignore lint/suspicious/noArrayIndexKey: peers have no unique id, and the list is replaced whole on each poll
+          <div key={i} className="flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2">
               <span
-                class="w-2 h-2 rounded-full inline-block"
+                className="w-2 h-2 rounded-full inline-block"
                 style={{
                   background:
                     peer.sessionState === "established"
@@ -70,12 +73,12 @@ export default function BgpStatus() {
                         : "var(--warning)",
                 }}
               />
-              <span class="font-mono text-text-primary">
+              <span className="font-mono text-text-primary">
                 {peer.peerAddress}
               </span>
-              <span class="text-xs text-text-muted">AS {peer.peerASN}</span>
+              <span className="text-xs text-text-muted">AS {peer.peerASN}</span>
             </div>
-            <div class="flex items-center gap-3 text-xs text-text-muted">
+            <div className="flex items-center gap-3 text-xs text-text-muted">
               <span>
                 ↑{peer.routesAdvertised} ↓{peer.routesReceived}
               </span>
@@ -83,13 +86,13 @@ export default function BgpStatus() {
           </div>
         ))}
         {peers.length === 0 && (
-          <p class="text-sm text-text-muted">No BGP peers found.</p>
+          <p className="text-sm text-text-muted">No BGP peers found.</p>
         )}
       </div>
-      {lastFetchedAt.value && (
-        <div class="mt-3 pt-2 border-t border-border-subtle text-right">
-          <span class="text-xs text-text-muted">
-            Updated {lastFetchedAt.value.toLocaleTimeString()}
+      {lastFetchedAt && (
+        <div className="mt-3 pt-2 border-t border-border-subtle text-right">
+          <span className="text-xs text-text-muted">
+            Updated {lastFetchedAt.toLocaleTimeString()}
           </span>
         </div>
       )}

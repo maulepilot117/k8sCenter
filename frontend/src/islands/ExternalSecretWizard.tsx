@@ -9,7 +9,6 @@ import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export interface ExternalSecretWizardDataItem {
   secretKey: string;
@@ -74,8 +73,7 @@ export default function ExternalSecretWizard({
   const [form, setForm] = useState<ExternalSecretWizardForm>(initialForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList] = useNamespaces();
 
   const [stores, setStores] = useState<ExternalSecretWizardStoreOption[]>([]);
   const [storesLoading, setStoresLoading] = useState(true);

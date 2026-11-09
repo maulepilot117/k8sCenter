@@ -1,15 +1,16 @@
-import type { Signal } from "@preact/signals";
+/** @jsxImportSource react */
 import type { VolumeEntry } from "@/lib/types/logs.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface LogVolumeHistogramProps {
-  data: Signal<VolumeEntry[] | null>;
+  data: VolumeEntry[] | null;
 }
 
 export default function LogVolumeHistogram(props: LogVolumeHistogramProps) {
-  if (!IS_BROWSER) return null;
+  const isClient = useIsClient();
+  if (!isClient) return null;
 
-  const entries = props.data.value;
+  const entries = props.data;
   if (!entries || entries.length === 0) return null;
 
   // Aggregate all values across entries into time buckets (O(n) via Map)
@@ -30,22 +31,23 @@ export default function LogVolumeHistogram(props: LogVolumeHistogramProps) {
   const total = buckets.reduce((sum, b) => sum + b.count, 0);
 
   return (
-    <div class="flex items-center gap-2 rounded-lg border border-border-primary bg-surface px-4 py-2">
-      <span class="text-xs text-text-muted">Volume</span>
-      <div class="flex flex-1 items-end gap-px" style={{ height: "24px" }}>
+    <div className="flex items-center gap-2 rounded-lg border border-border-primary bg-surface px-4 py-2">
+      <span className="text-xs text-text-muted">Volume</span>
+      <div className="flex flex-1 items-end gap-px" style={{ height: "24px" }}>
         {buckets.map((bucket, i) => {
           const height = Math.max((bucket.count / maxCount) * 100, 4);
           return (
             <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: buckets are replaced whole on each search and carry no state
               key={i}
-              class="flex-1 rounded-t bg-accent-dim hover:bg-accent/50 transition-colors"
+              className="flex-1 rounded-t bg-accent-dim hover:bg-accent/50 transition-colors"
               style={{ height: `${height}%` }}
               title={`${bucket.count} entries`}
             />
           );
         })}
       </div>
-      <span class="text-xs text-text-muted">
+      <span className="text-xs text-text-muted">
         {total.toLocaleString()} lines
       </span>
     </div>

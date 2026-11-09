@@ -1,5 +1,4 @@
 /** @jsxImportSource react */
-import type { Signal } from "@preact/signals-core";
 import { type ReactNode, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
@@ -8,7 +7,7 @@ import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import type { EventSourceRef } from "@/lib/notification-types.ts";
 import { PAGE_SIZE } from "@/lib/notification-types.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 // ---------------------------------------------------------------------------
 // NotificationPageHeader
@@ -105,8 +104,9 @@ export function NotificationUnavailableBanner({
 // ---------------------------------------------------------------------------
 
 interface SearchBarProps {
-  search: Signal<string>;
-  page: Signal<number>;
+  search: string;
+  onSearchChange: (value: string) => void;
+  onPageChange: (page: number) => void;
   filteredCount: number;
   totalCount: number;
   resourceLabel: string;
@@ -115,21 +115,21 @@ interface SearchBarProps {
 
 export function NotificationSearchBar({
   search,
-  page,
+  onSearchChange,
+  onPageChange,
   filteredCount,
   totalCount,
   resourceLabel,
   placeholder,
 }: SearchBarProps) {
-  const searchValue = useSignalValue(search);
   return (
     <div className="mb-4 flex flex-wrap items-center gap-4">
       <div className="flex-1 max-w-xs">
         <SearchBar
-          value={searchValue}
+          value={search}
           onInput={(v) => {
-            search.value = v;
-            page.value = 1;
+            onSearchChange(v);
+            onPageChange(1);
           }}
           placeholder={placeholder}
         />
@@ -162,7 +162,8 @@ interface PaginationProps {
   loading: boolean;
   error: string | null;
   filteredCount: number;
-  page: Signal<number>;
+  page: number;
+  onPageChange: (page: number) => void;
   totalPages: number;
   resourceLabel: string;
 }
@@ -172,33 +173,32 @@ export function NotificationPagination({
   error,
   filteredCount,
   page,
+  onPageChange,
   totalPages,
   resourceLabel,
 }: PaginationProps) {
-  const pageValue = useSignalValue(page);
   if (loading || error || filteredCount <= PAGE_SIZE) return null;
   return (
     <div className="mt-4 flex items-center justify-between">
       <p className="text-sm text-text-muted">
-        {filteredCount} {resourceLabel} &middot; Page {pageValue} of{" "}
-        {totalPages}
+        {filteredCount} {resourceLabel} &middot; Page {page} of {totalPages}
       </p>
       <div className="flex gap-2">
         <Button
           variant="ghost"
           onClick={() => {
-            page.value--;
+            onPageChange(page - 1);
           }}
-          disabled={pageValue <= 1}
+          disabled={page <= 1}
         >
           Previous
         </Button>
         <Button
           variant="ghost"
           onClick={() => {
-            page.value++;
+            onPageChange(page + 1);
           }}
-          disabled={pageValue >= totalPages}
+          disabled={page >= totalPages}
         >
           Next
         </Button>
@@ -306,21 +306,23 @@ export function NotificationFormShell({
   children,
 }: FormShellProps) {
   const firstInputRef = useRef<HTMLDivElement>(null);
+  // Callers pass a new onCancel on every render, so the listener reads it
+  // through a ref and the focus runs once, when the shell opens.
+  const onCancelRef = useLatest(onCancel);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") onCancelRef.current();
     };
     globalThis.addEventListener("keydown", handler);
 
-    // Auto-focus first input inside shell
     const input = firstInputRef.current?.querySelector<HTMLElement>(
       "input:not([disabled]), select:not([disabled])",
     );
     input?.focus();
 
     return () => globalThis.removeEventListener("keydown", handler);
-  }, [onCancel]);
+  }, []);
 
   return (
     <div
@@ -382,7 +384,8 @@ export function NotificationFormShell({
 interface ActionsDropdownProps {
   itemKey: string;
   suspended: boolean;
-  openDropdown: Signal<string | null>;
+  openDropdown: string | null;
+  onOpenDropdownChange: (key: string | null) => void;
   onEdit: () => void;
   onSuspendToggle: () => void;
   onDelete: () => void;
@@ -392,11 +395,11 @@ export function ActionsDropdown({
   itemKey,
   suspended,
   openDropdown,
+  onOpenDropdownChange,
   onEdit,
   onSuspendToggle,
   onDelete,
 }: ActionsDropdownProps) {
-  const openKey = useSignalValue(openDropdown);
   return (
     <div className="relative">
       <button
@@ -404,12 +407,12 @@ export function ActionsDropdown({
         className="rounded px-2 py-1 text-xs font-medium text-text-secondary hover:bg-hover"
         onClick={(e) => {
           e.stopPropagation();
-          openDropdown.value = openDropdown.value === itemKey ? null : itemKey;
+          onOpenDropdownChange(openDropdown === itemKey ? null : itemKey);
         }}
       >
         &hellip;
       </button>
-      {openKey === itemKey && (
+      {openDropdown === itemKey && (
         <div
           className="absolute right-0 z-40 mt-1 w-40 glass-elevated rounded-2xl"
           onClick={(e) => e.stopPropagation()}
@@ -418,7 +421,7 @@ export function ActionsDropdown({
             type="button"
             className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-hover"
             onClick={() => {
-              openDropdown.value = null;
+              onOpenDropdownChange(null);
               onEdit();
             }}
           >
@@ -428,7 +431,7 @@ export function ActionsDropdown({
             type="button"
             className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-hover"
             onClick={() => {
-              openDropdown.value = null;
+              onOpenDropdownChange(null);
               onSuspendToggle();
             }}
           >
@@ -439,7 +442,7 @@ export function ActionsDropdown({
             className="w-full text-left px-3 py-2 text-sm hover:bg-hover"
             style={{ color: "var(--error)" }}
             onClick={() => {
-              openDropdown.value = null;
+              onOpenDropdownChange(null);
               onDelete();
             }}
           >

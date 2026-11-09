@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import {
   HEALTH_COLORS,
@@ -25,6 +25,8 @@ import {
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const PAGE_SIZE = 100;
 
@@ -51,43 +53,49 @@ const RT_COLUMNS: Column[] = [
 ];
 
 export default function GitOpsApplications() {
-  const status = useSignal<GitOpsStatus | null>(null);
-  const applications = useSignal<NormalizedApp[]>([]);
-  const summary = useSignal<AppListResponse["summary"] | null>(null);
-  const coverage = useSignal<AppListResponse["coverage"]>(undefined);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const search = useSignal("");
-  const filterTool = useSignal<string>("all");
-  const filterSync = useSignal<string>("all");
-  const filterHealth = useSignal<string>("all");
-  const page = useSignal(1);
-  const refreshing = useSignal(false);
+  const isClient = useIsClient();
+  const namespace = useSignalValue(selectedNamespace);
+  const [status, setStatus] = useState<GitOpsStatus | null>(null);
+  const [applications, setApplications] = useState<NormalizedApp[]>([]);
+  const [summary, setSummary] = useState<AppListResponse["summary"] | null>(
+    null,
+  );
+  const [coverage, setCoverage] = useState<AppListResponse["coverage"]>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filterTool, setFilterTool] = useState("all");
+  const [filterSync, setFilterSync] = useState("all");
+  const [filterHealth, setFilterHealth] = useState("all");
+  const [page, setPage] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       const [statusRes, appsRes] = await Promise.all([
         apiGet<GitOpsStatus>("/v1/gitops/status"),
         apiGet<AppListResponse>("/v1/gitops/applications"),
       ]);
-      status.value = statusRes.data;
-      applications.value = Array.isArray(appsRes.data.applications)
-        ? appsRes.data.applications
-        : [];
-      summary.value = appsRes.data.summary ?? null;
-      coverage.value = appsRes.data.coverage;
-      error.value = null;
+      setStatus(statusRes.data);
+      setApplications(
+        Array.isArray(appsRes.data.applications)
+          ? appsRes.data.applications
+          : [],
+      );
+      setSummary(appsRes.data.summary ?? null);
+      setCoverage(appsRes.data.coverage);
+      setError(null);
     } catch {
-      error.value = "Failed to load GitOps data";
+      setError("Failed to load GitOps data");
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
-  }, []);
+  }, [fetchData]);
 
   useWsRefetch(
     fetchData,
@@ -100,31 +108,28 @@ export default function GitOpsApplications() {
   );
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const noEngine = status.value && !status.value.detected;
+  const noEngine = status && !status.detected;
 
-  const nsByNs = filterByNamespace(applications.value, selectedNamespace.value);
+  const nsByNs = filterByNamespace(applications, namespace);
   const filtered = nsByNs.filter((app) => {
-    if (filterTool.value !== "all" && app.tool !== filterTool.value) {
+    if (filterTool !== "all" && app.tool !== filterTool) {
       return false;
     }
-    if (filterSync.value !== "all" && app.syncStatus !== filterSync.value) {
+    if (filterSync !== "all" && app.syncStatus !== filterSync) {
       return false;
     }
-    if (
-      filterHealth.value !== "all" &&
-      app.healthStatus !== filterHealth.value
-    ) {
+    if (filterHealth !== "all" && app.healthStatus !== filterHealth) {
       return false;
     }
-    if (search.value) {
-      const q = search.value.toLowerCase();
+    if (search) {
+      const q = search.toLowerCase();
       return (
         app.name.toLowerCase().includes(q) ||
         app.namespace.toLowerCase().includes(q) ||
@@ -137,109 +142,112 @@ export default function GitOpsApplications() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (page.value > totalPages) page.value = totalPages;
+  const currentPage = Math.min(page, totalPages);
+  if (page > totalPages) setPage(totalPages);
   const displayed = filtered.slice(
-    (page.value - 1) * PAGE_SIZE,
-    page.value * PAGE_SIZE,
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
   );
 
   return (
-    <div class="p-6">
+    <div className="p-6">
       {/* Page header */}
-      <div class="flex items-center justify-between mb-1">
-        <div class="flex items-center gap-2">
-          <h1 class="text-2xl font-bold text-text-primary">Applications</h1>
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-text-primary">Applications</h1>
           <LiveBadge />
         </div>
-        {!loading.value && (
+        {!loading && (
           <Button
             type="button"
             variant="ghost"
             onClick={handleRefresh}
-            disabled={refreshing.value}
+            disabled={refreshing}
           >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
+            {refreshing ? "Refreshing..." : "Refresh"}
           </Button>
         )}
       </div>
-      <p class="text-sm text-text-muted mb-6">
-        {filtered.length} of {applications.value.length} applications &mdash;
-        Argo CD &amp; Flux.
+      <p className="text-sm text-text-muted mb-6">
+        {filtered.length} of {applications.length} applications &mdash; Argo CD
+        &amp; Flux.
       </p>
 
       {/* A remote list that could not load one source still lists the
           rest; name the missing source so it is not read as empty. */}
-      {!loading.value && !error.value && (
+      {!loading && !error && (
         <SourceCoverageNotice
-          coverage={coverage.value}
+          coverage={coverage}
           labels={GITOPS_SOURCE_LABELS}
         />
       )}
 
       {/* Summary counts */}
-      {summary.value && !noEngine && !loading.value && (
-        <div class="mb-6 flex flex-wrap gap-3">
+      {summary && !noEngine && !loading && (
+        <div className="mb-6 flex flex-wrap gap-3">
           <SummaryBadge
             label="Synced"
-            count={summary.value.synced}
+            count={summary.synced}
             color={SYNC_COLORS.synced}
           />
           <SummaryBadge
             label="Out of Sync"
-            count={summary.value.outOfSync}
+            count={summary.outOfSync}
             color={SYNC_COLORS.outofsync}
           />
           <SummaryBadge
             label="Degraded"
-            count={summary.value.degraded}
+            count={summary.degraded}
             color={HEALTH_COLORS.degraded}
           />
           <SummaryBadge
             label="Progressing"
-            count={summary.value.progressing}
+            count={summary.progressing}
             color={SYNC_COLORS.progressing}
           />
           <SummaryBadge
             label="Suspended"
-            count={summary.value.suspended}
+            count={summary.suspended}
             color="var(--text-muted)"
           />
         </div>
       )}
 
       {/* Tool status banner */}
-      {status.value && !noEngine && (
-        <div class="mb-6 rounded-lg border border-border-primary p-4 flex items-center gap-4 bg-elevated">
-          <div class="flex items-center gap-2">
-            <span class="text-sm font-medium text-text-primary">
+      {status && !noEngine && (
+        <div className="mb-6 rounded-lg border border-border-primary p-4 flex items-center gap-4 bg-elevated">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-text-primary">
               Tools detected:
             </span>
-            {(status.value.detected === "argocd" ||
-              status.value.detected === "both") && <ToolBadge tool="argocd" />}
-            {(status.value.detected === "fluxcd" ||
-              status.value.detected === "both") && <ToolBadge tool="fluxcd" />}
+            {(status.detected === "argocd" || status.detected === "both") && (
+              <ToolBadge tool="argocd" />
+            )}
+            {(status.detected === "fluxcd" || status.detected === "both") && (
+              <ToolBadge tool="fluxcd" />
+            )}
           </div>
-          <span class="text-xs text-text-muted ml-auto">
-            Last checked: {new Date(status.value.lastChecked).toLocaleString()}
+          <span className="text-xs text-text-muted ml-auto">
+            Last checked: {new Date(status.lastChecked).toLocaleString()}
           </span>
         </div>
       )}
 
       {/* No engine state */}
-      {noEngine && !loading.value && (
-        <div class="mb-6 rounded-lg border border-border-primary p-6 text-center bg-elevated">
-          <p class="text-lg font-medium text-text-primary mb-2">
+      {noEngine && !loading && (
+        <div className="mb-6 rounded-lg border border-border-primary p-6 text-center bg-elevated">
+          <p className="text-lg font-medium text-text-primary mb-2">
             No GitOps tool detected
           </p>
-          <p class="text-sm text-text-muted mb-4">
+          <p className="text-sm text-text-muted mb-4">
             Install Argo CD or Flux to enable GitOps application management.
           </p>
-          <div class="flex justify-center gap-4">
+          <div className="flex justify-center gap-4">
             <a
               href="https://argo-cd.readthedocs.io/en/stable/getting_started/"
               target="_blank"
               rel="noopener noreferrer"
-              class="text-sm text-brand hover:underline"
+              className="text-sm text-brand hover:underline"
             >
               Install Argo CD &rarr;
             </a>
@@ -247,7 +255,7 @@ export default function GitOpsApplications() {
               href="https://fluxcd.io/docs/installation/"
               target="_blank"
               rel="noopener noreferrer"
-              class="text-sm text-brand hover:underline"
+              className="text-sm text-brand hover:underline"
             >
               Install Flux &rarr;
             </a>
@@ -256,23 +264,23 @@ export default function GitOpsApplications() {
       )}
 
       {/* Filters */}
-      <div class="mb-4 flex flex-wrap items-center gap-4">
-        <div class="flex-1 max-w-xs">
+      <div className="mb-4 flex flex-wrap items-center gap-4">
+        <div className="flex-1 max-w-xs">
           <SearchBar
-            value={search.value}
+            value={search}
             onInput={(v) => {
-              search.value = v;
-              page.value = 1;
+              setSearch(v);
+              setPage(1);
             }}
             placeholder="Filter by name, namespace, repo..."
           />
         </div>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-base text-text-primary"
-          value={filterTool.value}
+          className="rounded border border-border-primary px-2 py-1.5 text-sm bg-base text-text-primary"
+          value={filterTool}
           onChange={(e) => {
-            filterTool.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
+            setFilterTool(e.currentTarget.value);
+            setPage(1);
           }}
         >
           <option value="all">All Tools</option>
@@ -280,11 +288,11 @@ export default function GitOpsApplications() {
           <option value="fluxcd">Flux</option>
         </select>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-base text-text-primary"
-          value={filterSync.value}
+          className="rounded border border-border-primary px-2 py-1.5 text-sm bg-base text-text-primary"
+          value={filterSync}
           onChange={(e) => {
-            filterSync.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
+            setFilterSync(e.currentTarget.value);
+            setPage(1);
           }}
         >
           <option value="all">All Sync</option>
@@ -295,11 +303,11 @@ export default function GitOpsApplications() {
           <option value="failed">Failed</option>
         </select>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-base text-text-primary"
-          value={filterHealth.value}
+          className="rounded border border-border-primary px-2 py-1.5 text-sm bg-base text-text-primary"
+          value={filterHealth}
           onChange={(e) => {
-            filterHealth.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
+            setFilterHealth(e.currentTarget.value);
+            setPage(1);
           }}
         >
           <option value="all">All Health</option>
@@ -310,37 +318,37 @@ export default function GitOpsApplications() {
         </select>
       </div>
 
-      {loading.value && (
-        <div class="flex justify-center py-12">
+      {loading && (
+        <div className="flex justify-center py-12">
           <Spinner className="text-brand" />
         </div>
       )}
 
-      {error.value && (
-        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
-          {error.value}
+      {error && (
+        <p className="text-sm py-4" style={{ color: "var(--error)" }}>
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && filtered.length > 0 && (
+      {!loading && !error && filtered.length > 0 && (
         <ResourceTable
           columns={RT_COLUMNS}
           rows={displayed.map((app) => ({
             id: app.id,
             cells: {
               name: (
-                <div class="flex items-start gap-2">
-                  <div class="mt-0.5 shrink-0">
+                <div className="flex items-start gap-2">
+                  <div className="mt-0.5 shrink-0">
                     <StatusDot
                       status={HEALTH_DOT_STATUS[app.healthStatus] ?? "neutral"}
                       size={8}
                     />
                   </div>
                   <div>
-                    <div class="font-mono font-medium text-text-primary">
+                    <div className="font-mono font-medium text-text-primary">
                       {app.name}
                     </div>
-                    <div class="text-xs text-text-muted">
+                    <div className="text-xs text-text-muted">
                       {app.namespace} &middot; {app.kind}
                     </div>
                   </div>
@@ -350,24 +358,24 @@ export default function GitOpsApplications() {
               sync: <SyncStatusBadge status={app.syncStatus} />,
               health: <HealthStatusBadge status={app.healthStatus} />,
               source: (
-                <span class="text-xs text-text-secondary truncate block max-w-[200px]">
+                <span className="text-xs text-text-secondary truncate block max-w-[200px]">
                   {app.source.chartName
                     ? app.source.chartName
                     : (app.source.repoURL ?? "-")}
                 </span>
               ),
               revision: (
-                <span class="font-mono text-xs text-text-secondary">
+                <span className="font-mono text-xs text-text-secondary">
                   {app.currentRevision ? app.currentRevision.slice(0, 7) : "-"}
                 </span>
               ),
               destns: (
-                <span class="text-xs text-text-secondary">
+                <span className="text-xs text-text-secondary">
                   {app.destinationNamespace || "-"}
                 </span>
               ),
               resources: (
-                <span class="text-xs text-text-secondary">
+                <span className="text-xs text-text-secondary">
                   {app.managedResourceCount}
                 </span>
               ),
@@ -380,20 +388,20 @@ export default function GitOpsApplications() {
       )}
 
       {/* Pagination */}
-      {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
-        <div class="mt-4 flex items-center justify-between">
-          <p class="text-sm text-text-muted">
-            {filtered.length} applications &middot; Page {page.value} of{" "}
+      {!loading && !error && filtered.length > PAGE_SIZE && (
+        <div className="mt-4 flex items-center justify-between">
+          <p className="text-sm text-text-muted">
+            {filtered.length} applications &middot; Page {currentPage} of{" "}
             {totalPages}
           </p>
-          <div class="flex gap-2">
+          <div className="flex gap-2">
             <Button
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value--;
+                setPage(currentPage - 1);
               }}
-              disabled={page.value <= 1}
+              disabled={currentPage <= 1}
             >
               Previous
             </Button>
@@ -401,9 +409,9 @@ export default function GitOpsApplications() {
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value++;
+                setPage(currentPage + 1);
               }}
-              disabled={page.value >= totalPages}
+              disabled={currentPage >= totalPages}
             >
               Next
             </Button>
@@ -411,10 +419,10 @@ export default function GitOpsApplications() {
         </div>
       )}
 
-      {!loading.value && !error.value && filtered.length === 0 && !noEngine && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">
-            {applications.value.length === 0
+      {!loading && !error && filtered.length === 0 && !noEngine && (
+        <div className="text-center py-12 rounded-lg border border-border-primary bg-elevated">
+          <p className="text-text-muted">
+            {applications.length === 0
               ? "No applications found. Applications will appear here once deployed via GitOps."
               : "No applications match your filters."}
           </p>
@@ -436,13 +444,13 @@ function SummaryBadge({
 }) {
   return (
     <span
-      class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium"
+      className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium"
       style={{
         color,
         backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
       }}
     >
-      <span class="font-bold">{count}</span>
+      <span className="font-bold">{count}</span>
       {label}
     </span>
   );

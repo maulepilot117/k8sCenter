@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import {
   ExpiryBadge,
@@ -12,16 +12,18 @@ import { apiGet } from "@/lib/api.ts";
 import type { Certificate } from "@/lib/certmanager-types.ts";
 import CertificateWizard from "@/src/islands/CertificateWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 const PAGE_SIZE = 100;
 
 export default function CertificatesList() {
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const certs = useSignal<Certificate[]>([]);
-  const search = useSignal("");
-  const page = useSignal(1);
-  const wizardOpen = useSignal(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [certs, setCerts] = useState<Certificate[]>([]);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const isClient = useIsClient();
 
   // Check URL param for pre-filter
   const expiringOnly =
@@ -33,34 +35,33 @@ export default function CertificatesList() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     const params = new URLSearchParams(globalThis.location.search);
-    if (params.get("action") === "create") wizardOpen.value = true;
+    if (params.get("action") === "create") setWizardOpen(true);
   }, []);
-
-  async function fetchData() {
-    try {
-      const res = await apiGet<Certificate[]>("/v1/certificates/certificates");
-      certs.value = Array.isArray(res.data) ? res.data : [];
-      error.value = null;
-    } catch {
-      error.value = "Failed to load certificates";
-    }
-  }
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    fetchData().then(() => {
-      loading.value = false;
-    });
+    (async () => {
+      try {
+        const res = await apiGet<Certificate[]>(
+          "/v1/certificates/certificates",
+        );
+        setCerts(Array.isArray(res.data) ? res.data : []);
+        setError(null);
+      } catch {
+        setError("Failed to load certificates");
+      }
+      setLoading(false);
+    })();
   }, []);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const filtered = certs.value.filter((c) => {
+  const filtered = certs.filter((c) => {
     if (expiringOnly && c.status !== "Expiring" && c.status !== "Expired") {
       return false;
     }
-    if (search.value) {
-      const q = search.value.toLowerCase();
+    if (search) {
+      const q = search.toLowerCase();
       return (
         c.name.toLowerCase().includes(q) ||
         c.namespace.toLowerCase().includes(q) ||
@@ -71,10 +72,11 @@ export default function CertificatesList() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (page.value > totalPages) page.value = totalPages;
+  const currentPage = Math.min(page, totalPages);
+  if (page > totalPages) setPage(totalPages);
   const displayed = filtered.slice(
-    (page.value - 1) * PAGE_SIZE,
-    page.value * PAGE_SIZE,
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
   );
 
   return (
@@ -111,7 +113,7 @@ export default function CertificatesList() {
         </div>
         <button
           type="button"
-          onClick={() => (wizardOpen.value = true)}
+          onClick={() => setWizardOpen(true)}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -131,8 +133,8 @@ export default function CertificatesList() {
           Create Certificate
         </button>
 
-        {wizardOpen.value && (
-          <CertificateWizard onClose={() => (wizardOpen.value = false)} />
+        {wizardOpen && (
+          <CertificateWizard onClose={() => setWizardOpen(false)} />
         )}
       </div>
 
@@ -147,20 +149,20 @@ export default function CertificatesList() {
       >
         <div style={{ flex: 1, maxWidth: "320px" }}>
           <SearchBar
-            value={search.value}
+            value={search}
             onInput={(v) => {
-              search.value = v;
-              page.value = 1;
+              setSearch(v);
+              setPage(1);
             }}
             placeholder="Filter by name, namespace, issuer..."
           />
         </div>
         <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-          {filtered.length} of {certs.value.length} certificates
+          {filtered.length} of {certs.length} certificates
         </span>
       </div>
 
-      {loading.value && (
+      {loading && (
         <div
           style={{
             display: "flex",
@@ -172,62 +174,64 @@ export default function CertificatesList() {
         </div>
       )}
 
-      {error.value && (
+      {error && (
         <p
           style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
         >
-          {error.value}
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
+      {!loading && !error && filtered.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border border-border-primary">
+          <table className="w-full text-sm">
             <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+              <tr className="border-b border-border-primary bg-surface">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Name
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Namespace
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Status
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Issuer
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   DNS Names
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Expires
                 </th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-border-subtle">
+            <tbody className="divide-y divide-border-subtle">
               {displayed.map((c) => (
-                <tr key={c.uid} class="hover:bg-hover/30">
-                  <td class="px-3 py-2">
+                <tr key={c.uid} className="hover:bg-hover/30">
+                  <td className="px-3 py-2">
                     <a
                       href={`/security/certificates/${c.namespace}/${c.name}`}
-                      class="font-medium hover:underline"
+                      className="font-medium hover:underline"
                       style={{ color: "var(--accent)" }}
                     >
                       {c.name}
                     </a>
                   </td>
-                  <td class="px-3 py-2 text-text-secondary">{c.namespace}</td>
-                  <td class="px-3 py-2">
+                  <td className="px-3 py-2 text-text-secondary">
+                    {c.namespace}
+                  </td>
+                  <td className="px-3 py-2">
                     <StatusBadge status={c.status} />
                   </td>
-                  <td class="px-3 py-2 text-text-secondary">
+                  <td className="px-3 py-2 text-text-secondary">
                     {c.issuerRef.name}
                   </td>
-                  <td class="px-3 py-2 text-text-secondary text-xs truncate max-w-[200px]">
+                  <td className="px-3 py-2 text-text-secondary text-xs truncate max-w-[200px]">
                     {(c.dnsNames ?? []).join(", ") || "—"}
                   </td>
-                  <td class="px-3 py-2">
+                  <td className="px-3 py-2">
                     <ExpiryBadge daysRemaining={c.daysRemaining} />
                   </td>
                 </tr>
@@ -238,7 +242,7 @@ export default function CertificatesList() {
       )}
 
       {/* Pagination */}
-      {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
+      {!loading && !error && filtered.length > PAGE_SIZE && (
         <div
           style={{
             display: "flex",
@@ -246,8 +250,8 @@ export default function CertificatesList() {
             justifyContent: "space-between",
           }}
         >
-          <p class="text-sm text-text-muted">
-            {filtered.length} certificates &middot; Page {page.value} of{" "}
+          <p className="text-sm text-text-muted">
+            {filtered.length} certificates &middot; Page {currentPage} of{" "}
             {totalPages}
           </p>
           <div style={{ display: "flex", gap: "8px" }}>
@@ -255,9 +259,9 @@ export default function CertificatesList() {
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value--;
+                setPage(currentPage - 1);
               }}
-              disabled={page.value <= 1}
+              disabled={currentPage <= 1}
             >
               Previous
             </Button>
@@ -265,9 +269,9 @@ export default function CertificatesList() {
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value++;
+                setPage(currentPage + 1);
               }}
-              disabled={page.value >= totalPages}
+              disabled={currentPage >= totalPages}
             >
               Next
             </Button>
@@ -276,7 +280,7 @@ export default function CertificatesList() {
       )}
 
       {/* Empty state */}
-      {!loading.value && !error.value && filtered.length === 0 && (
+      {!loading && !error && filtered.length === 0 && (
         <WidgetShell>
           <div style={{ textAlign: "center", padding: "48px 24px" }}>
             <p
@@ -286,7 +290,7 @@ export default function CertificatesList() {
                 margin: 0,
               }}
             >
-              {certs.value.length === 0
+              {certs.length === 0
                 ? "No certificates found. Certificates will appear here once cert-manager issues them."
                 : "No certificates match your filters."}
             </p>

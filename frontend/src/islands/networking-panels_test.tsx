@@ -1,22 +1,16 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import type { ComponentType } from "preact";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import type { ComponentType } from "react";
 import { setAccessToken } from "@/lib/api.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The networking status panels render a failed read from its reason (#608
  * U7, KTD5, KTD14): "not permitted" with no retry, "cannot be read" with
  * Try again, and a reload for a changed registration. An unknown answer
  * never reads as "not configured" (R4).
- *
- * As in NamespaceTopology_test.tsx, IS_BROWSER is stubbed to true for these
- * islands and put back afterwards.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+setupDom({ browser: true });
 
 const { default: BgpStatus } = await import("./BgpStatus.tsx");
 const { default: IpamStatus } = await import("./IpamStatus.tsx");
@@ -24,14 +18,8 @@ const { default: CniOverview } = await import("./CniOverview.tsx");
 const { default: CiliumSubsystems } = await import("./CiliumSubsystems.tsx");
 const { default: NodeConnectivity } = await import("./NodeConnectivity.tsx");
 
-afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
-});
-
 type Reply = { status: number; body: unknown };
 
-let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 let fetches = 0;
 // Replies are consumed in order; the last one repeats.
@@ -52,11 +40,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
   setAccessToken(null);
@@ -80,14 +63,12 @@ async function settle() {
 
 async function mount(Island: ComponentType, ...r: Reply[]) {
   replies = r;
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<Island />, host as HTMLElement));
+  const { container } = render(<Island />);
   await settle();
-  return host;
+  return container;
 }
 
-function buttons(root: HTMLElement, label: string) {
+function buttons(root: Element, label: string) {
   return [...root.querySelectorAll("button")].filter(
     (b) => b.textContent?.trim() === label,
   );

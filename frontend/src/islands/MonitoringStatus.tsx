@@ -1,12 +1,12 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { apiGet, apiPost } from "@/lib/api.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface ComponentStatus {
   available: boolean;
@@ -29,61 +29,57 @@ interface MonitoringStatusData {
 }
 
 export default function MonitoringStatus() {
-  const status = useSignal<MonitoringStatusData | null>(null);
-  const loading = useSignal(true);
-  const rescanning = useSignal(false);
-  const error = useSignal<string | null>(null);
-
-  function fetchStatus() {
-    loading.value = true;
-    apiGet<MonitoringStatusData>("/v1/monitoring/status")
-      .then((res) => {
-        status.value = res.data;
-        error.value = null;
-      })
-      .catch((err) => {
-        error.value = err.message ?? "Failed to fetch monitoring status";
-      })
-      .finally(() => {
-        loading.value = false;
-      });
-  }
+  const [status, setStatus] = useState<MonitoringStatusData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [rescanning, setRescanning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const isClient = useIsClient();
 
   function handleRescan() {
-    rescanning.value = true;
+    setRescanning(true);
     apiPost<MonitoringStatusData>("/v1/monitoring/rediscover")
       .then((res) => {
-        status.value = res.data;
-        error.value = null;
+        setStatus(res.data);
+        setError(null);
       })
       .catch((err) => {
-        error.value = err.message ?? "Re-scan failed";
+        setError(err.message ?? "Re-scan failed");
       })
       .finally(() => {
-        rescanning.value = false;
+        setRescanning(false);
       });
   }
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
-    fetchStatus();
+    setLoading(true);
+    apiGet<MonitoringStatusData>("/v1/monitoring/status")
+      .then((res) => {
+        setStatus(res.data);
+        setError(null);
+      })
+      .catch((err) => {
+        setError(err.message ?? "Failed to fetch monitoring status");
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }, []);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="flex items-center justify-center p-12">
+      <div className="flex items-center justify-center p-12">
         <Spinner className="text-brand" />
       </div>
     );
   }
 
-  if (error.value) {
-    return <ErrorBanner message={error.value} />;
+  if (error) {
+    return <ErrorBanner message={error} />;
   }
 
-  const s = status.value;
+  const s = status;
   if (!s) return null;
 
   return (
@@ -236,9 +232,9 @@ export default function MonitoringStatus() {
           <Button
             variant="secondary"
             onClick={handleRescan}
-            disabled={rescanning.value}
+            disabled={rescanning}
           >
-            {rescanning.value ? "Scanning..." : "Re-scan Cluster"}
+            {rescanning ? "Scanning..." : "Re-scan Cluster"}
           </Button>
         }
       >

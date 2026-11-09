@@ -1,9 +1,10 @@
-import { type Signal, useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { apiGet } from "@/lib/api.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface LogFilterBarProps {
   onSearch: (
@@ -15,21 +16,22 @@ interface LogFilterBarProps {
   ) => void;
   onLiveTail: (query: string, namespace: string) => void;
   onStopTail: () => void;
-  isTailing: Signal<boolean>;
-  loading: Signal<boolean>;
+  isTailing: boolean;
+  loading: boolean;
 }
 
 export default function LogFilterBar(props: LogFilterBarProps) {
-  const mode = useSignal<"search" | "logql">("search");
-  const searchText = useSignal("");
-  const namespace = useSignal("");
-  const pod = useSignal("");
-  const container = useSignal("");
-  const severity = useSignal("");
-  const timePreset = useSignal("1h");
-  const namespaces = useSignal<string[]>([]);
-  const pods = useSignal<string[]>([]);
-  const containers = useSignal<string[]>([]);
+  const isClient = useIsClient();
+  const [mode, setMode] = useState<"search" | "logql">("search");
+  const [searchText, setSearchText] = useState("");
+  const [namespace, setNamespace] = useState("");
+  const [pod, setPod] = useState("");
+  const [container, setContainer] = useState("");
+  const [severity, setSeverity] = useState("");
+  const [timePreset, setTimePreset] = useState("1h");
+  const [namespaces, setNamespaces] = useState<string[]>([]);
+  const [pods, setPods] = useState<string[]>([]);
+  const [containers, setContainers] = useState<string[]>([]);
 
   // Start from the global namespace selection. Its "all namespaces" value is
   // the sentinel "all", which this bar spells as "" (the All Namespaces option).
@@ -37,7 +39,7 @@ export default function LogFilterBar(props: LogFilterBarProps) {
     if (!IS_BROWSER) return;
     const ns = selectedNamespace.value;
     if (ns && ns !== "all") {
-      namespace.value = ns;
+      setNamespace(ns);
     }
   }, []);
 
@@ -46,56 +48,57 @@ export default function LogFilterBar(props: LogFilterBarProps) {
     if (!IS_BROWSER) return;
     apiGet<string[]>("/v1/logs/labels/namespace/values")
       .then((res) => {
-        namespaces.value = res.data ?? [];
+        setNamespaces(res.data ?? []);
       })
       .catch(() => {}); // graceful — dropdowns just stay empty
   }, []);
 
   // Fetch pods when namespace changes
   useEffect(() => {
-    if (!IS_BROWSER || !namespace.value) return;
-    const query = `{namespace="${namespace.value}"}`;
+    if (!IS_BROWSER || !namespace) return;
+    const query = `{namespace="${namespace}"}`;
     apiGet<string[]>(
       `/v1/logs/labels/pod/values?query=${encodeURIComponent(
         query,
-      )}&namespace=${encodeURIComponent(namespace.value)}`,
+      )}&namespace=${encodeURIComponent(namespace)}`,
     )
       .then((res) => {
-        pods.value = res.data ?? [];
+        setPods(res.data ?? []);
       })
       .catch(() => {});
-  }, [namespace.value]);
+  }, [namespace]);
 
-  // Fetch containers when pod changes
+  // A namespace change clears the pod in the same update, so this never runs
+  // for a namespace alone.
   useEffect(() => {
-    if (!IS_BROWSER || !namespace.value || !pod.value) return;
-    const query = `{namespace="${namespace.value}",pod="${pod.value}"}`;
+    if (!IS_BROWSER || !namespace || !pod) return;
+    const query = `{namespace="${namespace}",pod="${pod}"}`;
     apiGet<string[]>(
       `/v1/logs/labels/container/values?query=${encodeURIComponent(
         query,
-      )}&namespace=${encodeURIComponent(namespace.value)}`,
+      )}&namespace=${encodeURIComponent(namespace)}`,
     )
       .then((res) => {
-        containers.value = res.data ?? [];
+        setContainers(res.data ?? []);
       })
       .catch(() => {});
-  }, [pod.value]);
+  }, [namespace, pod]);
 
   function buildQuery(): string {
-    if (mode.value === "logql") return searchText.value;
+    if (mode === "logql") return searchText;
 
     const matchers: string[] = [];
-    if (namespace.value) matchers.push(`namespace="${namespace.value}"`);
-    if (pod.value) matchers.push(`pod=~"${pod.value}.*"`);
-    if (container.value) matchers.push(`container="${container.value}"`);
+    if (namespace) matchers.push(`namespace="${namespace}"`);
+    if (pod) matchers.push(`pod=~"${pod}.*"`);
+    if (container) matchers.push(`container="${container}"`);
     // Loki rejects an empty selector, so "everything" needs a matcher that
     // matches every stream with a namespace label.
     if (matchers.length === 0) matchers.push(`namespace=~".+"`);
 
     let q = `{${matchers.join(",")}}`;
-    if (severity.value) q += ` | level=~"(?i)${severity.value}"`;
-    if (searchText.value && mode.value === "search") {
-      q += ` |= "${searchText.value}"`;
+    if (severity) q += ` | level=~"(?i)${severity}"`;
+    if (searchText && mode === "search") {
+      q += ` |= "${searchText}"`;
     }
     return q;
   }
@@ -109,7 +112,7 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       "24h": 24 * 60 * 60 * 1000,
       "7d": 7 * 24 * 60 * 60 * 1000,
     };
-    const ms = presets[timePreset.value] ?? presets["1h"];
+    const ms = presets[timePreset] ?? presets["1h"];
     return {
       start: new Date(now.getTime() - ms).toISOString(),
       end: now.toISOString(),
@@ -122,28 +125,28 @@ export default function LogFilterBar(props: LogFilterBarProps) {
   }
 
   function handleLiveTail() {
-    if (props.isTailing.value) {
+    if (props.isTailing) {
       props.onStopTail();
     } else {
-      props.onLiveTail(buildQuery(), namespace.value);
+      props.onLiveTail(buildQuery(), namespace);
     }
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   return (
-    <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border-primary bg-surface p-3">
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border-primary bg-surface p-3">
       <select
-        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
-        value={namespace.value}
+        className="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        value={namespace}
         onChange={(e) => {
-          namespace.value = (e.target as HTMLSelectElement).value;
-          pod.value = "";
-          container.value = "";
+          setNamespace(e.currentTarget.value);
+          setPod("");
+          setContainer("");
         }}
       >
         <option value="">All Namespaces</option>
-        {namespaces.value.map((ns) => (
+        {namespaces.map((ns) => (
           <option key={ns} value={ns}>
             {ns}
           </option>
@@ -151,15 +154,15 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       </select>
 
       <select
-        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
-        value={pod.value}
+        className="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        value={pod}
         onChange={(e) => {
-          pod.value = (e.target as HTMLSelectElement).value;
-          container.value = "";
+          setPod(e.currentTarget.value);
+          setContainer("");
         }}
       >
         <option value="">All Pods</option>
-        {pods.value.map((p) => (
+        {pods.map((p) => (
           <option key={p} value={p}>
             {p}
           </option>
@@ -167,14 +170,14 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       </select>
 
       <select
-        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
-        value={container.value}
+        className="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        value={container}
         onChange={(e) => {
-          container.value = (e.target as HTMLSelectElement).value;
+          setContainer(e.currentTarget.value);
         }}
       >
         <option value="">All Containers</option>
-        {containers.value.map((c) => (
+        {containers.map((c) => (
           <option key={c} value={c}>
             {c}
           </option>
@@ -182,10 +185,10 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       </select>
 
       <select
-        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
-        value={severity.value}
+        className="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        value={severity}
         onChange={(e) => {
-          severity.value = (e.target as HTMLSelectElement).value;
+          setSeverity(e.currentTarget.value);
         }}
       >
         <option value="">All Levels</option>
@@ -195,16 +198,14 @@ export default function LogFilterBar(props: LogFilterBarProps) {
         <option value="debug">Debug</option>
       </select>
 
-      <div class="flex flex-1 items-center gap-1">
+      <div className="flex flex-1 items-center gap-1">
         <input
           type="text"
-          class="flex-1 rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-primary placeholder-text-muted"
-          placeholder={
-            mode.value === "logql" ? "LogQL query..." : "Search text..."
-          }
-          value={searchText.value}
-          onInput={(e) => {
-            searchText.value = (e.target as HTMLInputElement).value;
+          className="flex-1 rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-primary placeholder-text-muted"
+          placeholder={mode === "logql" ? "LogQL query..." : "Search text..."}
+          value={searchText}
+          onChange={(e) => {
+            setSearchText(e.currentTarget.value);
           }}
           onKeyDown={(e) => {
             if (e.key === "Enter") handleSearch();
@@ -212,25 +213,23 @@ export default function LogFilterBar(props: LogFilterBarProps) {
         />
         <button
           type="button"
-          class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-xs text-text-muted hover:text-text-secondary"
+          className="rounded border border-border-primary bg-elevated px-2 py-1.5 text-xs text-text-muted hover:text-text-secondary"
           onClick={() => {
-            mode.value = mode.value === "search" ? "logql" : "search";
+            setMode(mode === "search" ? "logql" : "search");
           }}
           title={
-            mode.value === "search"
-              ? "Switch to LogQL mode"
-              : "Switch to search mode"
+            mode === "search" ? "Switch to LogQL mode" : "Switch to search mode"
           }
         >
-          {mode.value === "search" ? "LogQL" : "Search"}
+          {mode === "search" ? "LogQL" : "Search"}
         </button>
       </div>
 
       <select
-        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
-        value={timePreset.value}
+        className="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        value={timePreset}
         onChange={(e) => {
-          timePreset.value = (e.target as HTMLSelectElement).value;
+          setTimePreset(e.currentTarget.value);
         }}
       >
         <option value="15m">Last 15m</option>
@@ -240,20 +239,20 @@ export default function LogFilterBar(props: LogFilterBarProps) {
         <option value="7d">Last 7d</option>
       </select>
 
-      <Button onClick={handleSearch} disabled={props.loading.value}>
+      <Button onClick={handleSearch} disabled={props.loading}>
         Run
       </Button>
       <button
         type="button"
-        class={`rounded px-3 py-1.5 text-sm font-semibold ${
-          props.isTailing.value
+        className={`rounded px-3 py-1.5 text-sm font-semibold ${
+          props.isTailing
             ? "bg-danger"
             : "border border-accent bg-elevated text-accent"
         }`}
-        style={props.isTailing.value ? { color: "var(--bg-base)" } : undefined}
+        style={props.isTailing ? { color: "var(--bg-base)" } : undefined}
         onClick={handleLiveTail}
       >
-        {props.isTailing.value ? "Stop" : "Live Tail"}
+        {props.isTailing ? "Stop" : "Live Tail"}
       </button>
     </div>
   );

@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESODriftIndicator } from "@/components/eso/ESODriftIndicator.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -24,7 +24,10 @@ import { resourceHref } from "@/lib/k8s-links.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import ESOChainPanel from "@/src/islands/ESOChainPanel.tsx";
 import ESOEvidencePanel from "@/src/islands/ESOEvidencePanel.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface Props {
   namespace: string;
@@ -65,47 +68,56 @@ function storeHref(kind: string, namespace: string, name: string): string {
 }
 
 export default function ESOExternalSecretDetail({ namespace, name }: Props) {
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const data = useSignal<ExternalSecret | null>(null);
-  const activeTab = useSignal<TabKey>("overview");
+  const isClient = useIsClient();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<ExternalSecret | null>(null);
+  const dataRef = useLatest(data);
+  const target = useLatest({ namespace, name });
+  const [activeTab, setActiveTab] = useState<TabKey>("overview");
   // The last evidence tab opened. The panel stays mounted (hidden) once one
   // has been opened, so returning from Overview or Chain keeps what it loaded.
-  const evidenceTab = useSignal<EvidenceTabKey | null>(null);
-  const forceSyncing = useSignal(false);
+  const [evidenceTab, setEvidenceTab] = useState<EvidenceTabKey | null>(null);
+  const [forceSyncing, setForceSyncing, forceSyncingRef] = useStateRef(false);
   // The request's own failure (409, 403, …). The outcome of an accepted
   // request is the observer's to report.
-  const forceSyncMsg = useSignal<string | null>(null);
+  const [forceSyncMsg, setForceSyncMsg] = useState<string | null>(null);
   // Bumped when the observer sees the outcome, so the kept-mounted evidence
   // panel remounts and History shows the attempt the request produced.
-  const evidenceEpoch = useSignal(0);
-  const observer = useSignal<ObserverState>(INITIAL_OBSERVER_STATE);
-  const dispatch = (e: ObserverEvent): ObserverState => {
-    const next = reduceObserver(observer.value, e);
-    if (next === observer.value) return next;
-    observer.value = next;
+  const [evidenceEpoch, setEvidenceEpoch] = useState(0);
+  const [observer, setObserver, observerRef] = useStateRef<ObserverState>(
+    INITIAL_OBSERVER_STATE,
+  );
+  const pollerRef = useRef<RefreshPoller | null>(null);
+  const dispatch = useCallback((e: ObserverEvent): ObserverState => {
+    const next = reduceObserver(observerRef.current, e);
+    if (next === observerRef.current) return next;
+    setObserver(next);
     if (isTerminal(next.phase)) {
-      poller.stop();
+      pollerRef.current?.stop();
       if (
         next.phase === "observedSuccess" ||
         next.phase === "observedFailure"
       ) {
-        evidenceEpoch.value++;
+        setEvidenceEpoch((n) => n + 1);
       }
     }
     return next;
-  };
+  }, []);
 
   // The poll schedule, the 90 s deadline and per-poll aborts live in the
   // poller; this island only supplies the real clock and the ES read.
-  const pollerRef = useRef<RefreshPoller | null>(null);
   pollerRef.current ??= createRefreshPoller({
     fetchSample: async (signal) => {
-      const res = await esoApi.getExternalSecret(namespace, name, signal);
+      const res = await esoApi.getExternalSecret(
+        target.current.namespace,
+        target.current.name,
+        signal,
+      );
       const sample = res.data;
       // Keep the overview live, but never swap in a replaced object.
-      if (sample && sample.uid === observer.value.baseline?.uid) {
-        data.value = sample;
+      if (sample && sample.uid === observerRef.current.baseline?.uid) {
+        setData(sample);
       }
       return sample;
     },
@@ -123,21 +135,21 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
   // A cluster switch makes the pending observation meaningless. The switcher
   // reloads the page today, so this is the guard for any switch that doesn't;
   // the epoch catches A → B → A, which an id comparison would miss.
-  const epoch = clusterEpoch.value;
+  const epoch = useSignalValue(clusterEpoch);
   const observedEpoch = useRef(epoch);
   useEffect(() => {
     if (epoch === observedEpoch.current) return;
     observedEpoch.current = epoch;
     poller.stop();
     dispatch({ type: "clusterChanged" });
-  }, [epoch]);
+  }, [epoch, poller, dispatch]);
 
   const onForceSync = async () => {
     // Synchronous guard: a double click lands before the disabled attribute
     // renders, and a second request would restart an observation mid-wait.
-    if (forceSyncing.value || poller.running) return;
-    forceSyncing.value = true;
-    forceSyncMsg.value = null;
+    if (forceSyncingRef.current || poller.running) return;
+    setForceSyncing(true);
+    setForceSyncMsg(null);
     dispatch({ type: "request" });
     try {
       const res = await esoApi.forceSyncExternalSecret(namespace, name);
@@ -147,47 +159,46 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
           type: "accepted",
           baseline: accepted.baseline,
           correlation: accepted.correlation,
-          priorStatus: data.value?.status,
+          priorStatus: dataRef.current?.status,
           nowMs: Date.now(),
         });
-        poller.begin(observer.value);
+        poller.begin(observerRef.current);
       } else {
-        // A backend without the U19a baseline: acceptance is all we know.
+        // A backend without the baseline: acceptance is all we know.
         dispatch({ type: "requestFailed" });
-        forceSyncMsg.value = "Force-sync requested.";
+        setForceSyncMsg("Force-sync requested.");
       }
     } catch (err) {
       dispatch({ type: "requestFailed" });
       if (err instanceof ApiError) {
         const reason = err.body?.error?.reason as string | undefined;
         if (err.status === 409 && reason === "already_refreshing") {
-          forceSyncMsg.value = "Already refreshing — try again in a minute.";
+          setForceSyncMsg("Already refreshing — try again in a minute.");
         } else if (err.status === 403) {
-          forceSyncMsg.value = "Access denied.";
+          setForceSyncMsg("Access denied.");
         } else {
-          forceSyncMsg.value = err.detail ?? "Force-sync failed.";
+          setForceSyncMsg(err.detail ?? "Force-sync failed.");
         }
       } else {
-        forceSyncMsg.value = "Force-sync failed.";
+        setForceSyncMsg("Force-sync failed.");
       }
     } finally {
-      forceSyncing.value = false;
+      setForceSyncing(false);
     }
   };
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
     let cancelled = false;
     (async () => {
-      loading.value = true;
-      error.value = null;
+      setLoading(true);
+      setError(null);
       try {
         const res = await esoApi.getExternalSecret(namespace, name);
-        if (!cancelled) data.value = res.data ?? null;
+        if (!cancelled) setData(res.data ?? null);
       } catch {
-        if (!cancelled) error.value = "Failed to load ExternalSecret";
+        if (!cancelled) setError("Failed to load ExternalSecret");
       } finally {
-        if (!cancelled) loading.value = false;
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
@@ -195,25 +206,25 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
     };
   }, [namespace, name]);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="flex justify-center py-12">
+      <div className="flex justify-center py-12">
         <Spinner className="text-brand" />
       </div>
     );
   }
 
-  if (error.value) {
-    return <p class="text-sm text-danger p-6">{error.value}</p>;
+  if (error) {
+    return <p className="text-sm text-danger p-6">{error}</p>;
   }
 
-  if (!data.value) return null;
+  if (!data) return null;
 
-  const es = data.value;
-  const observation = describeObserver(observer.value);
-  const observing = isObserving(observer.value.phase);
+  const es = data;
+  const observation = describeObserver(observer);
+  const observing = isObserving(observer.phase);
   const showMessage =
     es.status === "SyncFailed" ||
     (es.readyMessage && es.readyMessage.length > 0);
@@ -222,10 +233,10 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
     : null;
 
   return (
-    <div class="p-6 space-y-6">
+    <div className="p-6 space-y-6">
       {/* Header */}
-      <div class="flex flex-wrap items-center gap-3">
-        <h1 class="text-2xl font-bold text-text-primary">{es.name}</h1>
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-2xl font-bold text-text-primary">{es.name}</h1>
         <StatusBadge status={es.status} />
         {es.driftStatus && (
           <ESODriftIndicator
@@ -236,33 +247,33 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
         <button
           type="button"
           onClick={onForceSync}
-          disabled={forceSyncing.value || observing}
-          class="ml-auto px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base disabled:opacity-50"
+          disabled={forceSyncing || observing}
+          className="ml-auto px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base disabled:opacity-50"
         >
-          {forceSyncing.value ? "Force-syncing…" : "Force sync"}
+          {forceSyncing ? "Force-syncing…" : "Force sync"}
         </button>
       </div>
 
-      {forceSyncMsg.value && (
-        <p class="text-sm text-text-muted bg-base border border-border-subtle rounded px-3 py-2">
-          {forceSyncMsg.value}
+      {forceSyncMsg && (
+        <p className="text-sm text-text-muted bg-base border border-border-subtle rounded px-3 py-2">
+          {forceSyncMsg}
         </p>
       )}
 
       {observation && (
         <p
           role="status"
-          data-observer-phase={observer.value.phase}
-          class={`text-sm border rounded px-3 py-2 ${OBSERVER_TONE[observation.tone]}`}
+          data-observer-phase={observer.phase}
+          className={`text-sm border rounded px-3 py-2 ${OBSERVER_TONE[observation.tone]}`}
         >
           {observation.text}
         </p>
       )}
 
       {/* Tab strip */}
-      <div role="tablist" class="flex gap-1 border-b border-border-primary">
+      <div role="tablist" className="flex gap-1 border-b border-border-primary">
         {TABS.map(({ key, label }) => {
-          const active = activeTab.value === key;
+          const active = activeTab === key;
           return (
             <button
               key={key}
@@ -270,10 +281,10 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
               role="tab"
               aria-selected={active}
               onClick={() => {
-                activeTab.value = key;
-                if (isEvidenceTab(key)) evidenceTab.value = key;
+                setActiveTab(key);
+                if (isEvidenceTab(key)) setEvidenceTab(key);
               }}
-              class={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
+              className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
                 active
                   ? "border-brand text-text-primary"
                   : "border-transparent text-text-muted hover:text-text-primary"
@@ -286,27 +297,29 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
       </div>
 
       {/* Tab panels */}
-      {activeTab.value === "overview" && (
-        <div role="tabpanel" class="space-y-4">
-          <div class="rounded-lg border border-border-primary bg-elevated p-5">
-            <h2 class="text-sm font-semibold text-text-primary mb-4">
+      {activeTab === "overview" && (
+        <div role="tabpanel" className="space-y-4">
+          <div className="rounded-lg border border-border-primary bg-elevated p-5">
+            <h2 className="text-sm font-semibold text-text-primary mb-4">
               Details
             </h2>
-            <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
               <div>
-                <dt class="text-text-muted">Namespace</dt>
-                <dd class="text-text-primary">{es.namespace}</dd>
+                <dt className="text-text-muted">Namespace</dt>
+                <dd className="text-text-primary">{es.namespace}</dd>
               </div>
               <div>
-                <dt class="text-text-muted">Name</dt>
-                <dd class="text-text-primary">{es.name}</dd>
+                <dt className="text-text-muted">Name</dt>
+                <dd className="text-text-primary">{es.name}</dd>
               </div>
-              <div class="sm:col-span-2">
-                <dt class="text-text-muted">UID</dt>
-                <dd class="text-text-primary font-mono text-xs">{es.uid}</dd>
+              <div className="sm:col-span-2">
+                <dt className="text-text-muted">UID</dt>
+                <dd className="text-text-primary font-mono text-xs">
+                  {es.uid}
+                </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Store</dt>
+                <dt className="text-text-muted">Store</dt>
                 <dd>
                   <a
                     href={storeHref(
@@ -314,61 +327,61 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
                       es.namespace,
                       es.storeRef.name,
                     )}
-                    class="text-brand hover:underline"
+                    className="text-brand hover:underline"
                   >
                     {es.storeRef.kind}/{es.storeRef.name}
                   </a>
                 </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Target Secret</dt>
+                <dt className="text-text-muted">Target Secret</dt>
                 <dd>
                   {es.targetSecretName ? (
                     targetSecretLink ? (
                       <a
                         href={targetSecretLink}
-                        class="text-brand hover:underline"
+                        className="text-brand hover:underline"
                       >
                         {es.targetSecretName}
                       </a>
                     ) : (
-                      <span class="text-text-primary">
+                      <span className="text-text-primary">
                         {es.targetSecretName}
                       </span>
                     )
                   ) : (
-                    <span class="text-text-muted">{EM_DASH}</span>
+                    <span className="text-text-muted">{EM_DASH}</span>
                   )}
                 </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Refresh Interval</dt>
-                <dd class="text-text-primary">
+                <dt className="text-text-muted">Refresh Interval</dt>
+                <dd className="text-text-primary">
                   {es.refreshInterval || EM_DASH}
                 </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Last Sync</dt>
-                <dd class="text-text-primary" title={es.lastSyncTime ?? ""}>
+                <dt className="text-text-muted">Last Sync</dt>
+                <dd className="text-text-primary" title={es.lastSyncTime ?? ""}>
                   {es.lastSyncTime ? timeAgo(es.lastSyncTime) : EM_DASH}
                 </dd>
               </div>
-              <div class="sm:col-span-2">
-                <dt class="text-text-muted">Synced ResourceVersion</dt>
-                <dd class="text-text-primary font-mono text-xs">
+              <div className="sm:col-span-2">
+                <dt className="text-text-muted">Synced ResourceVersion</dt>
+                <dd className="text-text-primary font-mono text-xs">
                   {es.syncedResourceVersion || EM_DASH}
                 </dd>
               </div>
               {es.readyReason && (
-                <div class="sm:col-span-2">
-                  <dt class="text-text-muted">Ready Reason</dt>
-                  <dd class="text-text-primary">{es.readyReason}</dd>
+                <div className="sm:col-span-2">
+                  <dt className="text-text-muted">Ready Reason</dt>
+                  <dd className="text-text-primary">{es.readyReason}</dd>
                 </div>
               )}
               {showMessage && (
-                <div class="sm:col-span-2">
-                  <dt class="text-text-muted">Message</dt>
-                  <dd class="text-text-secondary">{es.readyMessage}</dd>
+                <div className="sm:col-span-2">
+                  <dt className="text-text-muted">Message</dt>
+                  <dd className="text-text-secondary">{es.readyMessage}</dd>
                 </div>
               )}
             </dl>
@@ -376,20 +389,20 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
         </div>
       )}
 
-      {evidenceTab.value && (
-        <div hidden={!isEvidenceTab(activeTab.value)}>
+      {evidenceTab && (
+        <div hidden={!isEvidenceTab(activeTab)}>
           <ESOEvidencePanel
-            key={evidenceEpoch.value}
+            key={evidenceEpoch}
             kind="externalsecrets"
             namespace={es.namespace}
             name={es.name}
             uid={es.uid}
-            activeTab={evidenceTab.value}
+            activeTab={evidenceTab}
           />
         </div>
       )}
 
-      {activeTab.value === "chain" && (
+      {activeTab === "chain" && (
         <ESOChainPanel namespace={es.namespace} focusedNodeId={es.uid} />
       )}
     </div>

@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { SYNC_COLORS } from "@/components/ui/GitOpsBadges.tsx";
 import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
@@ -18,6 +18,7 @@ import type { SourceCoverage } from "@/lib/k8s-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface AppSetListResponse {
   applicationSets: NormalizedAppSet[];
@@ -78,37 +79,36 @@ const RT_COLUMNS: Column[] = [
 ];
 
 export default function GitOpsAppSets() {
-  const appSets = useSignal<NormalizedAppSet[]>([]);
-  const summary = useSignal<AppListMetadata | null>(null);
-  const coverage = useSignal<SourceCoverage[] | undefined>(undefined);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const search = useSignal("");
-  const page = useSignal(1);
-  const refreshing = useSignal(false);
+  const isClient = useIsClient();
+  const [appSets, setAppSets] = useState<NormalizedAppSet[]>([]);
+  const [coverage, setCoverage] = useState<SourceCoverage[] | undefined>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       const res = await apiGet<AppSetListResponse>(
         "/v1/gitops/applicationsets",
       );
-      appSets.value = Array.isArray(res.data.applicationSets)
-        ? res.data.applicationSets
-        : [];
-      summary.value = res.data.summary ?? null;
-      coverage.value = res.data.coverage;
-      error.value = null;
+      setAppSets(
+        Array.isArray(res.data.applicationSets) ? res.data.applicationSets : [],
+      );
+      setCoverage(res.data.coverage);
+      setError(null);
     } catch {
-      error.value = "Failed to load ApplicationSets";
+      setError("Failed to load ApplicationSets");
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
-  }, []);
+  }, [fetchData]);
 
   useWsRefetch(
     fetchData,
@@ -117,16 +117,16 @@ export default function GitOpsAppSets() {
   );
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const filtered = appSets.value.filter((as) => {
-    if (search.value) {
-      const q = search.value.toLowerCase();
+  const filtered = appSets.filter((as) => {
+    if (search) {
+      const q = search.toLowerCase();
       return (
         as.name.toLowerCase().includes(q) ||
         as.namespace.toLowerCase().includes(q) ||
@@ -137,26 +137,27 @@ export default function GitOpsAppSets() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (page.value > totalPages) page.value = totalPages;
+  const currentPage = Math.min(page, totalPages);
+  if (page > totalPages) setPage(totalPages);
   const displayed = filtered.slice(
-    (page.value - 1) * PAGE_SIZE,
-    page.value * PAGE_SIZE,
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
   );
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-1">
-        <div class="flex items-center gap-2">
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
           <h1
-            class="font-bold text-text-primary"
+            className="font-bold text-text-primary"
             style={{ fontSize: "24px", fontWeight: 700 }}
           >
             ApplicationSets
           </h1>
           <LiveBadge />
         </div>
-        <div class="flex items-center gap-2">
-          {!loading.value && (
+        <div className="flex items-center gap-2">
+          {!loading && (
             <>
               <a href="/tools/yaml-apply">
                 <Button variant="primary">Create</Button>
@@ -164,82 +165,84 @@ export default function GitOpsAppSets() {
               <Button
                 variant="ghost"
                 onClick={handleRefresh}
-                disabled={refreshing.value}
+                disabled={refreshing}
               >
-                {refreshing.value ? "Refreshing..." : "Refresh"}
+                {refreshing ? "Refreshing..." : "Refresh"}
               </Button>
             </>
           )}
         </div>
       </div>
-      <p class="text-sm text-text-muted mb-6">
+      <p className="text-sm text-text-muted mb-6">
         Argo CD ApplicationSet generators and their managed applications.
       </p>
 
       {/* A remote cluster that could not list the child applications still
           lists the ApplicationSets; name the missing list so their app
           counts are not read as zero. */}
-      {!loading.value && !error.value && (
+      {!loading && !error && (
         <SourceCoverageNotice
-          coverage={coverage.value}
+          coverage={coverage}
           labels={GITOPS_SOURCE_LABELS}
         />
       )}
 
-      <div class="mb-4 flex flex-wrap items-center gap-4">
-        <div class="flex-1 max-w-xs">
+      <div className="mb-4 flex flex-wrap items-center gap-4">
+        <div className="flex-1 max-w-xs">
           <SearchBar
-            value={search.value}
+            value={search}
             onInput={(v) => {
-              search.value = v;
-              page.value = 1;
+              setSearch(v);
+              setPage(1);
             }}
             placeholder="Filter by name, namespace, generator..."
           />
         </div>
-        <span class="text-xs text-text-muted">
-          {filtered.length} of {appSets.value.length} applicationsets
+        <span className="text-xs text-text-muted">
+          {filtered.length} of {appSets.length} applicationsets
         </span>
       </div>
 
-      {loading.value && (
-        <div class="flex justify-center py-12">
+      {loading && (
+        <div className="flex justify-center py-12">
           <Spinner className="text-brand" />
         </div>
       )}
 
-      {error.value && (
-        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
-          {error.value}
+      {error && (
+        <p className="text-sm py-4" style={{ color: "var(--error)" }}>
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && filtered.length > 0 && (
+      {!loading && !error && filtered.length > 0 && (
         <ResourceTable
           columns={RT_COLUMNS}
           rows={displayed.map((as) => ({
             id: as.id,
             cells: {
               name: (
-                <div class="flex items-center gap-2">
+                <div className="flex items-center gap-2">
                   <StatusDot
                     status={dotStatus(statusTone(as.status))}
                     size={8}
                   />
-                  <span class="font-medium text-brand hover:underline">
+                  <span className="font-medium text-brand hover:underline">
                     {as.name}
                   </span>
                 </div>
               ),
               namespace: (
-                <span class="text-text-secondary text-xs">{as.namespace}</span>
+                <span className="text-text-secondary text-xs">
+                  {as.namespace}
+                </span>
               ),
               generators: (
-                <div class="flex flex-wrap gap-1">
+                <div className="flex flex-wrap gap-1">
                   {as.generatorTypes.map((g) => (
                     <span
                       key={g}
-                      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent"
+                      className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent"
                     >
                       {g}
                     </span>
@@ -247,7 +250,7 @@ export default function GitOpsAppSets() {
                 </div>
               ),
               apps: (
-                <span class="tabular-nums text-text-primary font-medium">
+                <span className="tabular-nums text-text-primary font-medium">
                   {as.generatedAppCount}
                 </span>
               ),
@@ -255,14 +258,14 @@ export default function GitOpsAppSets() {
                 const syncedCount = as.summary.synced;
                 const oosCount = as.summary.outOfSync;
                 return (
-                  <span class="text-xs">
+                  <span className="text-xs">
                     {syncedCount > 0 && (
                       <span style={{ color: SYNC_COLORS.synced }}>
                         {syncedCount} synced
                       </span>
                     )}
                     {syncedCount > 0 && oosCount > 0 && (
-                      <span class="text-text-muted">,</span>
+                      <span className="text-text-muted">,</span>
                     )}
                     {oosCount > 0 && (
                       <span style={{ color: SYNC_COLORS.outofsync }}>
@@ -270,7 +273,7 @@ export default function GitOpsAppSets() {
                       </span>
                     )}
                     {syncedCount === 0 && oosCount === 0 && (
-                      <span class="text-text-muted">-</span>
+                      <span className="text-text-muted">-</span>
                     )}
                   </span>
                 );
@@ -278,26 +281,32 @@ export default function GitOpsAppSets() {
               health: (() => {
                 if (as.summary.degraded > 0) {
                   return (
-                    <span class="text-xs" style={{ color: "var(--error)" }}>
+                    <span className="text-xs" style={{ color: "var(--error)" }}>
                       {as.summary.degraded} degraded
                     </span>
                   );
                 }
                 if (as.summary.progressing > 0) {
                   return (
-                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                    <span
+                      className="text-xs"
+                      style={{ color: "var(--warning)" }}
+                    >
                       {as.summary.progressing} progressing
                     </span>
                   );
                 }
                 if (as.generatedAppCount > 0) {
                   return (
-                    <span class="text-xs" style={{ color: "var(--success)" }}>
+                    <span
+                      className="text-xs"
+                      style={{ color: "var(--success)" }}
+                    >
                       all healthy
                     </span>
                   );
                 }
-                return <span class="text-xs text-text-muted">-</span>;
+                return <span className="text-xs text-text-muted">-</span>;
               })(),
               status: (() => {
                 const statusColor =
@@ -306,7 +315,7 @@ export default function GitOpsAppSets() {
                 return <span style={{ color: statusColor }}>{as.status}</span>;
               })(),
               age: (
-                <span class="text-text-muted text-xs">
+                <span className="text-text-muted text-xs">
                   {as.createdAt ? timeAgo(as.createdAt) : "-"}
                 </span>
               ),
@@ -318,28 +327,28 @@ export default function GitOpsAppSets() {
         />
       )}
 
-      {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
-        <div class="mt-4 flex items-center justify-between">
-          <p class="text-sm text-text-muted">
-            {filtered.length} applicationsets &middot; Page {page.value} of{" "}
+      {!loading && !error && filtered.length > PAGE_SIZE && (
+        <div className="mt-4 flex items-center justify-between">
+          <p className="text-sm text-text-muted">
+            {filtered.length} applicationsets &middot; Page {currentPage} of{" "}
             {totalPages}
           </p>
-          <div class="flex gap-2">
+          <div className="flex gap-2">
             <Button
               variant="ghost"
               onClick={() => {
-                page.value--;
+                setPage(currentPage - 1);
               }}
-              disabled={page.value <= 1}
+              disabled={currentPage <= 1}
             >
               Previous
             </Button>
             <Button
               variant="ghost"
               onClick={() => {
-                page.value++;
+                setPage(currentPage + 1);
               }}
-              disabled={page.value >= totalPages}
+              disabled={currentPage >= totalPages}
             >
               Next
             </Button>
@@ -347,10 +356,10 @@ export default function GitOpsAppSets() {
         </div>
       )}
 
-      {!loading.value && !error.value && filtered.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">
-            {appSets.value.length === 0
+      {!loading && !error && filtered.length === 0 && (
+        <div className="text-center py-12 rounded-lg border border-border-primary bg-elevated">
+          <p className="text-text-muted">
+            {appSets.length === 0
               ? "No ApplicationSets found. ApplicationSets will appear here once created in Argo CD."
               : "No ApplicationSets match your filters."}
           </p>

@@ -1,8 +1,9 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ApiError, apiDelete, apiGet, apiPut } from "@/lib/api.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 /**
  * GET and PUT /v1/clusters/{id}/compliance-identity: the identity the daily
@@ -83,21 +84,22 @@ export default function ComplianceIdentityForm({
   clusterId,
   onIdentity,
 }: Props) {
-  const busy = useSignal(true);
-  const configured = useSignal(false);
-  const username = useSignal("");
-  const groups = useSignal("");
-  const baseId = useRef(`ci-${Math.random().toString(36).slice(2, 8)}`).current;
+  const [busy, setBusy] = useState(true);
+  const [configured, setConfigured] = useState(false);
+  const [username, setUsername] = useState("");
+  const [groups, setGroups] = useState("");
+  const baseId = useId();
+  const onIdentityRef = useLatest(onIdentity);
 
   // Bumped by every load/save/clear and on unmount, so a late answer never
   // fills the form of another cluster. The badge is ordered separately, by
   // the module's change tickets, so a form closed mid-save still badges.
   const gen = useRef(0);
 
-  function apply(id: ComplianceIdentity) {
-    username.value = id.username;
-    groups.value = (id.groups ?? []).join("\n");
-  }
+  const apply = useCallback((id: ComplianceIdentity) => {
+    setUsername(id.username);
+    setGroups((id.groups ?? []).join("\n"));
+  }, []);
 
   useEffect(() => {
     const g = ++gen.current;
@@ -108,8 +110,10 @@ export default function ComplianceIdentityForm({
         );
         if (gen.current !== g) return;
         apply(res.data);
-        configured.value = true;
-        if (!changeInFlight(clusterId)) onIdentity(clusterId, "configured");
+        setConfigured(true);
+        if (!changeInFlight(clusterId)) {
+          onIdentityRef.current(clusterId, "configured");
+        }
       } catch (err) {
         if (gen.current !== g) return;
         if (
@@ -117,7 +121,7 @@ export default function ComplianceIdentityForm({
           err.reason === "compliance_history_not_configured"
         ) {
           if (!changeInFlight(clusterId)) {
-            onIdentity(clusterId, "not-configured");
+            onIdentityRef.current(clusterId, "not-configured");
           }
         } else {
           showToast(
@@ -126,24 +130,24 @@ export default function ComplianceIdentityForm({
           );
         }
       } finally {
-        if (gen.current === g) busy.value = false;
+        if (gen.current === g) setBusy(false);
       }
     })();
     return () => {
       gen.current++;
     };
-  }, [clusterId]);
+  }, [clusterId, apply]);
 
   async function save() {
     const g = ++gen.current;
     const ticket = beginChange(clusterId);
-    busy.value = true;
+    setBusy(true);
     try {
       const res = await apiPut<ComplianceIdentity>(
         `/v1/clusters/${clusterId}/compliance-identity`,
         {
-          username: username.value.trim(),
-          groups: parseGroups(groups.value),
+          username: username.trim(),
+          groups: parseGroups(groups),
         },
       );
       if (isLatestChange(clusterId, ticket)) {
@@ -151,7 +155,7 @@ export default function ComplianceIdentityForm({
       }
       if (gen.current !== g) return;
       apply(res.data);
-      configured.value = true;
+      setConfigured(true);
       showToast("Compliance identity saved", "success");
     } catch (err) {
       if (gen.current !== g) return;
@@ -161,7 +165,7 @@ export default function ComplianceIdentityForm({
       );
     } finally {
       endChange(clusterId);
-      if (gen.current === g) busy.value = false;
+      if (gen.current === g) setBusy(false);
     }
   }
 
@@ -175,16 +179,16 @@ export default function ComplianceIdentityForm({
     }
     const g = ++gen.current;
     const ticket = beginChange(clusterId);
-    busy.value = true;
+    setBusy(true);
     try {
       await apiDelete(`/v1/clusters/${clusterId}/compliance-identity`);
       if (isLatestChange(clusterId, ticket)) {
         onIdentity(clusterId, "not-configured");
       }
       if (gen.current !== g) return;
-      username.value = "";
-      groups.value = "";
-      configured.value = false;
+      setUsername("");
+      setGroups("");
+      setConfigured(false);
       showToast("Compliance identity cleared", "success");
     } catch (err) {
       if (gen.current !== g) return;
@@ -194,65 +198,65 @@ export default function ComplianceIdentityForm({
       );
     } finally {
       endChange(clusterId);
-      if (gen.current === g) busy.value = false;
+      if (gen.current === g) setBusy(false);
     }
   }
 
   return (
     <div
       data-testid="compliance-identity-form"
-      class="mt-2.5 flex max-w-[520px] flex-col gap-2.5"
+      className="mt-2.5 flex max-w-[520px] flex-col gap-2.5"
     >
-      <p class="text-xs text-text-muted">
+      <p className="text-xs text-text-muted">
         Daily compliance snapshots on this cluster are taken as this identity.
         The cluster's registration credential must be allowed to impersonate it.
       </p>
       <div>
-        <label class={LABEL_CLASS} for={`${baseId}-user`}>
+        <label className={LABEL_CLASS} htmlFor={`${baseId}-user`}>
           Compliance identity username
         </label>
         <input
           id={`${baseId}-user`}
           type="text"
-          class={INPUT_CLASS}
-          value={username.value}
+          className={INPUT_CLASS}
+          value={username}
           placeholder="system:serviceaccount:kubecenter:compliance"
-          onInput={(e) => {
-            username.value = e.currentTarget.value;
+          onChange={(e) => {
+            setUsername(e.currentTarget.value);
           }}
         />
       </div>
       <div>
-        <label class={LABEL_CLASS} for={`${baseId}-groups`}>
+        <label className={LABEL_CLASS} htmlFor={`${baseId}-groups`}>
           Compliance identity groups
         </label>
         <textarea
           id={`${baseId}-groups`}
           rows={3}
-          class={INPUT_CLASS}
-          value={groups.value}
+          className={INPUT_CLASS}
+          value={groups}
           placeholder="one group per line, or comma-separated"
-          onInput={(e) => {
-            groups.value = e.currentTarget.value;
+          onChange={(e) => {
+            setGroups(e.currentTarget.value);
           }}
         />
       </div>
-      <div class="flex gap-1.5">
+      <div className="flex gap-1.5">
         <Button
           type="button"
           variant="primary"
           size="sm"
-          disabled={busy.value || username.value.trim() === ""}
+          disabled={busy || username.trim() === ""}
           onClick={save}
         >
           Save
         </Button>
-        {configured.value && (
+        {configured && (
           <Button
             type="button"
             variant="danger"
             size="sm"
-            disabled={busy.value}
+            disabled={busy}
             onClick={clear}
           >
             Clear identity

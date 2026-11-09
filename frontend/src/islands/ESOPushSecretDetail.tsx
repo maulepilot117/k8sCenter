@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
@@ -8,7 +8,7 @@ import type { PushSecret } from "@/lib/eso-types.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import ESOEvidencePanel from "@/src/islands/ESOEvidencePanel.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface Props {
   namespace: string;
@@ -40,26 +40,26 @@ function storeHref(kind: string, namespace: string, name: string): string {
 }
 
 export default function ESOPushSecretDetail({ namespace, name }: Props) {
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const data = useSignal<PushSecret | null>(null);
-  const activeTab = useSignal<TabKey>("overview");
+  const isClient = useIsClient();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<PushSecret | null>(null);
+  const [activeTab, setActiveTab] = useState<TabKey>("overview");
   // The last evidence tab opened; the panel stays mounted once opened.
-  const evidenceTab = useSignal<EvidenceTabKey | null>(null);
+  const [evidenceTab, setEvidenceTab] = useState<EvidenceTabKey | null>(null);
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
     let cancelled = false;
     (async () => {
-      loading.value = true;
-      error.value = null;
+      setLoading(true);
+      setError(null);
       try {
         const res = await esoApi.getPushSecret(namespace, name);
-        if (!cancelled) data.value = res.data ?? null;
+        if (!cancelled) setData(res.data ?? null);
       } catch {
-        if (!cancelled) error.value = "Failed to load PushSecret";
+        if (!cancelled) setError("Failed to load PushSecret");
       } finally {
-        if (!cancelled) loading.value = false;
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
@@ -67,23 +67,23 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
     };
   }, [namespace, name]);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="flex justify-center py-12">
+      <div className="flex justify-center py-12">
         <Spinner className="text-brand" />
       </div>
     );
   }
 
-  if (error.value) {
-    return <p class="text-sm text-danger p-6">{error.value}</p>;
+  if (error) {
+    return <p className="text-sm text-danger p-6">{error}</p>;
   }
 
-  if (!data.value) return null;
+  if (!data) return null;
 
-  const ps = data.value;
+  const ps = data;
   const showMessage =
     ps.status === "SyncFailed" ||
     (ps.readyMessage && ps.readyMessage.length > 0);
@@ -92,15 +92,15 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
     : null;
 
   return (
-    <div class="p-6 space-y-6">
-      <div class="flex flex-wrap items-center gap-3">
-        <h1 class="text-2xl font-bold text-text-primary">{ps.name}</h1>
+    <div className="p-6 space-y-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-2xl font-bold text-text-primary">{ps.name}</h1>
         <StatusBadge status={ps.status} />
       </div>
 
-      <div role="tablist" class="flex gap-1 border-b border-border-primary">
+      <div role="tablist" className="flex gap-1 border-b border-border-primary">
         {TABS.map(({ key, label }) => {
-          const active = activeTab.value === key;
+          const active = activeTab === key;
           return (
             <button
               key={key}
@@ -108,10 +108,10 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
               role="tab"
               aria-selected={active}
               onClick={() => {
-                activeTab.value = key;
-                if (isEvidenceTab(key)) evidenceTab.value = key;
+                setActiveTab(key);
+                if (isEvidenceTab(key)) setEvidenceTab(key);
               }}
-              class={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
+              className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
                 active
                   ? "border-brand text-text-primary"
                   : "border-transparent text-text-muted hover:text-text-primary"
@@ -123,84 +123,86 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
         })}
       </div>
 
-      {activeTab.value === "overview" && (
-        <div role="tabpanel" class="space-y-4">
-          <div class="rounded-lg border border-border-primary bg-elevated p-5">
-            <h2 class="text-sm font-semibold text-text-primary mb-4">
+      {activeTab === "overview" && (
+        <div role="tabpanel" className="space-y-4">
+          <div className="rounded-lg border border-border-primary bg-elevated p-5">
+            <h2 className="text-sm font-semibold text-text-primary mb-4">
               Details
             </h2>
-            <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
               <div>
-                <dt class="text-text-muted">Namespace</dt>
-                <dd class="text-text-primary">{ps.namespace}</dd>
+                <dt className="text-text-muted">Namespace</dt>
+                <dd className="text-text-primary">{ps.namespace}</dd>
               </div>
               <div>
-                <dt class="text-text-muted">Name</dt>
-                <dd class="text-text-primary">{ps.name}</dd>
+                <dt className="text-text-muted">Name</dt>
+                <dd className="text-text-primary">{ps.name}</dd>
               </div>
-              <div class="sm:col-span-2">
-                <dt class="text-text-muted">UID</dt>
-                <dd class="text-text-primary font-mono text-xs">{ps.uid}</dd>
+              <div className="sm:col-span-2">
+                <dt className="text-text-muted">UID</dt>
+                <dd className="text-text-primary font-mono text-xs">
+                  {ps.uid}
+                </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Source Secret</dt>
+                <dt className="text-text-muted">Source Secret</dt>
                 <dd>
                   {ps.sourceSecretName ? (
                     sourceSecretLink ? (
                       <a
                         href={sourceSecretLink}
-                        class="text-brand hover:underline"
+                        className="text-brand hover:underline"
                       >
                         {ps.sourceSecretName}
                       </a>
                     ) : (
-                      <span class="text-text-primary">
+                      <span className="text-text-primary">
                         {ps.sourceSecretName}
                       </span>
                     )
                   ) : (
-                    <span class="text-text-muted">{EM_DASH}</span>
+                    <span className="text-text-muted">{EM_DASH}</span>
                   )}
                 </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Refresh Interval</dt>
-                <dd class="text-text-primary">
+                <dt className="text-text-muted">Refresh Interval</dt>
+                <dd className="text-text-primary">
                   {ps.refreshInterval || EM_DASH}
                 </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Last Sync</dt>
-                <dd class="text-text-primary" title={ps.lastSyncTime ?? ""}>
+                <dt className="text-text-muted">Last Sync</dt>
+                <dd className="text-text-primary" title={ps.lastSyncTime ?? ""}>
                   {ps.lastSyncTime ? timeAgo(ps.lastSyncTime) : EM_DASH}
                 </dd>
               </div>
               {ps.readyReason && (
-                <div class="sm:col-span-2">
-                  <dt class="text-text-muted">Ready Reason</dt>
-                  <dd class="text-text-primary">{ps.readyReason}</dd>
+                <div className="sm:col-span-2">
+                  <dt className="text-text-muted">Ready Reason</dt>
+                  <dd className="text-text-primary">{ps.readyReason}</dd>
                 </div>
               )}
               {showMessage && (
-                <div class="sm:col-span-2">
-                  <dt class="text-text-muted">Message</dt>
-                  <dd class="text-text-secondary">{ps.readyMessage}</dd>
+                <div className="sm:col-span-2">
+                  <dt className="text-text-muted">Message</dt>
+                  <dd className="text-text-secondary">{ps.readyMessage}</dd>
                 </div>
               )}
             </dl>
           </div>
 
-          <div class="rounded-lg border border-border-primary bg-elevated p-5">
-            <h2 class="text-sm font-semibold text-text-primary mb-3">
+          <div className="rounded-lg border border-border-primary bg-elevated p-5">
+            <h2 className="text-sm font-semibold text-text-primary mb-3">
               Push targets ({(ps.storeRefs ?? []).length})
             </h2>
             {ps.storeRefs && ps.storeRefs.length > 0 ? (
-              <ul class="text-sm space-y-1">
+              <ul className="text-sm space-y-1">
                 {ps.storeRefs.map((s) => (
                   <li key={`${s.kind}/${s.name}`}>
                     <a
                       href={storeHref(s.kind, ps.namespace, s.name)}
-                      class="text-brand hover:underline"
+                      className="text-brand hover:underline"
                     >
                       {s.kind}/{s.name}
                     </a>
@@ -208,28 +210,28 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
                 ))}
               </ul>
             ) : (
-              <p class="text-sm text-text-muted">No store references.</p>
+              <p className="text-sm text-text-muted">No store references.</p>
             )}
           </div>
         </div>
       )}
 
-      {evidenceTab.value && (
-        <div hidden={!isEvidenceTab(activeTab.value)}>
+      {evidenceTab && (
+        <div hidden={!isEvidenceTab(activeTab)}>
           <ESOEvidencePanel
             kind="pushsecrets"
             namespace={namespace}
             name={name}
             uid={ps.uid}
-            activeTab={evidenceTab.value}
+            activeTab={evidenceTab}
           />
         </div>
       )}
 
-      {activeTab.value === "chain" && (
+      {activeTab === "chain" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
+          className="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           Chain visualization coming in Phase&nbsp;I.
         </div>

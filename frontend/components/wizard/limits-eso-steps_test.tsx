@@ -131,7 +131,7 @@ test("QuotaValuesStep shows values, reports edits and shows errors pushed after 
 
 test("NamespacePresetStep lists namespaces, selects presets and shows errors pushed after mount", async () => {
   const errors = signal<Record<string, string>>({});
-  const namespaces = signal<string[]>(["default", "team-a"]);
+  const namespaces = ["default", "team-a"];
   const onUpdateField = mock();
   const onApplyPreset = mock();
   const form = {
@@ -142,15 +142,16 @@ test("NamespacePresetStep lists namespaces, selects presets and shows errors pus
     quota: quota(),
     limits: limits(),
   } as FormState;
-  const view = render(
+  const step = (list: string[]) => (
     <NamespacePresetStep
       form={form}
       errors={errors}
-      namespaces={namespaces}
+      namespaces={list}
       onUpdateField={onUpdateField}
       onApplyPreset={onApplyPreset}
-    />,
+    />
   );
+  const view = render(step(namespaces));
 
   const select = view.getByLabelText(/Namespace/) as HTMLSelectElement;
   expect(Array.from(select.options).map((o) => o.value)).toEqual([
@@ -179,7 +180,7 @@ test("NamespacePresetStep lists namespaces, selects presets and shows errors pus
 
   await act(async () => {
     errors.value = { namespace: "pick a namespace", quotaName: "name taken" };
-    namespaces.value = ["default", "team-a", "team-b"];
+    view.rerender(step([...namespaces, "team-b"]));
   });
   expect(view.getByText("pick a namespace")).toBeTruthy();
   expect(view.getByText("name taken")).toBeTruthy();

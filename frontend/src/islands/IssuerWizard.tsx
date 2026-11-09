@@ -8,7 +8,6 @@ import { DNS_LABEL_REGEX, LE_STAGING_ACME } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export type IssuerType = "selfSigned" | "acme";
 
@@ -101,7 +100,7 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<IssuerWizardForm>(initialForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const namespaces = useSignalValue(useNamespaces());
+  const [namespaces] = useNamespaces();
 
   const [previewYaml, setPreviewYaml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);

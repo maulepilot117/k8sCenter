@@ -1,23 +1,13 @@
-/** @jsxImportSource preact */
-import {
-  afterAll,
-  afterEach,
-  beforeEach,
-  expect,
-  jest,
-  mock,
-  test,
-} from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { signal } from "@preact/signals";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, afterEach, beforeEach, expect, jest, test } from "bun:test";
+import { type RefObject, useState } from "react";
 import { refreshSession, setAccessToken } from "@/lib/api.ts";
 import type { LogLine } from "@/lib/types/logs.ts";
 import {
   selectedCluster,
   selectedClusterGeneration,
 } from "@/src/lib/cluster.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * Log search per cluster (remote logs and shells U14). The explorer reads
@@ -25,10 +15,12 @@ import {
  * unavailable; the Loki live tail names the cluster it streams from and
  * resumes a retryable end on that cluster, as the pod log viewer does
  * (LogViewer_test.tsx). IS_BROWSER is stubbed to true and put back
- * afterwards.
+ * afterwards. Bun's own fetch and WebSocket are captured before happy-dom
+ * replaces them and put back in afterAll.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+const bunFetch = globalThis.fetch;
+const bunWebSocket = globalThis.WebSocket;
+setupDom({ browser: true });
 
 const { default: LogExplorer } = await import("./LogExplorer.tsx");
 const { default: LogLiveTail } = await import("./LogLiveTail.tsx");
@@ -59,9 +51,6 @@ class FakeWebSocket {
 const REMOTE = "c-remote";
 const REMOTE_GENERATION = "2026-10-01T00:00:00Z";
 
-const realWebSocket = globalThis.WebSocket;
-let originalFetch: typeof globalThis.fetch | undefined;
-let host: HTMLElement | null = null;
 let refreshCalls = 0;
 /** When set, a session refresh waits for it before answering. */
 let refreshGate: Promise<void> | null = null;
@@ -86,7 +75,6 @@ function reply(status: number, body: unknown): Response {
 beforeEach(() => {
   FakeWebSocket.instances = [];
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  originalFetch = globalThis.fetch;
   refreshCalls = 0;
   refreshGate = null;
   statusReply = { status: 200, body: { data: { detected: false } } };
@@ -113,21 +101,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-  globalThis.WebSocket = realWebSocket;
-  if (originalFetch) globalThis.fetch = originalFetch;
   setAccessToken(null);
   selectedCluster.value = "local";
   selectedClusterGeneration.value = "local";
 });
 
 afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
+  globalThis.fetch = bunFetch;
+  globalThis.WebSocket = bunWebSocket;
 });
 
 const settle = () =>
@@ -147,31 +128,26 @@ function selectRemote() {
   selectedClusterGeneration.value = REMOTE_GENERATION;
 }
 
-function mount(vnode: preact.JSX.Element) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(vnode, host as HTMLElement));
-}
-
 function text(): string {
-  return host?.textContent ?? "";
+  return document.body.textContent ?? "";
 }
 
 function byTestId(id: string): Element | null {
-  return host?.querySelector(`[data-testid="${id}"]`) ?? null;
+  return document.querySelector(`[data-testid="${id}"]`);
 }
 
 function buttonNamed(name: string): HTMLButtonElement | undefined {
-  return Array.from(host?.querySelectorAll("button") ?? []).find(
+  return Array.from(document.querySelectorAll("button")).find(
     (b) => b.textContent === name,
   );
 }
 
 // --- The explorer ---
 
-async function mountExplorer() {
-  mount(<LogExplorer />);
+async function mountExplorer(): Promise<() => void> {
+  const { unmount } = render(<LogExplorer />);
   await settle();
+  return unmount;
 }
 
 const unavailable = (reason: string) => ({
@@ -201,14 +177,12 @@ test("each reason Loki is unavailable on a remote cluster has its own copy", asy
   const seen = new Map<string, string>();
   for (const reason of reasons) {
     statusReply = unavailable(reason);
-    await mountExplorer();
+    const unmount = await mountExplorer();
     const shown = byTestId("loki-unavailable")?.textContent ?? "";
     expect(shown).toContain("prod-east");
     expect(shown).not.toContain("server wording");
     seen.set(reason, shown);
-    act(() => render(null, host as HTMLElement));
-    host?.remove();
-    host = null;
+    act(() => unmount());
   }
   expect(new Set(seen.values()).size).toBe(reasons.length);
   expect(seen.get("loki_not_found")).toContain("Loki Not Found");
@@ -322,12 +296,39 @@ test("a query refused for a reason shows that reason's copy, not the server text
 
 // --- The live tail ---
 
-function tailProps() {
+/** What a test does to, and reads from, the tail the explorer would drive. */
+interface TailControls {
+  setActive: (active: boolean) => void;
+  setQuery: (query: string) => void;
+  lines: LogLine[];
+}
+
+/** Owns the live tail's props the way the explorer does. */
+function TailHost({ controls }: { controls: RefObject<TailControls | null> }) {
+  const [active, setActive] = useState(true);
+  const [query, setQuery] = useState('{app="web"}');
+  const [lines, setLines] = useState<LogLine[]>([]);
+  controls.current = { setActive, setQuery, lines };
+  return (
+    <LogLiveTail
+      active={active}
+      query={query}
+      namespace="default"
+      lines={lines}
+      setLines={setLines}
+    />
+  );
+}
+
+/** Mounts a tail; the returned object reads the host's latest state. */
+function mountTail() {
+  const ref: { current: TailControls | null } = { current: null };
+  render(<TailHost controls={ref} />);
+  const latest = () => ref.current as TailControls;
   return {
-    active: signal(true),
-    query: signal('{app="web"}'),
-    namespace: signal("default"),
-    lines: signal<LogLine[]>([]),
+    setActive: (active: boolean) => act(() => latest().setActive(active)),
+    setQuery: (query: string) => act(() => latest().setQuery(query)),
+    lines: () => latest().lines,
   };
 }
 
@@ -370,13 +371,13 @@ const T3 = "1762300800000000003";
 
 test("the live tail badge names the cluster the session opened on", async () => {
   selectRemote();
-  mount(<LogLiveTail {...tailProps()} />);
+  mountTail();
   await settle();
   expect(byTestId("session-cluster-badge")?.textContent).toBe("On prod-east");
 });
 
 test("the live tail badge names the local cluster", async () => {
-  mount(<LogLiveTail {...tailProps()} />);
+  mountTail();
   await settle();
   expect(byTestId("session-cluster-badge")?.textContent).toBe(
     "On the local cluster",
@@ -387,8 +388,7 @@ test("a lost Loki connection resumes on the pinned cluster from the last line sh
   selectRemote();
   jest.useFakeTimers();
   try {
-    const props = tailProps();
-    mount(<LogLiveTail {...props} />);
+    const tail = mountTail();
     const first = openLatest();
     // The first subscribe asks for no start.
     expect(first.sent[1]).toEqual({
@@ -430,7 +430,7 @@ test("a lost Loki connection resumes on the pinned cluster from the last line sh
       [T2, "two"],
       [T3, "three"],
     ]);
-    expect(props.lines.value.map((l) => l.line)).toEqual([
+    expect(tail.lines().map((l) => l.line)).toEqual([
       "one",
       "two",
       "--- reconnected ---",
@@ -445,7 +445,7 @@ test("a lost Loki connection resumes on the pinned cluster from the last line sh
 test("an expired token is refreshed before the tail resumes", async () => {
   jest.useFakeTimers();
   try {
-    mount(<LogLiveTail {...tailProps()} />);
+    mountTail();
     const first = openLatest();
     deliver(first, { type: "subscribed" });
     deliver(first, { type: "error", reason: "token_expired", retryable: true });
@@ -462,7 +462,7 @@ test("an expired token is refreshed before the tail resumes", async () => {
 test("a cluster with no Loki ends the tail with its copy and no reconnect", async () => {
   jest.useFakeTimers();
   try {
-    mount(<LogLiveTail {...tailProps()} />);
+    mountTail();
     const ws = openLatest();
     deliver(ws, {
       type: "error",
@@ -484,7 +484,7 @@ test("a cluster with no Loki ends the tail with its copy and no reconnect", asyn
 test("a resume whose socket closes before subscribing counts as a failed try", async () => {
   jest.useFakeTimers();
   try {
-    mount(<LogLiveTail {...tailProps()} />);
+    mountTail();
     const first = openLatest();
     deliver(first, { type: "subscribed" });
     deliver(first, {
@@ -504,7 +504,7 @@ test("a resume whose socket closes before subscribing counts as a failed try", a
 test("three failed tries stop and show the end, and Reconnect starts over", async () => {
   jest.useFakeTimers();
   try {
-    mount(<LogLiveTail {...tailProps()} />);
+    mountTail();
     let ws = openLatest();
     deliver(ws, { type: "subscribed" });
     const end = { type: "error", reason: "loki_unreachable", retryable: true };
@@ -536,14 +536,11 @@ test("three failed tries stop and show the end, and Reconnect starts over", asyn
 test("a pending resume opens nothing once the tail is stopped", async () => {
   jest.useFakeTimers();
   try {
-    const props = tailProps();
-    mount(<LogLiveTail {...props} />);
+    const tail = mountTail();
     const ws = openLatest();
     deliver(ws, { type: "subscribed" });
     deliver(ws, { type: "error", reason: "loki_unreachable", retryable: true });
-    act(() => {
-      props.active.value = false;
-    });
+    tail.setActive(false);
     const before = FakeWebSocket.instances.length;
     jest.advanceTimersByTime(30_000);
     await flush();
@@ -556,7 +553,7 @@ test("a pending resume opens nothing once the tail is stopped", async () => {
 test("a Loki that subscribes and then drops at once still runs out of tries", async () => {
   jest.useFakeTimers();
   try {
-    mount(<LogLiveTail {...tailProps()} />);
+    mountTail();
     let ws = openLatest();
     const end = { type: "error", reason: "loki_unreachable", retryable: true };
     // Each attempt confirms the subscription and then ends before any line.
@@ -583,7 +580,7 @@ test("a Loki that subscribes and then drops at once still runs out of tries", as
 test("a stream that carried lines earns a fresh set of tries", async () => {
   jest.useFakeTimers();
   try {
-    mount(<LogLiveTail {...tailProps()} />);
+    mountTail();
     let ws = openLatest();
     const end = { type: "error", reason: "loki_unreachable", retryable: true };
     deliver(ws, { type: "subscribed" });
@@ -606,8 +603,7 @@ test("a resume waiting on a session refresh opens nothing once the tail is stopp
     refreshGate = new Promise<void>((r) => {
       release = r;
     });
-    const props = tailProps();
-    mount(<LogLiveTail {...props} />);
+    const tail = mountTail();
     const ws = openLatest();
     deliver(ws, { type: "subscribed" });
     deliver(ws, { type: "error", reason: "token_expired", retryable: true });
@@ -616,9 +612,7 @@ test("a resume waiting on a session refresh opens nothing once the tail is stopp
     // The backoff has fired and the resume is waiting on the refresh.
     expect(refreshCalls).toBe(1);
     const before = FakeWebSocket.instances.length;
-    act(() => {
-      props.active.value = false;
-    });
+    tail.setActive(false);
     release();
     await flush();
     jest.advanceTimersByTime(30_000);
@@ -632,7 +626,7 @@ test("a resume waiting on a session refresh opens nothing once the tail is stopp
 test("a resume with no session left shows it and does not retry", async () => {
   jest.useFakeTimers();
   try {
-    mount(<LogLiveTail {...tailProps()} />);
+    mountTail();
     const first = openLatest();
     deliver(first, { type: "subscribed" });
     deliver(first, {
@@ -656,14 +650,11 @@ test("a resume with no session left shows it and does not retry", async () => {
 });
 
 test("a new query starts a fresh tail with no start", async () => {
-  const props = tailProps();
-  mount(<LogLiveTail {...props} />);
+  const tail = mountTail();
   const first = openLatest();
   deliver(first, { type: "subscribed" });
   deliverEntries(first, [[T1, "one"]]);
-  act(() => {
-    props.query.value = '{app="api"}';
-  });
+  tail.setQuery('{app="api"}');
   const second = openLatest();
   expect(second).not.toBe(first);
   expect(second.sent[1]).toEqual({
@@ -682,7 +673,7 @@ test("a tail opened during the startup refresh authenticates once it lands", asy
   });
   const boot = refreshSession();
 
-  mount(<LogLiveTail {...tailProps()} />);
+  mountTail();
   const ws = openLatest();
   await settle();
   expect(ws.sent).toEqual([]);
@@ -692,4 +683,41 @@ test("a tail opened during the startup refresh authenticates once it lands", asy
   await settle();
   expect(ws.sent[0]).toMatchObject({ type: "auth", token: "fresh-token" });
   expect(ws.sent[1]).toMatchObject({ type: "subscribe" });
+});
+
+test("lines that arrive after the reader scrolled up do not pull the view down", async () => {
+  const realRaf = globalThis.requestAnimationFrame;
+  let frames = 0;
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+    frames++;
+    cb(0);
+    return 0;
+  }) as typeof requestAnimationFrame;
+  try {
+    mountTail();
+    const ws = openLatest();
+    deliver(ws, { type: "subscribed" });
+    deliverEntries(ws, [[T1, "one"]]);
+    // Following the tail at the bottom schedules a scroll for each batch.
+    expect(frames).toBe(1);
+
+    const scroller = document.querySelector(".overflow-y-auto") as HTMLElement;
+    Object.defineProperty(scroller, "scrollHeight", { value: 1000 });
+    Object.defineProperty(scroller, "clientHeight", { value: 100 });
+    scroller.scrollTop = 0;
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(buttonNamed("Resume scroll")).toBeDefined();
+
+    // The socket handler was registered before the scroll; it must see it.
+    deliverEntries(ws, [[T2, "two"]]);
+    expect(frames).toBe(1);
+
+    act(() => buttonNamed("Resume scroll")?.click());
+    deliverEntries(ws, [[T3, "three"]]);
+    expect(frames).toBe(2);
+  } finally {
+    globalThis.requestAnimationFrame = realRaf;
+  }
 });

@@ -1,8 +1,5 @@
-// Render reads useYamlApply's signals with a bare `.value`, which re-renders
-// only once @preact/signals has patched Preact; nothing else this island
-// imports loads it any more.
-import "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect } from "react";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
 import { ValidationResults } from "@/components/ui/ValidationResults.tsx";
@@ -15,6 +12,7 @@ import { singleSecretStoreHref } from "@/lib/secretstore-template-nav.ts";
 import { type ApplyResponse, useYamlApply } from "@/lib/yaml-apply.ts";
 import YamlEditor from "@/src/islands/YamlEditor.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface Props {
   /**
@@ -46,6 +44,13 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
     onApplySuccess: (res) => navigateOnSingleSecretStore(res),
   });
 
+  const yamlText = useSignalValue(yamlContent);
+  const applyingNow = useSignalValue(applying);
+  const validatingNow = useSignalValue(validating);
+  const errorText = useSignalValue(error);
+  const resultNow = useSignalValue(result);
+  const previewNow = useSignalValue(preview);
+
   useEffect(() => {
     if (!IS_BROWSER) return;
     document.title = template
@@ -58,19 +63,19 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
 
   if (!template) {
     return (
-      <div class="rounded-md border border-border-primary bg-surface p-6">
-        <p class="text-sm text-text-secondary">
+      <div className="rounded-md border border-border-primary bg-surface p-6">
+        <p className="text-sm text-text-secondary">
           No template selected. Pick a provider from the{" "}
           <a
             href="/external-secrets/stores/new-from-template"
-            class="text-accent hover:underline"
+            className="text-accent hover:underline"
           >
             template gallery
           </a>{" "}
           or use the{" "}
           <a
             href="/external-secrets/stores/new"
-            class="text-accent hover:underline"
+            className="text-accent hover:underline"
           >
             guided wizard
           </a>{" "}
@@ -80,69 +85,69 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
     );
   }
 
-  const isWorking = applying.value || validating.value;
+  const isWorking = applyingNow || validatingNow;
 
   return (
-    <div class="space-y-4">
+    <div className="space-y-4">
       <header>
-        <h1 class="text-xl font-semibold text-text-primary">
+        <h1 className="text-xl font-semibold text-text-primary">
           Create {template.displayName} SecretStore
         </h1>
-        <p class="mt-1 text-sm text-text-muted">{template.notes}</p>
-        <p class="mt-2 text-sm text-text-muted">
+        <p className="mt-1 text-sm text-text-muted">{template.notes}</p>
+        <p className="mt-2 text-sm text-text-muted">
           Schema reference:{" "}
           <a
             href={template.docsURL}
             target="_blank"
             rel="noopener noreferrer"
-            class="text-accent hover:underline"
+            className="text-accent hover:underline"
           >
             {template.docsURL}
           </a>
         </p>
       </header>
 
-      <div class="rounded-md border border-warning/30 bg-warning/10 p-3">
-        <p class="text-sm text-text-primary">
-          Fill every <code class="font-mono text-xs"># REPLACE:</code> marker
-          before applying. Templates are pre-filled with the field shape ESO
-          expects, but the placeholder values will be rejected by the cluster
-          API.
+      <div className="rounded-md border border-warning/30 bg-warning/10 p-3">
+        <p className="text-sm text-text-primary">
+          Fill every <code className="font-mono text-xs"># REPLACE:</code>{" "}
+          marker before applying. Templates are pre-filled with the field shape
+          ESO expects, but the placeholder values will be rejected by the
+          cluster API.
         </p>
       </div>
 
-      {error.value && <ErrorBanner message={error.value} />}
+      {errorText && <ErrorBanner message={errorText} />}
 
-      <div class="flex items-center justify-between">
+      <div className="flex items-center justify-between">
         <a
           href="/external-secrets/stores"
-          class="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface"
         >
           Cancel
         </a>
-        <div class="flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={handleValidate}
             disabled={isWorking}
-            class="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {validating.value ? "Validating..." : "Validate"}
+            {validatingNow ? "Validating..." : "Validate"}
           </button>
           <button
             type="button"
             onClick={handleApply}
             disabled={isWorking}
-            class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-base hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-base hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {applying.value ? "Applying..." : "Apply"}
+            {applyingNow ? "Applying..." : "Apply"}
           </button>
         </div>
       </div>
 
-      <div class="rounded-lg border border-border-primary bg-surface">
+      <div className="rounded-lg border border-border-primary bg-surface">
         <YamlEditor
-          value={yamlContent.value}
+          value={yamlText}
           onChange={(v) => {
             if (v === yamlContent.value) return;
             yamlContent.value = v;
@@ -154,16 +159,14 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
         />
       </div>
 
-      {(applying.value || validating.value) && (
-        <div class="flex justify-center py-4">
+      {isWorking && (
+        <div className="flex justify-center py-4">
           <LoadingSpinner />
         </div>
       )}
 
-      {preview.value && !result.value && (
-        <ValidationResults response={preview.value} />
-      )}
-      {result.value && <ApplyResultPanel response={result.value} />}
+      {previewNow && !resultNow && <ValidationResults response={previewNow} />}
+      {resultNow && <ApplyResultPanel response={resultNow} />}
     </div>
   );
 }
@@ -200,27 +203,27 @@ function ApplyResultPanel({ response }: { response: ApplyResponse }) {
   if (summary.failed > 0) summaryParts.push(`${summary.failed} failed`);
 
   return (
-    <div class={`rounded-md border ${borderColor} ${bgColor} p-4`}>
-      <p class={`text-sm font-medium ${textColor}`}>
+    <div className={`rounded-md border ${borderColor} ${bgColor} p-4`}>
+      <p className={`text-sm font-medium ${textColor}`}>
         {summary.total} resource{summary.total !== 1 ? "s" : ""} processed:{" "}
         {summaryParts.join(", ")}
       </p>
       {results.length > 0 && (
-        <ul class="mt-3 space-y-1 text-sm">
+        <ul className="mt-3 space-y-1 text-sm">
           {results.map((r) => (
             <li
               key={`${r.index}-${r.kind}-${r.name}`}
-              class="flex items-baseline gap-2"
+              className="flex items-baseline gap-2"
             >
-              <span class="font-mono text-xs text-text-muted">
+              <span className="font-mono text-xs text-text-muted">
                 {r.kind}
                 {r.namespace ? `/${r.namespace}` : ""}/{r.name}
               </span>
               {r.action === "failed" ? (
-                <span class="text-danger">failed: {r.error}</span>
+                <span className="text-danger">failed: {r.error}</span>
               ) : (
                 <span
-                  class={
+                  className={
                     r.action === "created"
                       ? "text-success"
                       : r.action === "configured"

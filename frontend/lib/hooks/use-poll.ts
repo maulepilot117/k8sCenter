@@ -1,9 +1,7 @@
-import type { Signal } from "@preact/signals-core";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { failureOf } from "@/lib/networking-state.ts";
 import { hasDom } from "@/src/lib/has-dom.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
 interface UsePollOptions<T> {
@@ -22,19 +20,19 @@ export interface PollFailure {
 }
 
 interface UsePollResult<T> {
-  data: Signal<T | null>;
-  loading: Signal<boolean>;
-  error: Signal<string | null>;
+  data: T | null;
+  loading: boolean;
+  error: string | null;
   /**
    * Status and reason of the last failed fetch, or null after a success or
    * for a failure with no HTTP response. Islands map it to a state with
    * lib/networking-state.ts rather than parsing the message.
    */
-  failure: Signal<PollFailure | null>;
+  failure: PollFailure | null;
   /** Trigger an immediate refetch outside the polling cycle. */
   refetch: () => Promise<void>;
   /** Timestamp of the last successful fetch. */
-  lastFetchedAt: Signal<Date | null>;
+  lastFetchedAt: Date | null;
 }
 
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -50,11 +48,11 @@ export function usePoll<T>(
   url: string,
   opts: UsePollOptions<T>,
 ): UsePollResult<T> {
-  const data = useSignal<T | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const failure = useSignal<PollFailure | null>(null);
-  const lastFetchedAt = useSignal<Date | null>(null);
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<PollFailure | null>(null);
+  const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null);
   const intervalRef = useRef<number | null>(null);
   const failureCount = useRef(0);
   const stoppedRef = useRef(false);
@@ -84,11 +82,11 @@ export function usePoll<T>(
     const doFetch = async () => {
       try {
         const resp = await apiGet<T>(url);
-        data.value = resp.data;
-        error.value = null;
-        failure.value = null;
+        setData(resp.data);
+        setError(null);
+        setFailure(null);
         failureCount.current = 0;
-        lastFetchedAt.value = new Date();
+        setLastFetchedAt(new Date());
 
         // Check if polling should continue
         const shouldContinue = shouldContinueRef.current;
@@ -106,9 +104,8 @@ export function usePoll<T>(
           startPolling();
         }
       } catch (err) {
-        error.value =
-          err instanceof Error ? err.message : "Failed to fetch data";
-        failure.value = failureOf(err);
+        setError(err instanceof Error ? err.message : "Failed to fetch data");
+        setFailure(failureOf(err));
         failureCount.current++;
 
         // A 403 is final: stop, and do not resume on visibility change.
@@ -127,7 +124,7 @@ export function usePoll<T>(
           }
         }
       } finally {
-        loading.value = false;
+        setLoading(false);
       }
     };
 
@@ -161,20 +158,11 @@ export function usePoll<T>(
       }
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [
-    url,
-    opts.interval,
-    opts.enabled,
-    data,
-    loading,
-    error,
-    failure,
-    lastFetchedAt,
-  ]);
+  }, [url, opts.interval, opts.enabled]);
 
-  const refetch = async () => {
+  const refetch = useCallback(async () => {
     if (doFetchRef.current) await doFetchRef.current();
-  };
+  }, []);
 
   return { data, loading, error, failure, refetch, lastFetchedAt };
 }

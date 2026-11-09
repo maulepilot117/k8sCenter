@@ -1,9 +1,7 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * Compliance snapshots are recorded for the local cluster only, so under a
@@ -11,33 +9,19 @@ import { setAccessToken } from "@/lib/api.ts";
  * (#530). The trend card must say that, not report a failed read with a Retry
  * that can never succeed, and must keep any other failure an error.
  *
- * The island fetches only when `IS_BROWSER` is true, which is false under
- * `bun test`; this file stubs it for its own island and restores it after,
- * as source-coverage-pages_test.tsx does.
+ * The island fetches only when `IS_BROWSER` is true, so this file sets it.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+setupDom({ browser: true });
 
 const { default: ComplianceTrendChart } = await import(
   "./ComplianceTrendChart.tsx"
 );
 
-afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
-});
-
-let host: HTMLElement | null = null;
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => setAccessToken("test-token"));
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   globalThis.fetch = originalFetch;
   setAccessToken(null);
 });
@@ -52,16 +36,14 @@ function serve(status: number, body: unknown) {
     )) as unknown as typeof globalThis.fetch;
 }
 
-async function mountUntil(text: string): Promise<HTMLElement> {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<ComplianceTrendChart />, host as HTMLElement));
-  for (let i = 0; i < 50 && !host.textContent?.includes(text); i++) {
+async function mountUntil(text: string): Promise<Element> {
+  const { container } = render(<ComplianceTrendChart />);
+  for (let i = 0; i < 50 && !container.textContent?.includes(text); i++) {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 5));
     });
   }
-  return host;
+  return container;
 }
 
 test("a remote cluster's refusal says history is local-only, with no retry", async () => {
@@ -279,4 +261,30 @@ test("trend start is the latest identity change, else the first point", () => {
       {},
     ]),
   ).toBe(3);
+});
+
+test("choosing a range refetches that many days", async () => {
+  const urls: string[] = [];
+  globalThis.fetch = ((url: unknown) => {
+    urls.push(String(url));
+    return Promise.resolve(
+      new Response(JSON.stringify({ data: [pt(today(), 70)], gaps: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  }) as unknown as typeof globalThis.fetch;
+  const root = await mountUntil("Current:");
+  expect(urls.at(-1)).toContain("days=30");
+
+  const sevenDays = [...root.querySelectorAll("button")].find(
+    (b) => b.textContent === "7d",
+  ) as HTMLButtonElement;
+  await act(async () => {
+    fireEvent.click(sevenDays);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  expect(urls.at(-1)).toContain("days=7");
+  expect(sevenDays.className).toContain("text-brand");
 });

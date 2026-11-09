@@ -11,7 +11,6 @@ import { initialNamespace } from "@/src/lib/namespace.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface SubjectRow {
   kind: "User" | "Group" | "ServiceAccount";
@@ -71,8 +70,7 @@ export default function RoleBindingWizard({
   const isClient = useIsClient();
 
   // Data for dropdowns
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList] = useNamespaces();
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [clusterRoles, setClusterRoles] = useState<RoleItem[]>([]);
   const [localUsers, setLocalUsers] = useState<LocalUser[]>([]);

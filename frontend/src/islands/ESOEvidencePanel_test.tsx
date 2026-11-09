@@ -1,16 +1,6 @@
-/** @jsxImportSource preact */
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  expect,
-  type Mock,
-  spyOn,
-  test,
-} from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
+import type { ReactElement } from "react";
 import { ApiError } from "@/lib/api.ts";
 import { esoApi } from "@/lib/eso-api.ts";
 import type {
@@ -19,7 +9,7 @@ import type {
   HistoryPage,
 } from "@/lib/eso-types.ts";
 import type { APIResponse } from "@/lib/k8s-types.ts";
-import ESOEvidencePanel from "./ESOEvidencePanel.tsx";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * Effect-level coverage for the evidence panel: the lazy loads, aborts and
@@ -32,8 +22,8 @@ import ESOEvidencePanel from "./ESOEvidencePanel.tsx";
  * rest of the suite keeps running without browser globals.
  */
 
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
+setupDom({ browser: true });
+const { default: ESOEvidencePanel } = await import("./ESOEvidencePanel.tsx");
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -82,12 +72,12 @@ function stub<T>(
 }
 
 let host: HTMLElement;
+let view: ReturnType<typeof render>;
 const spies: Array<{ mockRestore: () => void }> = [];
 
-function mount(vnode: preact.VNode) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(vnode, host));
+function mount(vnode: ReactElement) {
+  view = render(vnode);
+  host = view.container as HTMLElement;
 }
 
 async function settle(fn: () => void) {
@@ -98,16 +88,12 @@ async function settle(fn: () => void) {
 }
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host));
-    host.remove();
-  }
   for (const s of spies.splice(0)) s.mockRestore();
 });
 
 function eventsFor(
   uid: string,
-  message = "EVENT_FOR_" + uid,
+  message = `EVENT_FOR_${uid}`,
 ): APIResponse<EvidenceEventsResponse> {
   return {
     data: {
@@ -199,17 +185,14 @@ test("a response for the previous target is aborted and never rendered", async (
   expect(events.calls.length).toBe(1);
 
   // The object is replaced while the first request is still in flight.
-  act(() =>
-    render(
-      <ESOEvidencePanel
-        kind="externalsecrets"
-        namespace="apps"
-        name="db-creds"
-        uid="uid-2"
-        activeTab="events"
-      />,
-      host,
-    ),
+  view.rerender(
+    <ESOEvidencePanel
+      kind="externalsecrets"
+      namespace="apps"
+      name="db-creds"
+      uid="uid-2"
+      activeTab="events"
+    />,
   );
   expect(events.calls[0].signal?.aborted).toBe(true);
   expect(events.calls.length).toBe(2);
@@ -279,7 +262,7 @@ test("unmounting aborts in-flight requests", () => {
       activeTab="events"
     />,
   );
-  act(() => render(null, host));
+  act(() => view.unmount());
   expect(events.calls[0].signal?.aborted).toBe(true);
 });
 
@@ -313,17 +296,14 @@ test("forbidden, empty and loaded each render their own state", async () => {
   expect(stateOf()).toBe("forbidden");
   expect(host.textContent).toContain("`list events` in namespace apps");
 
-  act(() =>
-    render(
-      <ESOEvidencePanel
-        kind="externalsecrets"
-        namespace="apps"
-        name="b"
-        uid="uid-b"
-        activeTab="events"
-      />,
-      host,
-    ),
+  view.rerender(
+    <ESOEvidencePanel
+      kind="externalsecrets"
+      namespace="apps"
+      name="b"
+      uid="uid-b"
+      activeTab="events"
+    />,
   );
   await settle(() =>
     events.calls[1].d.resolve({
@@ -416,4 +396,70 @@ test("Load more appends the next page; a failed page keeps the rows already show
   expect(host.querySelectorAll("li").length).toBe(2);
   expect(stateOf()).toBe("history_unavailable");
   expect(loadMore().disabled).toBe(false); // the cursor is kept, so it can retry
+});
+
+// --- Switching tabs and targets ----------------------------------------------------------
+
+test("a loaded tab keeps its result when another tab is opened and the first is reopened", async () => {
+  const yaml = stub<string>("exportEvidenceYaml");
+  const events = stub<EvidenceEventsResponse>("getEvidenceEvents");
+  spies.push(yaml.spy, events.spy);
+
+  mount(
+    <ESOEvidencePanel
+      kind="externalsecrets"
+      namespace="apps"
+      name="db-creds"
+      uid="uid-1"
+    />,
+  );
+  await settle(() => yaml.calls[0].d.resolve({ data: "kind: ExternalSecret" }));
+
+  const tab = (label: string) =>
+    [...host.querySelectorAll('[role="tab"]')].find(
+      (t) => t.textContent === label,
+    ) as HTMLButtonElement;
+
+  act(() => tab("Events").click());
+  expect(events.calls.length).toBe(1);
+  await settle(() => events.calls[0].d.resolve(eventsFor("uid-1")));
+  expect(host.textContent).toContain("EVENT_FOR_uid-1");
+
+  act(() => tab("YAML").click());
+  expect(host.querySelector("pre")?.textContent).toBe("kind: ExternalSecret");
+  act(() => tab("Events").click());
+  expect(host.textContent).toContain("EVENT_FOR_uid-1");
+  expect(yaml.calls.length).toBe(1);
+  expect(events.calls.length).toBe(1);
+});
+
+test("a new target reloads the shown tab even when the old target's result had loaded", async () => {
+  const events = stub<EvidenceEventsResponse>("getEvidenceEvents");
+  spies.push(events.spy);
+
+  mount(
+    <ESOEvidencePanel
+      kind="externalsecrets"
+      namespace="apps"
+      name="db-creds"
+      uid="uid-1"
+      activeTab="events"
+    />,
+  );
+  await settle(() => events.calls[0].d.resolve(eventsFor("uid-1")));
+  expect(host.textContent).toContain("EVENT_FOR_uid-1");
+
+  view.rerender(
+    <ESOEvidencePanel
+      kind="externalsecrets"
+      namespace="apps"
+      name="db-creds"
+      uid="uid-2"
+      activeTab="events"
+    />,
+  );
+  expect(events.calls.length).toBe(2);
+  expect(host.textContent).not.toContain("EVENT_FOR_uid-1");
+  await settle(() => events.calls[1].d.resolve(eventsFor("uid-2")));
+  expect(host.textContent).toContain("EVENT_FOR_uid-2");
 });

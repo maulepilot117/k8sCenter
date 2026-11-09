@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import DetailShell from "@/components/k8s/DetailShell.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
@@ -20,6 +20,7 @@ import type {
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 const GENERATOR_TYPES = [
   "list",
@@ -63,14 +64,14 @@ function AppSetIcon() {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="1.5"
-      class="w-5 h-5"
+      strokeWidth="1.5"
+      className="w-5 h-5"
       style={{ color: "var(--accent)" }}
       aria-hidden="true"
     >
       <path
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        strokeLinecap="round"
+        strokeLinejoin="round"
         d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4m0 0h18"
       />
     </svg>
@@ -78,34 +79,37 @@ function AppSetIcon() {
 }
 
 export default function GitOpsAppSetDetail({ id }: { id: string }) {
-  const detail = useSignal<AppSetDetail | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const refreshing = useSignal(false);
-  const actionInFlight = useSignal(false);
-  const expandedGenerators = useSignal<Record<number, boolean>>({});
-  const activeTab = useSignal("generators");
+  const isClient = useIsClient();
+  const [detail, setDetail] = useState<AppSetDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [actionInFlight, setActionInFlight] = useState(false);
+  const [expandedGenerators, setExpandedGenerators] = useState<
+    Record<number, boolean>
+  >({});
+  const [activeTab, setActiveTab] = useState("generators");
 
-  const deleteConfirmOpen = useSignal(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
       const res = await apiGet<AppSetDetail>(
         `/v1/gitops/applicationsets/${encodeURIComponent(id)}`,
       );
-      detail.value = res.data;
-      error.value = null;
+      setDetail(res.data);
+      setError(null);
     } catch {
-      error.value = "Failed to load ApplicationSet";
+      setError("Failed to load ApplicationSet");
     }
   }, [id]);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
-  }, []);
+  }, [fetchData]);
 
   useWsRefetch(
     fetchData,
@@ -114,13 +118,13 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
   );
 
   const handleRefresh = useCallback(async () => {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }, [fetchData]);
 
   const handleRefreshAction = useCallback(async () => {
-    actionInFlight.value = true;
+    setActionInFlight(true);
     try {
       const res = await apiPost<{ message: string }>(
         `/v1/gitops/applicationsets/${encodeURIComponent(id)}/refresh`,
@@ -131,12 +135,12 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
       const msg = e instanceof Error ? e.message : "Refresh failed";
       showToast(msg, "error");
     } finally {
-      actionInFlight.value = false;
+      setActionInFlight(false);
     }
   }, [id, fetchData]);
 
   const handleDelete = useCallback(async () => {
-    actionInFlight.value = true;
+    setActionInFlight(true);
     try {
       await apiDelete(`/v1/gitops/applicationsets/${encodeURIComponent(id)}`);
       showToast("ApplicationSet deleted", "success");
@@ -145,34 +149,31 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
       const msg = e instanceof Error ? e.message : "Delete failed";
       showToast(msg, "error");
     } finally {
-      actionInFlight.value = false;
-      deleteConfirmOpen.value = false;
+      setActionInFlight(false);
+      setDeleteConfirmOpen(false);
     }
   }, [id]);
 
   const toggleGenerator = useCallback((idx: number) => {
-    expandedGenerators.value = {
-      ...expandedGenerators.value,
-      [idx]: !expandedGenerators.value[idx],
-    };
+    setExpandedGenerators((prev) => ({ ...prev, [idx]: !prev[idx] }));
   }, []);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="flex justify-center py-12">
+      <div className="flex justify-center py-12">
         <Spinner className="text-brand" />
       </div>
     );
   }
 
-  if (error.value || !detail.value) {
+  if (error || !detail) {
     return (
-      <div class="p-6">
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted mb-4">
-            {error.value ?? "ApplicationSet not found"}
+      <div className="p-6">
+        <div className="text-center py-12 rounded-lg border border-border-primary bg-elevated">
+          <p className="text-text-muted mb-4">
+            {error ?? "ApplicationSet not found"}
           </p>
           <Button type="button" variant="ghost" onClick={handleRefresh}>
             Retry
@@ -182,7 +183,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
     );
   }
 
-  const { appSet, generators, conditions, applications } = detail.value;
+  const { appSet, generators, conditions, applications } = detail;
   const appList = applications ?? [];
   const isTruncated = appList.length > APP_CAP;
   const displayedApps = isTruncated ? appList.slice(0, APP_CAP) : appList;
@@ -205,7 +206,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
         type="button"
         variant="ghost"
         onClick={handleRefreshAction}
-        disabled={actionInFlight.value}
+        disabled={actionInFlight}
       >
         Refresh
       </Button>
@@ -218,9 +219,9 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
         type="button"
         variant="ghost"
         onClick={() => {
-          deleteConfirmOpen.value = true;
+          setDeleteConfirmOpen(true);
         }}
-        disabled={actionInFlight.value}
+        disabled={actionInFlight}
       >
         <span style={{ color: "var(--error)" }}>Delete</span>
       </Button>
@@ -229,9 +230,9 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
         type="button"
         variant="ghost"
         onClick={handleRefresh}
-        disabled={refreshing.value}
+        disabled={refreshing}
       >
-        {refreshing.value ? "Refreshing..." : "Reload"}
+        {refreshing ? "Refreshing..." : "Reload"}
       </Button>
     </>
   );
@@ -245,43 +246,42 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
         status={{ label: appSet.status, tone: statusToTone(appSet.status) }}
         actions={actions}
         tabs={tabs}
-        active={activeTab.value}
-        onTab={(id) => {
-          activeTab.value = id;
-        }}
+        active={activeTab}
+        onTab={setActiveTab}
       >
         {/* Generators tab */}
-        {activeTab.value === "generators" && (
-          <div class="space-y-3">
+        {activeTab === "generators" && (
+          <div className="space-y-3">
             {generators.length > 0 ? (
               generators.map((gen, idx) => {
                 const genType = detectGeneratorType(gen);
-                const isExpanded = !!expandedGenerators.value[idx];
+                const isExpanded = !!expandedGenerators[idx];
                 return (
                   <div
+                    // biome-ignore lint/suspicious/noArrayIndexKey: generators are plain objects with no id, and the expanded state is keyed by position
                     key={idx}
-                    class="rounded-lg border border-border-primary bg-elevated"
+                    className="rounded-lg border border-border-primary bg-elevated"
                   >
                     <button
                       type="button"
-                      class="w-full flex items-center justify-between px-4 py-3 text-left"
+                      className="w-full flex items-center justify-between px-4 py-3 text-left"
                       onClick={() => toggleGenerator(idx)}
                     >
-                      <span class="inline-flex items-center gap-2">
-                        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-brand/10 text-brand">
+                      <span className="inline-flex items-center gap-2">
+                        <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-brand/10 text-brand">
                           {genType}
                         </span>
-                        <span class="text-sm text-text-muted">
+                        <span className="text-sm text-text-muted">
                           Generator {idx + 1}
                         </span>
                       </span>
-                      <span class="text-text-muted text-xs">
+                      <span className="text-text-muted text-xs">
                         {isExpanded ? "Collapse" : "Expand"}
                       </span>
                     </button>
                     {isExpanded && (
-                      <div class="px-4 pb-4">
-                        <pre class="text-xs text-text-secondary bg-surface rounded p-3 overflow-x-auto">
+                      <div className="px-4 pb-4">
+                        <pre className="text-xs text-text-secondary bg-surface rounded p-3 overflow-x-auto">
                           {JSON.stringify(gen, null, 2)}
                         </pre>
                       </div>
@@ -290,38 +290,38 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
                 );
               })
             ) : (
-              <div class="text-center py-6 rounded-lg border border-border-primary bg-elevated">
-                <p class="text-text-muted">No generators defined.</p>
+              <div className="text-center py-6 rounded-lg border border-border-primary bg-elevated">
+                <p className="text-text-muted">No generators defined.</p>
               </div>
             )}
           </div>
         )}
 
         {/* Template tab */}
-        {activeTab.value === "template" && (
+        {activeTab === "template" && (
           <GlassCard>
             <h2
-              class="text-sm font-medium mb-3"
+              className="text-sm font-medium mb-3"
               style={{ color: "var(--text-muted)" }}
             >
               Template
             </h2>
-            <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
               {appSet.templateSource.repoURL && (
                 <div>
-                  <dt class="text-text-muted">Repository</dt>
-                  <dd class="text-text-primary">
+                  <dt className="text-text-muted">Repository</dt>
+                  <dd className="text-text-primary">
                     {/^https?:\/\//i.test(appSet.templateSource.repoURL) ? (
                       <a
                         href={appSet.templateSource.repoURL}
                         target="_blank"
                         rel="noopener noreferrer"
-                        class="text-brand hover:underline break-all"
+                        className="text-brand hover:underline break-all"
                       >
                         {appSet.templateSource.repoURL}
                       </a>
                     ) : (
-                      <span class="break-all">
+                      <span className="break-all">
                         {appSet.templateSource.repoURL}
                       </span>
                     )}
@@ -330,24 +330,24 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
               )}
               {appSet.templateSource.path && (
                 <div>
-                  <dt class="text-text-muted">Path</dt>
-                  <dd class="font-mono text-text-primary">
+                  <dt className="text-text-muted">Path</dt>
+                  <dd className="font-mono text-text-primary">
                     {appSet.templateSource.path}
                   </dd>
                 </div>
               )}
               {appSet.templateSource.targetRevision && (
                 <div>
-                  <dt class="text-text-muted">Target Revision</dt>
-                  <dd class="font-mono text-text-primary">
+                  <dt className="text-text-muted">Target Revision</dt>
+                  <dd className="font-mono text-text-primary">
                     {appSet.templateSource.targetRevision}
                   </dd>
                 </div>
               )}
               {appSet.templateSource.chartName && (
                 <div>
-                  <dt class="text-text-muted">Chart</dt>
-                  <dd class="text-text-primary">
+                  <dt className="text-text-muted">Chart</dt>
+                  <dd className="text-text-primary">
                     {appSet.templateSource.chartName}
                     {appSet.templateSource.chartVersion
                       ? ` v${appSet.templateSource.chartVersion}`
@@ -356,8 +356,8 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
                 </div>
               )}
               <div>
-                <dt class="text-text-muted">Destination</dt>
-                <dd class="text-text-primary">
+                <dt className="text-text-muted">Destination</dt>
+                <dd className="text-text-primary">
                   {appSet.templateDestination || "-"}
                 </dd>
               </div>
@@ -366,63 +366,63 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
         )}
 
         {/* Applications tab */}
-        {activeTab.value === "applications" && (
+        {activeTab === "applications" && (
           <div>
             {isTruncated && (
-              <p class="text-xs mb-2" style={{ color: "var(--warning)" }}>
+              <p className="text-xs mb-2" style={{ color: "var(--warning)" }}>
                 Showing first {APP_CAP} of {appList.length} applications.
               </p>
             )}
             {displayedApps.length > 0 ? (
-              <div class="overflow-x-auto rounded-lg border border-border-primary">
-                <table class="w-full text-sm">
+              <div className="overflow-x-auto rounded-lg border border-border-primary">
+                <table className="w-full text-sm">
                   <thead>
-                    <tr class="border-b border-border-primary bg-surface">
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                    <tr className="border-b border-border-primary bg-surface">
+                      <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                         Name
                       </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                      <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                         Sync
                       </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                      <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                         Health
                       </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                      <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                         Revision
                       </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                      <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                         Dest Namespace
                       </th>
                     </tr>
                   </thead>
-                  <tbody class="divide-y divide-border-subtle">
+                  <tbody className="divide-y divide-border-subtle">
                     {displayedApps.map((app: NormalizedApp) => (
                       <tr
                         key={app.id}
-                        class="hover:bg-hover/30 cursor-pointer"
+                        className="hover:bg-hover/30 cursor-pointer"
                         onClick={() => {
                           globalThis.location.href =
                             "/gitops/applications/" +
                             encodeURIComponent(app.id);
                         }}
                       >
-                        <td class="px-3 py-2">
-                          <span class="text-brand hover:underline font-medium">
+                        <td className="px-3 py-2">
+                          <span className="text-brand hover:underline font-medium">
                             {app.name}
                           </span>
                         </td>
-                        <td class="px-3 py-2">
+                        <td className="px-3 py-2">
                           <SyncStatusBadge status={app.syncStatus} />
                         </td>
-                        <td class="px-3 py-2">
+                        <td className="px-3 py-2">
                           <HealthStatusBadge status={app.healthStatus} />
                         </td>
-                        <td class="px-3 py-2 font-mono text-xs text-text-secondary">
+                        <td className="px-3 py-2 font-mono text-xs text-text-secondary">
                           {app.currentRevision
                             ? app.currentRevision.slice(0, 7)
                             : "-"}
                         </td>
-                        <td class="px-3 py-2 text-text-secondary text-xs">
+                        <td className="px-3 py-2 text-text-secondary text-xs">
                           {app.destinationNamespace || "-"}
                         </td>
                       </tr>
@@ -431,92 +431,96 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
                 </table>
               </div>
             ) : (
-              <div class="text-center py-8 rounded-lg border border-border-primary bg-elevated">
-                <p class="text-text-muted">No generated applications found.</p>
+              <div className="text-center py-8 rounded-lg border border-border-primary bg-elevated">
+                <p className="text-text-muted">
+                  No generated applications found.
+                </p>
               </div>
             )}
           </div>
         )}
 
         {/* Conditions tab */}
-        {activeTab.value === "conditions" &&
-          conditions &&
-          conditions.length > 0 && (
-            <div>
-              {hasErrorConditions && (
-                <span
-                  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium mb-3"
-                  style={{
-                    color: "var(--error)",
-                    background: "var(--error-dim)",
-                  }}
-                >
-                  errors
-                </span>
-              )}
-              <div class="overflow-x-auto rounded-lg border border-border-primary">
-                <table class="w-full text-sm">
-                  <thead>
-                    <tr class="border-b border-border-primary bg-surface">
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Type
-                      </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Status
-                      </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Message
-                      </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Reason
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-border-subtle">
-                    {conditions.map((c: AppSetCondition, i: number) => {
-                      const isError =
-                        c.type.toLowerCase().includes("error") &&
-                        c.status === "True";
-                      return (
-                        <tr key={`${c.type}-${i}`} class="hover:bg-hover/30">
-                          <td
-                            class="px-3 py-2 font-medium"
-                            style={{
-                              color: isError
-                                ? "var(--error)"
-                                : "var(--text-primary)",
-                            }}
-                          >
-                            {c.type}
-                          </td>
-                          <td
-                            class="px-3 py-2"
-                            style={{
-                              color: isError
-                                ? "var(--error)"
-                                : "var(--text-secondary)",
-                            }}
-                          >
-                            {c.status}
-                          </td>
-                          <td class="px-3 py-2 text-text-secondary max-w-md truncate">
-                            {c.message ?? "-"}
-                          </td>
-                          <td class="px-3 py-2 text-text-muted">
-                            {c.reason ?? "-"}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+        {activeTab === "conditions" && conditions && conditions.length > 0 && (
+          <div>
+            {hasErrorConditions && (
+              <span
+                className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium mb-3"
+                style={{
+                  color: "var(--error)",
+                  background: "var(--error-dim)",
+                }}
+              >
+                errors
+              </span>
+            )}
+            <div className="overflow-x-auto rounded-lg border border-border-primary">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border-primary bg-surface">
+                    <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                      Type
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                      Status
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                      Message
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                      Reason
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border-subtle">
+                  {conditions.map((c: AppSetCondition, i: number) => {
+                    const isError =
+                      c.type.toLowerCase().includes("error") &&
+                      c.status === "True";
+                    return (
+                      <tr
+                        // biome-ignore lint/suspicious/noArrayIndexKey: a condition type can repeat, so the key is the type plus position
+                        key={`${c.type}-${i}`}
+                        className="hover:bg-hover/30"
+                      >
+                        <td
+                          className="px-3 py-2 font-medium"
+                          style={{
+                            color: isError
+                              ? "var(--error)"
+                              : "var(--text-primary)",
+                          }}
+                        >
+                          {c.type}
+                        </td>
+                        <td
+                          className="px-3 py-2"
+                          style={{
+                            color: isError
+                              ? "var(--error)"
+                              : "var(--text-secondary)",
+                          }}
+                        >
+                          {c.status}
+                        </td>
+                        <td className="px-3 py-2 text-text-secondary max-w-md truncate">
+                          {c.message ?? "-"}
+                        </td>
+                        <td className="px-3 py-2 text-text-muted">
+                          {c.reason ?? "-"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          )}
+          </div>
+        )}
       </DetailShell>
 
       {/* Delete confirmation dialog — rendered outside DetailShell as a modal */}
-      {deleteConfirmOpen.value && (
+      {deleteConfirmOpen && (
         <ConfirmDialog
           title={`Delete ${appSet.name}?`}
           message={
@@ -527,10 +531,10 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
           confirmLabel="Delete"
           danger
           typeToConfirm={appSet.name}
-          loading={actionInFlight.value}
+          loading={actionInFlight}
           onConfirm={handleDelete}
           onCancel={() => {
-            deleteConfirmOpen.value = false;
+            setDeleteConfirmOpen(false);
           }}
         />
       )}

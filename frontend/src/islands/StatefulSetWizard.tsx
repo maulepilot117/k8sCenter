@@ -27,7 +27,6 @@ import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface VolumeClaimEntry {
   name: string;
@@ -100,8 +99,7 @@ export default function StatefulSetWizard({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
 
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList] = useNamespaces();
   const storageClasses = useStorageClasses();
 
   const [previewYaml, setPreviewYaml] = useState("");

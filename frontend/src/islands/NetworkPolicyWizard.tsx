@@ -14,7 +14,6 @@ import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface NPPortState {
   port: number;
@@ -141,7 +140,7 @@ export default function NetworkPolicyWizard({
   const formRef = useLatest(form);
   const stepRef = useLatest(currentStep);
 
-  const namespaces = useSignalValue(useNamespaces());
+  const [namespaces] = useNamespaces();
   useDirtyGuard(dirty);
 
   const [previewYaml, setPreviewYaml] = useState("");

@@ -1,10 +1,10 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface GrafanaDashboard {
   uid: string;
@@ -15,49 +15,50 @@ interface GrafanaDashboard {
 }
 
 export default function MonitoringDashboards() {
-  const dashboards = useSignal<GrafanaDashboard[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
+  const [dashboards, setDashboards] = useState<GrafanaDashboard[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const isClient = useIsClient();
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
-
     apiGet<GrafanaDashboard[]>("/v1/monitoring/dashboards")
       .then((res) => {
-        dashboards.value = res.data;
+        setDashboards(res.data);
       })
       .catch((err) => {
-        error.value = err.message ?? "Failed to load dashboards";
+        setError(err.message ?? "Failed to load dashboards");
       })
       .finally(() => {
-        loading.value = false;
+        setLoading(false);
       });
   }, []);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="flex items-center justify-center p-12">
+      <div className="flex items-center justify-center p-12">
         <Spinner className="text-brand" />
       </div>
     );
   }
 
-  if (error.value) {
-    return <ErrorBanner message={error.value} />;
+  if (error) {
+    return <ErrorBanner message={error} />;
   }
 
-  if (dashboards.value.length === 0) {
+  if (dashboards.length === 0) {
     return (
-      <div class="py-12 text-center text-sm text-text-muted">
-        <p class="text-lg font-medium text-text-muted">No Dashboards Found</p>
-        <p class="mt-1">
+      <div className="py-12 text-center text-sm text-text-muted">
+        <p className="text-lg font-medium text-text-muted">
+          No Dashboards Found
+        </p>
+        <p className="mt-1">
           Dashboards are provisioned when Grafana is detected and configured.
         </p>
         <a
           href="/monitoring"
-          class="mt-3 inline-block text-brand hover:underline"
+          className="mt-3 inline-block text-brand hover:underline"
         >
           Check monitoring status
         </a>
@@ -73,7 +74,7 @@ export default function MonitoringDashboards() {
         gap: "16px",
       }}
     >
-      {dashboards.value.map((d) => (
+      {dashboards.map((d) => (
         <a
           key={d.uid}
           href={`/api/v1/monitoring/grafana/proxy${d.url}?kiosk=1`}

@@ -1,6 +1,7 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 import { useAuth } from "@/lib/auth.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
@@ -30,19 +31,15 @@ const LOADING_CLASS =
  * the auth signal to hydrate client-side. The shell prevents a flash of
  * the query UI before the gate evaluates.
  */
-export default function PromQLAdminGate(props: {
-  children: ComponentChildren;
-}) {
+export default function PromQLAdminGate(props: { children: ReactNode }) {
   // Hooks must run unconditionally, so read the user before the SSR bail-out.
-  // Read through useSignalValue rather than `user.value`: the bare read only
-  // re-renders if @preact/signals has patched Preact on this page, and
-  // nothing this island imports loads it.
   const u = useSignalValue(useAuth().user);
+  const isClient = useIsClient();
 
-  if (!IS_BROWSER) {
+  if (!isClient) {
     return (
-      <div class={GATE_ROOT_CLASS}>
-        <div class={LOADING_CLASS}>Loading…</div>
+      <div className={GATE_ROOT_CLASS}>
+        <div className={LOADING_CLASS}>Loading…</div>
       </div>
     );
   }
@@ -52,8 +49,8 @@ export default function PromQLAdminGate(props: {
     // shells use the same approach. fetchCurrentUser in lib/auth fires
     // automatically; once it lands the signal updates and this re-renders.
     return (
-      <div class={GATE_ROOT_CLASS}>
-        <div class={LOADING_CLASS}>Loading…</div>
+      <div className={GATE_ROOT_CLASS}>
+        <div className={LOADING_CLASS}>Loading…</div>
       </div>
     );
   }
@@ -61,26 +58,26 @@ export default function PromQLAdminGate(props: {
   const isAdmin = (u.roles ?? []).includes("admin");
   if (!isAdmin) {
     return (
-      <div class={GATE_ROOT_CLASS}>
-        <div class="rounded-lg border border-warning/40 bg-warning/5 p-6 space-y-3">
-          <h2 class="text-base font-semibold text-text-primary">
+      <div className={GATE_ROOT_CLASS}>
+        <div className="rounded-lg border border-warning/40 bg-warning/5 p-6 space-y-3">
+          <h2 className="text-base font-semibold text-text-primary">
             Admin access required
           </h2>
-          <p class="text-sm text-text-secondary">
+          <p className="text-sm text-text-secondary">
             Raw PromQL access is reserved for cluster administrators. The
             backend rejects non-admin queries against this endpoint, and the UI
             matches that boundary.
           </p>
-          <p class="text-sm text-text-secondary">
+          <p className="text-sm text-text-secondary">
             For per-resource metrics, open the resource's detail page (Pods,
             Deployments, Nodes, etc.) and switch to the Metrics tab — those
             panels use curated, server-owned queries that respect your
             Kubernetes RBAC scope.
           </p>
-          <div class="pt-2">
+          <div className="pt-2">
             <a
               href="/"
-              class="inline-flex items-center gap-2 rounded border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary hover:bg-hover"
+              className="inline-flex items-center gap-2 rounded border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary hover:bg-hover"
             >
               Back to dashboard
             </a>
@@ -90,5 +87,5 @@ export default function PromQLAdminGate(props: {
     );
   }
 
-  return <div class={GATE_ROOT_CLASS}>{props.children}</div>;
+  return <div className={GATE_ROOT_CLASS}>{props.children}</div>;
 }

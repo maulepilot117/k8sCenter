@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { KindBadge, MeshBadge } from "@/components/ui/MeshBadges.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
@@ -7,8 +7,9 @@ import { Spinner } from "@/components/ui/Spinner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { meshApi } from "@/lib/mesh-api.ts";
 import type { RoutingResponse, TrafficRoute } from "@/lib/mesh-types.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const PAGE_SIZE = 100;
 
@@ -18,17 +19,21 @@ const PAGE_SIZE = 100;
 const WARN_KEYS = new Set(["prometheus-cross-check", "truncated"]);
 
 export default function MeshRoutingList() {
-  const routes = useSignal<TrafficRoute[]>([]);
-  const errors = useSignal<Record<string, string>>({});
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const filterMesh = useSignal<"all" | "istio" | "linkerd">("all");
-  const filterNamespace = useSignal("");
-  const search = useSignal("");
-  const page = useSignal(1);
-  const refreshing = useSignal(false);
+  const isClient = useIsClient();
+  const globalNs = useSignalValue(selectedNamespace);
+  const [routes, setRoutes] = useState<TrafficRoute[]>([]);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filterMesh, setFilterMesh] = useState<"all" | "istio" | "linkerd">(
+    "all",
+  );
+  const [filterNamespace, setFilterNamespace] = useState("");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       // Namespace filter is applied client-side as a substring match below.
       // Server-side `?namespace=` is exact-match only and would change UX;
@@ -36,45 +41,38 @@ export default function MeshRoutingList() {
       // for Phase D alongside the topology overlay.
       const res = await meshApi.routes();
       const data = res.data as RoutingResponse;
-      routes.value = Array.isArray(data.routes) ? data.routes : [];
-      errors.value = data.errors ?? {};
-      error.value = null;
+      setRoutes(Array.isArray(data.routes) ? data.routes : []);
+      setErrors(data.errors ?? {});
+      setError(null);
     } catch {
-      error.value = "Failed to load mesh routing data";
+      setError("Failed to load mesh routing data");
     }
-  }
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    fetchData().then(() => {
-      loading.value = false;
-    });
   }, []);
 
+  useEffect(() => {
+    fetchData().then(() => {
+      setLoading(false);
+    });
+  }, [fetchData]);
+
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  // Read the global namespace picker in the synchronous render path so the
-  // signal subscription triggers a re-render when the picker changes.
-  const globalNs = selectedNamespace.value;
-
-  const filtered = filterByNamespace(routes.value, globalNs).filter((r) => {
-    if (filterMesh.value !== "all" && r.mesh !== filterMesh.value) return false;
+  const filtered = filterByNamespace(routes, globalNs).filter((r) => {
+    if (filterMesh !== "all" && r.mesh !== filterMesh) return false;
     if (
-      filterNamespace.value &&
-      !(r.namespace ?? "")
-        .toLowerCase()
-        .includes(filterNamespace.value.toLowerCase())
+      filterNamespace &&
+      !(r.namespace ?? "").toLowerCase().includes(filterNamespace.toLowerCase())
     ) {
       return false;
     }
-    if (search.value) {
-      const q = search.value.toLowerCase();
+    if (search) {
+      const q = search.toLowerCase();
       return (
         r.name.toLowerCase().includes(q) ||
         (r.namespace ?? "").toLowerCase().includes(q) ||
@@ -85,20 +83,17 @@ export default function MeshRoutingList() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  // Clamp on read instead of writing to the signal during render. Filter
-  // changes already reset to page 1; this guard handles the post-refresh
-  // case where data shrinks while page.value is still on a higher page.
-  const currentPage = Math.min(page.value, totalPages);
+  const currentPage = Math.min(page, totalPages);
   const displayed = filtered.slice(
     (currentPage - 1) * PAGE_SIZE,
     currentPage * PAGE_SIZE,
   );
 
-  const istioCount = routes.value.filter((r) => r.mesh === "istio").length;
-  const linkerdCount = routes.value.filter((r) => r.mesh === "linkerd").length;
-  const totalCount = routes.value.length;
+  const istioCount = routes.filter((r) => r.mesh === "istio").length;
+  const linkerdCount = routes.filter((r) => r.mesh === "linkerd").length;
+  const totalCount = routes.length;
 
-  const errorKeys = Object.keys(errors.value);
+  const errorKeys = Object.keys(errors);
 
   return (
     <div style={{ padding: "24px" }}>
@@ -120,14 +115,14 @@ export default function MeshRoutingList() {
         >
           Mesh Routing
         </h1>
-        {!loading.value && (
+        {!loading && (
           <Button
             type="button"
             variant="ghost"
             onClick={handleRefresh}
-            disabled={refreshing.value}
+            disabled={refreshing}
           >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
+            {refreshing ? "Refreshing..." : "Refresh"}
           </Button>
         )}
       </div>
@@ -146,7 +141,7 @@ export default function MeshRoutingList() {
           match the plan and `MTLSPosture.tsx`: prometheus-cross-check /
           truncated render as warnings; pods / policies / per-CRD fetch
           failures (`istio/VirtualService`, etc.) render as errors. */}
-      {!loading.value && errorKeys.length > 0 && (
+      {!loading && errorKeys.length > 0 && (
         <div
           style={{
             marginBottom: "16px",
@@ -176,8 +171,7 @@ export default function MeshRoutingList() {
                   {isWarn ? "Notice" : "Error"}
                 </span>
                 <span style={{ color: "var(--text-primary)" }}>
-                  <span style={{ fontWeight: 600 }}>{key}:</span>{" "}
-                  {errors.value[key]}
+                  <span style={{ fontWeight: 600 }}>{key}:</span> {errors[key]}
                 </span>
               </div>
             );
@@ -186,7 +180,7 @@ export default function MeshRoutingList() {
       )}
 
       {/* Summary count strip */}
-      {!loading.value && !error.value && routes.value.length > 0 && (
+      {!loading && !error && routes.length > 0 && (
         <div
           style={{
             marginBottom: "16px",
@@ -213,10 +207,10 @@ export default function MeshRoutingList() {
       >
         <div style={{ flex: 1, maxWidth: "320px" }}>
           <SearchBar
-            value={search.value}
+            value={search}
             onInput={(v) => {
-              search.value = v;
-              page.value = 1;
+              setSearch(v);
+              setPage(1);
             }}
             placeholder="Filter by name, namespace, kind..."
           />
@@ -231,13 +225,10 @@ export default function MeshRoutingList() {
             color: "var(--text-primary)",
             fontFamily: "inherit",
           }}
-          value={filterMesh.value}
+          value={filterMesh}
           onChange={(e) => {
-            filterMesh.value = (e.target as HTMLSelectElement).value as
-              | "all"
-              | "istio"
-              | "linkerd";
-            page.value = 1;
+            setFilterMesh(e.currentTarget.value as "all" | "istio" | "linkerd");
+            setPage(1);
           }}
         >
           <option value="all">All Meshes</option>
@@ -257,10 +248,10 @@ export default function MeshRoutingList() {
             width: "144px",
           }}
           placeholder="Namespace..."
-          value={filterNamespace.value}
-          onInput={(e) => {
-            filterNamespace.value = (e.target as HTMLInputElement).value;
-            page.value = 1;
+          value={filterNamespace}
+          onChange={(e) => {
+            setFilterNamespace(e.currentTarget.value);
+            setPage(1);
           }}
         />
         <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
@@ -268,7 +259,7 @@ export default function MeshRoutingList() {
         </span>
       </div>
 
-      {loading.value && (
+      {loading && (
         <div
           style={{
             display: "flex",
@@ -280,16 +271,16 @@ export default function MeshRoutingList() {
         </div>
       )}
 
-      {error.value && (
+      {error && (
         <p
           style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
         >
-          {error.value}
+          {error}
         </p>
       )}
 
       {/* Table */}
-      {!loading.value && !error.value && filtered.length > 0 && (
+      {!loading && !error && filtered.length > 0 && (
         <div
           style={{
             borderRadius: "9px",
@@ -414,7 +405,7 @@ export default function MeshRoutingList() {
       )}
 
       {/* Pagination */}
-      {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
+      {!loading && !error && filtered.length > PAGE_SIZE && (
         <div
           style={{
             marginTop: "16px",
@@ -437,7 +428,7 @@ export default function MeshRoutingList() {
               type="button"
               variant="ghost"
               onClick={() => {
-                if (currentPage > 1) page.value = currentPage - 1;
+                if (currentPage > 1) setPage(currentPage - 1);
               }}
               disabled={currentPage <= 1}
             >
@@ -447,7 +438,7 @@ export default function MeshRoutingList() {
               type="button"
               variant="ghost"
               onClick={() => {
-                if (currentPage < totalPages) page.value = currentPage + 1;
+                if (currentPage < totalPages) setPage(currentPage + 1);
               }}
               disabled={currentPage >= totalPages}
             >
@@ -458,11 +449,11 @@ export default function MeshRoutingList() {
       )}
 
       {/* Empty states */}
-      {!loading.value && !error.value && filtered.length === 0 && (
+      {!loading && !error && filtered.length === 0 && (
         <WidgetShell>
           <div style={{ textAlign: "center", padding: "48px 24px" }}>
             <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
-              {routes.value.length === 0
+              {routes.length === 0
                 ? "No routes found. Routes will appear once a mesh is installed and resources exist."
                 : "No routes match your filters."}
             </p>
@@ -483,22 +474,22 @@ function RoutingRow({
   hostsDisplay: string;
   destCount: number;
 }) {
-  const hovered = useSignal(false);
+  const [hovered, setHovered] = useState(false);
 
   return (
     <tr
       style={{
         borderBottom: "1px solid var(--border-primary)",
         cursor: "pointer",
-        background: hovered.value
+        background: hovered
           ? "color-mix(in srgb, var(--accent) 5%, transparent)"
           : "transparent",
       }}
       onMouseEnter={() => {
-        hovered.value = true;
+        setHovered(true);
       }}
       onMouseLeave={() => {
-        hovered.value = false;
+        setHovered(false);
       }}
       onClick={() => {
         globalThis.location.href = `/networking/mesh/routing/${encodeURIComponent(r.id)}`;

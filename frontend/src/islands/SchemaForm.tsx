@@ -19,7 +19,6 @@ import YamlPreview from "@/src/islands/YamlPreview.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /** The root every return shares. Hydration keeps the server-rendered root's
  * own props, so each branch styles an inner box instead. */
@@ -344,7 +343,7 @@ export default function SchemaForm({
   // was typed, valid YAML or not; it shows the parsed spec until typing starts.
   const [specText, setSpecText] = useState<string | null>(null);
   const [resourceVersion, setResourceVersion] = useState("");
-  const namespaces = useSignalValue(useNamespaces());
+  const [namespaces] = useNamespaces();
 
   // ── Fetch CRD schema ─────────────────────────────────────────────────
 

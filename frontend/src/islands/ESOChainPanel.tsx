@@ -1,7 +1,8 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import NamespaceTopology from "@/src/islands/NamespaceTopology.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface Props {
   namespace?: string;
@@ -9,14 +10,16 @@ interface Props {
 }
 
 export default function ESOChainPanel({ namespace, focusedNodeId }: Props) {
-  const nsInput = useSignal(
-    namespace ??
+  const [nsInput, setNsInput] = useState(
+    () =>
+      namespace ??
       (selectedNamespace.value !== "all" ? selectedNamespace.value : ""),
   );
+  const isClient = useIsClient();
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const ns = (namespace ?? nsInput.value).trim();
+  const ns = (namespace ?? nsInput).trim();
   const topologyHref = ns
     ? `/observability/topology?namespace=${encodeURIComponent(
         ns,
@@ -24,22 +27,22 @@ export default function ESOChainPanel({ namespace, focusedNodeId }: Props) {
     : "/external-secrets/chain";
 
   return (
-    <div role="tabpanel" class="space-y-3">
-      <div class="flex flex-wrap items-center gap-3">
+    <div role="tabpanel" className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
         {!namespace && (
           <input
             type="text"
-            class="w-64 max-w-full rounded border border-border-primary bg-base px-3 py-1.5 text-sm text-text-primary"
+            className="w-64 max-w-full rounded border border-border-primary bg-base px-3 py-1.5 text-sm text-text-primary"
             placeholder="Namespace"
-            value={nsInput.value}
-            onInput={(e) => {
-              nsInput.value = (e.currentTarget as HTMLInputElement).value;
+            value={nsInput}
+            onChange={(e) => {
+              setNsInput(e.currentTarget.value);
             }}
           />
         )}
         <a
           href={topologyHref}
-          class="ml-auto rounded border border-border-primary px-3 py-1.5 text-sm text-text-primary hover:bg-base"
+          className="ml-auto rounded border border-border-primary px-3 py-1.5 text-sm text-text-primary hover:bg-base"
         >
           View in Topology
         </a>
@@ -54,7 +57,7 @@ export default function ESOChainPanel({ namespace, focusedNodeId }: Props) {
           minHeight={400}
         />
       ) : (
-        <div class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted">
+        <div className="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted">
           Select a namespace to inspect this ClusterSecretStore chain.
         </div>
       )}

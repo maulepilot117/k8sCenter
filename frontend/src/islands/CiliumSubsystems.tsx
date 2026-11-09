@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Card } from "@/components/ui/Card.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
@@ -8,7 +9,7 @@ import type {
 } from "@/lib/cilium-types.ts";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
 import { panelState } from "@/lib/networking-state.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -32,27 +33,28 @@ export default function CiliumSubsystems() {
       interval: 60_000,
       shouldContinuePolling: (d) => d.configured,
     });
+  const isClient = useIsClient();
 
-  if (!IS_BROWSER || loading.value) {
-    return <div class="animate-pulse h-32 bg-elevated rounded-lg" />;
+  if (!isClient || loading) {
+    return <div className="animate-pulse h-32 bg-elevated rounded-lg" />;
   }
 
-  if (error.value) {
+  if (error) {
     return (
       <Card title="Cilium Subsystems">
         <PanelStateNotice
-          state={panelState(failure.value, "Cilium subsystem status")}
+          state={panelState(failure, "Cilium subsystem status")}
           onRetry={refetch}
         />
       </Card>
     );
   }
 
-  const resp = data.value;
+  const resp = data;
   if (!resp?.configured) {
     return (
       <Card title="Cilium Subsystems" className="opacity-50">
-        <p class="text-sm text-text-muted">Subsystem data not available.</p>
+        <p className="text-sm text-text-muted">Subsystem data not available.</p>
       </Card>
     );
   }
@@ -66,23 +68,23 @@ export default function CiliumSubsystems() {
   return (
     <Card title="Cilium Subsystems">
       <SourceCoverageNotice coverage={coverage} labels={COVERAGE_LABELS} />
-      <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
         {/* Encryption */}
         <div>
-          <p class="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
+          <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
             Encryption
           </p>
           {encryption.enabled ? (
-            <div class="space-y-1.5">
-              <div class="flex justify-between text-sm">
-                <span class="text-text-muted">Mode</span>
-                <span class="font-medium text-text-primary capitalize">
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-sm">
+                <span className="text-text-muted">Mode</span>
+                <span className="font-medium text-text-primary capitalize">
                   {encryption.mode || "Unknown"}
                 </span>
               </div>
-              <div class="flex justify-between text-sm">
-                <span class="text-text-muted">Nodes</span>
-                <span class="font-mono text-text-primary">
+              <div className="flex justify-between text-sm">
+                <span className="text-text-muted">Nodes</span>
+                <span className="font-mono text-text-primary">
                   {nodesUnknown
                     ? "Not available"
                     : `${encryption.nodesEncrypted} / ${encryption.nodesTotal}`}
@@ -90,30 +92,30 @@ export default function CiliumSubsystems() {
               </div>
               {encryption.wireGuardNodes &&
                 encryption.wireGuardNodes.length > 0 && (
-                  <div class="mt-3 pt-2 border-t border-border-subtle">
-                    <p class="text-xs text-text-muted mb-1.5">
+                  <div className="mt-3 pt-2 border-t border-border-subtle">
+                    <p className="text-xs text-text-muted mb-1.5">
                       WireGuard Peers
                     </p>
-                    <div class="space-y-2">
+                    <div className="space-y-2">
                       {encryption.wireGuardNodes.map((wgn) => (
                         <div key={wgn.nodeName}>
-                          <div class="flex justify-between text-xs">
-                            <span class="font-mono text-text-secondary">
+                          <div className="flex justify-between text-xs">
+                            <span className="font-mono text-text-secondary">
                               {wgn.nodeName}
                             </span>
-                            <span class="text-text-muted">
+                            <span className="text-text-muted">
                               {wgn.peerCount} peers
                             </span>
                           </div>
                           {wgn.peers.map((peer) => (
                             <div
                               key={peer.publicKey}
-                              class="flex justify-between text-xs pl-3 mt-0.5"
+                              className="flex justify-between text-xs pl-3 mt-0.5"
                             >
-                              <span class="font-mono text-text-muted">
+                              <span className="font-mono text-text-muted">
                                 {peer.endpoint}
                               </span>
-                              <span class="text-text-muted">
+                              <span className="text-text-muted">
                                 ↓{formatBytes(peer.transferRx)} ↑
                                 {formatBytes(peer.transferTx)}
                               </span>
@@ -126,19 +128,19 @@ export default function CiliumSubsystems() {
                 )}
             </div>
           ) : (
-            <p class="text-sm text-text-muted">Disabled</p>
+            <p className="text-sm text-text-muted">Disabled</p>
           )}
         </div>
 
         {/* Service Mesh */}
         <div>
-          <p class="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
+          <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
             Service Mesh
           </p>
           {mesh.enabled ? (
-            <div class="space-y-1.5">
-              <div class="flex justify-between text-sm">
-                <span class="text-text-muted">Engine</span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-sm">
+                <span className="text-text-muted">Engine</span>
                 <StatusBadge
                   label={
                     mesh.engine.charAt(0).toUpperCase() + mesh.engine.slice(1)
@@ -147,83 +149,85 @@ export default function CiliumSubsystems() {
                 />
               </div>
               {mesh.deploymentMode && (
-                <div class="flex justify-between text-sm">
-                  <span class="text-text-muted">Mode</span>
-                  <span class="text-text-primary capitalize">
+                <div className="flex justify-between text-sm">
+                  <span className="text-text-muted">Mode</span>
+                  <span className="text-text-primary capitalize">
                     {mesh.deploymentMode}
                   </span>
                 </div>
               )}
               {mesh.totalRedirects != null && (
-                <div class="flex justify-between text-sm">
-                  <span class="text-text-muted">Redirects</span>
-                  <span class="font-mono text-text-primary">
+                <div className="flex justify-between text-sm">
+                  <span className="text-text-muted">Redirects</span>
+                  <span className="font-mono text-text-primary">
                     {mesh.totalRedirects}
                   </span>
                 </div>
               )}
             </div>
           ) : (
-            <p class="text-sm text-text-muted">Disabled</p>
+            <p className="text-sm text-text-muted">Disabled</p>
           )}
         </div>
 
         {/* ClusterMesh */}
         <div>
-          <p class="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
+          <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
             ClusterMesh
           </p>
           {clusterMesh.enabled ? (
-            <div class="space-y-1.5">
+            <div className="space-y-1.5">
               <StatusBadge label="Enabled" tone="ok" />
               {clusterMesh.remoteClusters &&
                 clusterMesh.remoteClusters.length > 0 && (
-                  <div class="mt-2 space-y-1">
+                  <div className="mt-2 space-y-1">
                     {clusterMesh.remoteClusters.map((rc) => (
                       <div
                         key={rc.name}
-                        class="flex items-center justify-between text-xs"
+                        className="flex items-center justify-between text-xs"
                       >
-                        <div class="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5">
                           <span
-                            class="w-2 h-2 rounded-full inline-block"
+                            className="w-2 h-2 rounded-full inline-block"
                             style={{
                               background: rc.connected
                                 ? "var(--success)"
                                 : "var(--error)",
                             }}
                           />
-                          <span class="font-mono text-text-secondary">
+                          <span className="font-mono text-text-secondary">
                             {rc.name}
                           </span>
                         </div>
-                        <span class="text-text-muted">{rc.numNodes} nodes</span>
+                        <span className="text-text-muted">
+                          {rc.numNodes} nodes
+                        </span>
                       </div>
                     ))}
                   </div>
                 )}
             </div>
           ) : (
-            <p class="text-sm text-text-muted">Disabled</p>
+            <p className="text-sm text-text-muted">Disabled</p>
           )}
         </div>
 
         {/* Endpoints */}
         <div>
-          <p class="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
+          <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
             Endpoints
           </p>
           {endpoints ? (
             <EndpointsSummary endpoints={endpoints} />
           ) : (
-            <p class="text-sm text-text-muted">Not available</p>
+            <p className="text-sm text-text-muted">Not available</p>
           )}
         </div>
       </div>
-      {lastFetchedAt.value && (
-        <div class="mt-4 pt-2 border-t border-border-subtle text-right">
-          <span class="text-xs text-text-muted">
-            Updated {lastFetchedAt.value.toLocaleTimeString()}
+      {lastFetchedAt && (
+        <div className="mt-4 pt-2 border-t border-border-subtle text-right">
+          <span className="text-xs text-text-muted">
+            Updated {lastFetchedAt.toLocaleTimeString()}
           </span>
         </div>
       )}
@@ -234,46 +238,46 @@ export default function CiliumSubsystems() {
 /** Endpoint counts by state, with a stacked bar. */
 function EndpointsSummary({ endpoints }: { endpoints: EndpointCounts }) {
   return (
-    <div class="space-y-1.5">
-      <div class="flex justify-between text-sm">
-        <span class="text-text-muted">Total</span>
-        <span class="font-mono font-medium text-text-primary">
+    <div className="space-y-1.5">
+      <div className="flex justify-between text-sm">
+        <span className="text-text-muted">Total</span>
+        <span className="font-mono font-medium text-text-primary">
           {endpoints.total}
         </span>
       </div>
       {/* State breakdown */}
-      <div class="flex gap-3 text-xs">
+      <div className="flex gap-3 text-xs">
         {endpoints.ready > 0 && (
-          <span class="flex items-center gap-1">
+          <span className="flex items-center gap-1">
             <span
-              class="w-2 h-2 rounded-full inline-block"
+              className="w-2 h-2 rounded-full inline-block"
               style={{ background: "var(--success)" }}
             />
             {endpoints.ready}
           </span>
         )}
         {endpoints.notReady > 0 && (
-          <span class="flex items-center gap-1">
+          <span className="flex items-center gap-1">
             <span
-              class="w-2 h-2 rounded-full inline-block"
+              className="w-2 h-2 rounded-full inline-block"
               style={{ background: "var(--warning)" }}
             />
             {endpoints.notReady}
           </span>
         )}
         {endpoints.disconnecting > 0 && (
-          <span class="flex items-center gap-1">
+          <span className="flex items-center gap-1">
             <span
-              class="w-2 h-2 rounded-full inline-block"
+              className="w-2 h-2 rounded-full inline-block"
               style={{ background: "var(--error)" }}
             />
             {endpoints.disconnecting}
           </span>
         )}
         {endpoints.waiting > 0 && (
-          <span class="flex items-center gap-1">
+          <span className="flex items-center gap-1">
             <span
-              class="w-2 h-2 rounded-full inline-block"
+              className="w-2 h-2 rounded-full inline-block"
               style={{ background: "var(--text-muted)" }}
             />
             {endpoints.waiting}
@@ -282,7 +286,7 @@ function EndpointsSummary({ endpoints }: { endpoints: EndpointCounts }) {
       </div>
       {/* Stacked bar */}
       {endpoints.total > 0 && (
-        <div class="flex h-1.5 rounded-full overflow-hidden bg-elevated mt-1">
+        <div className="flex h-1.5 rounded-full overflow-hidden bg-elevated mt-1">
           {endpoints.ready > 0 && (
             <div
               style={{

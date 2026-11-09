@@ -1,11 +1,10 @@
-import type { Signal } from "@preact/signals";
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useCallback, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost } from "@/lib/api.ts";
 import type { NotificationStatus } from "@/lib/notification-types.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /** Base interface for items managed by the notification CRUD hook. */
 interface NotificationItem {
@@ -29,20 +28,28 @@ export interface NotificationCrudConfig<T extends NotificationItem> {
 }
 
 export interface NotificationCrudResult<T extends NotificationItem> {
-  status: Signal<NotificationStatus | null>;
-  items: Signal<T[]>;
-  loading: Signal<boolean>;
-  error: Signal<string | null>;
-  search: Signal<string>;
-  page: Signal<number>;
-  refreshing: Signal<boolean>;
-  showForm: Signal<boolean>;
-  editingItem: Signal<T | null>;
-  formSubmitting: Signal<boolean>;
-  formError: Signal<string | null>;
-  deleteTarget: Signal<T | null>;
-  deleteLoading: Signal<boolean>;
-  openDropdown: Signal<string | null>;
+  status: NotificationStatus | null;
+  items: T[];
+  loading: boolean;
+  error: string | null;
+  search: string;
+  setSearch: (next: string) => void;
+  page: number;
+  setPage: (next: number) => void;
+  refreshing: boolean;
+  showForm: boolean;
+  setShowForm: (next: boolean) => void;
+  editingItem: T | null;
+  formSubmitting: boolean;
+  formSubmittingRef: { current: boolean };
+  setFormSubmitting: (next: boolean) => void;
+  formError: string | null;
+  setFormError: (next: string | null) => void;
+  deleteTarget: T | null;
+  setDeleteTarget: (next: T | null) => void;
+  deleteLoading: boolean;
+  openDropdown: string | null;
+  setOpenDropdown: (next: string | null) => void;
   fetchData: () => Promise<void>;
   handleRefresh: () => Promise<void>;
   handleSuspendToggle: (item: T) => Promise<void>;
@@ -54,80 +61,85 @@ export interface NotificationCrudResult<T extends NotificationItem> {
 export function useNotificationCrud<T extends NotificationItem>(
   config: NotificationCrudConfig<T>,
 ): NotificationCrudResult<T> {
-  const status = useSignal<NotificationStatus | null>(null);
-  const items = useSignal<T[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const search = useSignal("");
-  const page = useSignal(1);
-  const refreshing = useSignal(false);
+  const [status, setStatus] = useState<NotificationStatus | null>(null);
+  const [items, setItems] = useState<T[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const showForm = useSignal(false);
-  const editingItem = useSignal<T | null>(null);
-  const formSubmitting = useSignal(false);
-  const formError = useSignal<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editingItem, setEditingItem] = useState<T | null>(null);
+  const [formSubmitting, setFormSubmitting, formSubmittingRef] =
+    useStateRef(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
-  const deleteTarget = useSignal<T | null>(null);
-  const deleteLoading = useSignal(false);
+  const [deleteTarget, setDeleteTarget] = useState<T | null>(null);
+  const [deleteLoading, setDeleteLoading, deleteLoadingRef] =
+    useStateRef(false);
 
-  const openDropdown = useSignal<string | null>(null);
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
-  const basePath = `${config.apiBasePath}/${config.resourceKind}`;
+  const configRef = useLatest(config);
 
-  async function fetchData() {
+  // Stable: it reads the caller's latest config through the ref, so the mount
+  // fetch and the socket refetch always use the current paths and extractor.
+  const fetchData = useCallback(async () => {
+    const { apiBasePath, resourceKind, extractItems, label } =
+      configRef.current;
     try {
       const [statusRes, listRes] = await Promise.all([
-        apiGet<NotificationStatus>(`${config.apiBasePath}/status`),
-        apiGet<Record<string, unknown>>(basePath),
+        apiGet<NotificationStatus>(`${apiBasePath}/status`),
+        apiGet<Record<string, unknown>>(`${apiBasePath}/${resourceKind}`),
       ]);
-      status.value = statusRes.data;
-      items.value = config.extractItems(listRes.data);
-      error.value = null;
+      setStatus(statusRes.data);
+      setItems(extractItems(listRes.data));
+      setError(null);
     } catch {
-      error.value = `Failed to load notification ${config.label}s`;
+      setError(`Failed to load notification ${label}s`);
     }
-  }
+  }, []);
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
-  }, []);
+  }, [fetchData]);
 
   useWsRefetch(fetchData, config.wsTopics, 1000);
 
   // Close dropdown on outside click
   useEffect(() => {
-    if (!IS_BROWSER) return;
     const handler = () => {
-      openDropdown.value = null;
+      setOpenDropdown(null);
     };
     globalThis.addEventListener("click", handler);
     return () => globalThis.removeEventListener("click", handler);
   }, []);
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
   function openCreate(emptyForm: () => void) {
-    editingItem.value = null;
+    setEditingItem(null);
     emptyForm();
-    formError.value = null;
-    showForm.value = true;
+    setFormError(null);
+    setShowForm(true);
   }
 
   function openEdit(item: T, formMapper: () => void) {
-    editingItem.value = item;
+    setEditingItem(item);
     formMapper();
-    formError.value = null;
-    showForm.value = true;
+    setFormError(null);
+    setShowForm(true);
   }
 
   async function handleSuspendToggle(item: T) {
+    const basePath = `${config.apiBasePath}/${config.resourceKind}`;
     try {
       await apiPost(
         `${basePath}/${encodeURIComponent(item.namespace)}/${encodeURIComponent(
@@ -146,8 +158,9 @@ export function useNotificationCrud<T extends NotificationItem>(
   }
 
   async function handleDelete(item: T) {
-    if (deleteLoading.value) return;
-    deleteLoading.value = true;
+    if (deleteLoadingRef.current) return;
+    const basePath = `${config.apiBasePath}/${config.resourceKind}`;
+    setDeleteLoading(true);
     try {
       await apiDelete(
         `${basePath}/${encodeURIComponent(item.namespace)}/${encodeURIComponent(
@@ -155,12 +168,12 @@ export function useNotificationCrud<T extends NotificationItem>(
         )}`,
       );
       showToast(`Deleted ${item.name}`, "success");
-      deleteTarget.value = null;
+      setDeleteTarget(null);
       await fetchData();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Delete failed", "error");
     } finally {
-      deleteLoading.value = false;
+      setDeleteLoading(false);
     }
   }
 
@@ -170,15 +183,23 @@ export function useNotificationCrud<T extends NotificationItem>(
     loading,
     error,
     search,
+    setSearch,
     page,
+    setPage,
     refreshing,
     showForm,
+    setShowForm,
     editingItem,
     formSubmitting,
+    formSubmittingRef,
+    setFormSubmitting,
     formError,
+    setFormError,
     deleteTarget,
+    setDeleteTarget,
     deleteLoading,
     openDropdown,
+    setOpenDropdown,
     fetchData,
     handleRefresh,
     handleSuspendToggle,

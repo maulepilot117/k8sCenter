@@ -1,6 +1,5 @@
-import { useSignal } from "@preact/signals";
-import type { CSSProperties } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
 import {
@@ -12,8 +11,11 @@ import {
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { type PanelState, streamState } from "@/lib/networking-state.ts";
 import { currentTarget, UNKNOWN_GENERATION } from "@/src/lib/cluster.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { hasDom } from "@/src/lib/has-dom.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface FlowRecord {
   time: string;
@@ -122,17 +124,23 @@ function verdictStyle(verdict: string): CSSProperties {
 }
 
 export default function FlowViewer() {
-  const namespace = useSignal(initialNamespace());
-  const namespaces = useNamespaces();
-  const verdict = useSignal("");
-  const flows = useSignal<FlowRecord[]>([]);
-  const loading = useSignal(false);
-  const error = useSignal<string | null>(null);
-  const wsState = useSignal<
+  const isClient = useIsClient();
+  // The filters and the stream state are read by socket callbacks, timers and
+  // the animation-frame flush, so each has a ref that is current between
+  // renders.
+  const [namespace, setNamespace, namespaceRef] = useStateRef(
+    initialNamespace(),
+  );
+  const [namespaceList] = useNamespaces();
+  const [verdict, setVerdict, verdictRef] = useStateRef("");
+  const [flows, setFlows, flowsRef] = useStateRef<FlowRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [wsState, setWsState, wsStateRef] = useStateRef<
     "disconnected" | "connecting" | "live" | "reconnecting"
   >("disconnected");
   // How the live stream ended, once it will not reconnect on its own.
-  const ended = useSignal<PanelState | null>(null);
+  const [ended, setEnded] = useState<PanelState | null>(null);
 
   // Connection generation counter — prevents stale WS callbacks from clobbering state
   const wsIdRef = useRef(0);
@@ -158,35 +166,34 @@ export default function FlowViewer() {
     const batch = pendingFlows.current;
     if (batch.length === 0) return;
     pendingFlows.current = [];
-    const current = flows.value;
+    const current = flowsRef.current;
     const merged = [...batch.reverse(), ...current];
-    flows.value =
-      merged.length > MAX_FLOWS ? merged.slice(0, MAX_FLOWS) : merged;
+    setFlows(merged.length > MAX_FLOWS ? merged.slice(0, MAX_FLOWS) : merged);
   };
 
   // HTTP fallback fetch
   const fetchFlows = () => {
-    if (!IS_BROWSER) return;
-    loading.value = true;
-    error.value = null;
+    if (!hasDom()) return;
+    setLoading(true);
+    setError(null);
     let url = `/v1/networking/hubble/flows?namespace=${encodeURIComponent(
-      namespace.value,
+      namespaceRef.current,
     )}&limit=200`;
-    if (verdict.value) {
-      url += `&verdict=${encodeURIComponent(verdict.value)}`;
+    if (verdictRef.current) {
+      url += `&verdict=${encodeURIComponent(verdictRef.current)}`;
     }
     apiGet<FlowRecord[]>(url)
       .then((resp) => {
-        flows.value = Array.isArray(resp.data) ? resp.data : [];
+        setFlows(Array.isArray(resp.data) ? resp.data : []);
       })
       .catch((err: unknown) => {
         const msg =
           err instanceof Error ? err.message : "Failed to fetch flows";
-        error.value = msg;
-        flows.value = [];
+        setError(msg);
+        setFlows([]);
       })
       .finally(() => {
-        loading.value = false;
+        setLoading(false);
       });
   };
 
@@ -202,7 +209,7 @@ export default function FlowViewer() {
     const delay = RECONNECT_DELAYS_MS[triesRef.current];
     if (frame.retryable && delay !== undefined) {
       triesRef.current++;
-      wsState.value = "reconnecting";
+      setWsState("reconnecting");
       const connectionId = wsIdRef.current;
       retryTimerRef.current = setTimeout(async () => {
         retryTimerRef.current = null;
@@ -211,8 +218,8 @@ export default function FlowViewer() {
       }, delay);
       return;
     }
-    wsState.value = "disconnected";
-    ended.value = streamState(frame);
+    setWsState("disconnected");
+    setEnded(streamState(frame));
   };
 
   // "Reconnect" starts over with a fresh set of tries.
@@ -224,7 +231,7 @@ export default function FlowViewer() {
   // Connect WebSocket for live streaming
   const connectWS = () => {
     clearTimers();
-    ended.value = null;
+    setEnded(null);
     // Close existing connection
     if (wsRef.current) {
       wsRef.current.close();
@@ -248,10 +255,10 @@ export default function FlowViewer() {
     const connectionId = ++wsIdRef.current;
     const isStale = () => wsIdRef.current !== connectionId;
 
-    wsState.value = "connecting";
+    setWsState("connecting");
     connectTimerRef.current = setTimeout(() => {
       connectTimerRef.current = null;
-      if (!isStale() && wsState.value === "connecting") {
+      if (!isStale() && wsStateRef.current === "connecting") {
         endStream(CONNECT_TIMED_OUT);
       }
     }, CONNECT_TIMEOUT_MS);
@@ -285,8 +292,8 @@ export default function FlowViewer() {
       ws.send(JSON.stringify(authFrame));
       ws.send(
         JSON.stringify({
-          namespace: namespace.value,
-          verdict: verdict.value,
+          namespace: namespaceRef.current,
+          verdict: verdictRef.current,
         }),
       );
     };
@@ -309,24 +316,24 @@ export default function FlowViewer() {
         if (connectTimerRef.current) clearTimeout(connectTimerRef.current);
         connectTimerRef.current = null;
         triesRef.current = 0;
-        wsState.value = "live";
-        error.value = null;
-        flows.value = [];
+        setWsState("live");
+        setError(null);
+        setFlows([]);
       } else if (msg.type === "error") {
         // The state comes from the frame's reason; a frame without one
         // (a bad filter, a local stream error) keeps its message.
         if (msg.reason) {
           endStream(msg);
         } else {
-          error.value = msg.message ?? "Flow stream error";
-          wsState.value = "disconnected";
+          setError(msg.message ?? "Flow stream error");
+          setWsState("disconnected");
         }
       }
     };
 
     ws.onclose = () => {
       if (isStale() || wsRef.current !== ws) return;
-      if (wsState.value !== "reconnecting") wsState.value = "disconnected";
+      if (wsStateRef.current !== "reconnecting") setWsState("disconnected");
       wsRef.current = null;
     };
 
@@ -334,16 +341,21 @@ export default function FlowViewer() {
       // A socket endStream already released (closing a still-connecting
       // socket fires error) must not reset the reconnect state.
       if (isStale() || wsRef.current !== ws) return;
-      wsState.value = "disconnected";
+      setWsState("disconnected");
       wsRef.current = null;
       fetchFlows();
     };
   };
 
+  // The connect effect re-runs on a filter change only, so it calls this
+  // render's connectWS through a ref rather than depending on it.
+  const connect = useLatest(connectWS);
+
   // Connect on mount and when filters change
+  // biome-ignore lint/correctness/useExhaustiveDependencies: namespace and verdict are the re-connect triggers; the stream reads them through refs
   useEffect(() => {
-    if (!IS_BROWSER) return;
-    connectWS();
+    if (!hasDom()) return;
+    connect.current();
     return () => {
       // Increment generation so any in-flight callbacks become stale
       wsIdRef.current++;
@@ -353,16 +365,16 @@ export default function FlowViewer() {
         wsRef.current.close();
         wsRef.current = null;
       }
-      wsState.value = "disconnected";
+      setWsState("disconnected");
       if (rafId.current) {
         cancelAnimationFrame(rafId.current);
         rafId.current = 0;
       }
       pendingFlows.current = [];
     };
-  }, [namespace.value, verdict.value]);
+  }, [namespace, verdict]);
 
-  if (!IS_BROWSER) {
+  if (!isClient) {
     return (
       <div style={{ padding: "24px" }}>
         <h1
@@ -399,7 +411,7 @@ export default function FlowViewer() {
           >
             Network Flows
           </h1>
-          {wsState.value === "live" && (
+          {wsState === "live" && (
             <span
               style={{
                 display: "inline-flex",
@@ -426,8 +438,7 @@ export default function FlowViewer() {
               Live
             </span>
           )}
-          {(wsState.value === "connecting" ||
-            wsState.value === "reconnecting") && (
+          {(wsState === "connecting" || wsState === "reconnecting") && (
             <span
               role="status"
               style={{
@@ -443,18 +454,12 @@ export default function FlowViewer() {
                 color: "var(--warning)",
               }}
             >
-              {wsState.value === "reconnecting"
-                ? "Reconnecting..."
-                : "Connecting..."}
+              {wsState === "reconnecting" ? "Reconnecting..." : "Connecting..."}
             </span>
           )}
         </div>
-        <Button
-          variant="secondary"
-          onClick={fetchFlows}
-          disabled={loading.value}
-        >
-          {loading.value ? "Loading..." : "Refresh"}
+        <Button variant="secondary" onClick={fetchFlows} disabled={loading}>
+          {loading ? "Loading..." : "Refresh"}
         </Button>
       </div>
 
@@ -482,10 +487,8 @@ export default function FlowViewer() {
             Namespace
           </label>
           <select
-            value={namespace.value}
-            onChange={(e) =>
-              (namespace.value = (e.target as HTMLSelectElement).value)
-            }
+            value={namespace}
+            onChange={(e) => setNamespace(e.currentTarget.value)}
             style={{
               borderRadius: "9px",
               border: "1px solid var(--border-primary)",
@@ -496,7 +499,7 @@ export default function FlowViewer() {
               fontFamily: "inherit",
             }}
           >
-            {namespaces.value.map((ns) => (
+            {namespaceList.map((ns) => (
               <option key={ns} value={ns}>
                 {ns}
               </option>
@@ -518,10 +521,8 @@ export default function FlowViewer() {
             Verdict
           </label>
           <select
-            value={verdict.value}
-            onChange={(e) =>
-              (verdict.value = (e.target as HTMLSelectElement).value)
-            }
+            value={verdict}
+            onChange={(e) => setVerdict(e.currentTarget.value)}
             style={{
               borderRadius: "9px",
               border: "1px solid var(--border-primary)",
@@ -546,17 +547,17 @@ export default function FlowViewer() {
             alignSelf: "flex-end",
           }}
         >
-          {flows.value.length} flows
+          {flows.length} flows
         </div>
       </div>
 
-      {ended.value && (
+      {ended && (
         <div style={{ marginBottom: "16px" }}>
-          <PanelStateNotice state={ended.value} onReconnect={reconnect} />
+          <PanelStateNotice state={ended} onReconnect={reconnect} />
         </div>
       )}
 
-      {error.value && (
+      {error && (
         <div
           style={{
             marginBottom: "16px",
@@ -568,7 +569,7 @@ export default function FlowViewer() {
           }}
         >
           <p style={{ fontSize: "13px", color: "var(--error)", margin: 0 }}>
-            {error.value}
+            {error}
           </p>
         </div>
       )}
@@ -665,7 +666,7 @@ export default function FlowViewer() {
             </tr>
           </thead>
           <tbody>
-            {flows.value.length === 0 && !loading.value && (
+            {flows.length === 0 && !loading && (
               <tr>
                 <td
                   colSpan={6}
@@ -676,15 +677,16 @@ export default function FlowViewer() {
                     fontSize: "13px",
                   }}
                 >
-                  {error.value
+                  {error
                     ? "Failed to load flows"
-                    : wsState.value === "live"
+                    : wsState === "live"
                       ? "Waiting for flows..."
                       : "No flows found. Hubble may not be enabled or there is no traffic in this namespace."}
                 </td>
               </tr>
             )}
-            {flows.value.map((f, i) => (
+            {flows.map((f, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: flow records carry no unique id, so the key is the timestamp plus position
               <FlowRow key={`${f.time}-${i}`} f={f} />
             ))}
           </tbody>
@@ -695,7 +697,7 @@ export default function FlowViewer() {
 }
 
 function FlowRow({ f }: { f: FlowRecord }) {
-  const hovered = useSignal(false);
+  const [hovered, setHovered] = useState(false);
 
   const src = formatEndpoint(
     f.srcNamespace,
@@ -718,16 +720,16 @@ function FlowRow({ f }: { f: FlowRecord }) {
     <tr
       style={{
         borderTop: "1px solid var(--border-subtle)",
-        background: hovered.value
+        background: hovered
           ? "color-mix(in srgb, var(--accent) 5%, transparent)"
           : "transparent",
         transition: "background 0.1s ease",
       }}
       onMouseEnter={() => {
-        hovered.value = true;
+        setHovered(true);
       }}
       onMouseLeave={() => {
-        hovered.value = false;
+        setHovered(false);
       }}
     >
       <td

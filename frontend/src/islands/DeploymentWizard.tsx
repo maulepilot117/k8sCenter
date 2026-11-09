@@ -16,7 +16,6 @@ import type { ProbeState } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface DeploymentFormState {
   name: string;
@@ -76,8 +75,7 @@ export default function DeploymentWizard({
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<DeploymentFormState>(initialState);
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList, setNamespaceList] = useNamespaces();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
 
@@ -285,9 +283,9 @@ export default function DeploymentWizard({
           errors={errors}
           onChange={updateField}
           onNamespaceCreated={(ns) => {
-            if (!namespaces.value.includes(ns)) {
-              namespaces.value = [...namespaces.value, ns].sort();
-            }
+            setNamespaceList((prev) =>
+              prev.includes(ns) ? prev : [...prev, ns].sort(),
+            );
           }}
         />
       )}

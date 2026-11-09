@@ -9,7 +9,6 @@ import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface BackupFormState {
   name: string;
@@ -72,8 +71,7 @@ export default function VeleroBackupWizard({ onClose }: Props) {
   const [dirty, setDirty] = useState(false);
   const formRef = useLatest(form);
 
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList] = useNamespaces();
   const [bsls, setBsls] = useState<BackupStorageLocation[]>([]);
 
   const [previewYaml, setPreviewYaml] = useState("");

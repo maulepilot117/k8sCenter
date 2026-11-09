@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 /** Per-store rate + cost-tier panel — Phase F Unit 16.
  *
  * Embedded in ESOStoreDetail / ESOClusterStoreDetail. Hits
@@ -8,12 +9,12 @@
  * Theme tokens only.
  */
 
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
 import type { StoreMetrics } from "@/lib/eso-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface Props {
   /** Empty for ClusterSecretStore. */
@@ -57,30 +58,31 @@ export default function ESOStoreMetricsPanel({
   name,
   scope,
 }: Props) {
-  const loading = useSignal(true);
-  const data = useSignal<StoreMetrics | null>(null);
+  const isClient = useIsClient();
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<StoreMetrics | null>(null);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     let cancelled = false;
     (async () => {
-      loading.value = true;
+      setLoading(true);
       try {
         const res =
           scope === "Cluster"
             ? await esoApi.getClusterStoreMetrics(name)
             : await esoApi.getStoreMetrics(namespace, name);
-        if (!cancelled) data.value = res.data ?? null;
+        if (!cancelled) setData(res.data ?? null);
       } catch {
         if (!cancelled) {
-          data.value = {
+          setData({
             ratePerMin: null,
             last24h: null,
             error: "rate metrics offline",
-          };
+          });
         }
       } finally {
-        if (!cancelled) loading.value = false;
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
@@ -88,67 +90,68 @@ export default function ESOStoreMetricsPanel({
     };
   }, [namespace, name, scope]);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   return (
     <div
-      class="rounded-lg border border-border-primary bg-elevated p-5"
+      className="rounded-lg border border-border-primary bg-elevated p-5"
       aria-label="Store request rate and cost"
     >
-      <div class="flex items-baseline justify-between mb-4">
-        <h2 class="text-sm font-semibold text-text-primary">Request rate</h2>
-        {loading.value && <Spinner className="text-brand" />}
+      <div className="flex items-baseline justify-between mb-4">
+        <h2 className="text-sm font-semibold text-text-primary">
+          Request rate
+        </h2>
+        {loading && <Spinner className="text-brand" />}
       </div>
 
-      {!loading.value && data.value?.error ? (
-        <p class="text-sm text-text-muted">
-          {data.value.error === "rate metrics offline"
+      {!loading && data?.error ? (
+        <p className="text-sm text-text-muted">
+          {data.error === "rate metrics offline"
             ? "Rate metrics offline — Prometheus is unavailable."
-            : data.value.error}
+            : data.error}
         </p>
-      ) : !loading.value && data.value ? (
+      ) : !loading && data ? (
         <>
-          <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
             <div>
-              <dt class="text-text-muted text-xs uppercase tracking-wide">
+              <dt className="text-text-muted text-xs uppercase tracking-wide">
                 Per minute (last 5m)
               </dt>
-              <dd class="text-text-primary font-mono mt-1 text-lg">
-                {formatRate(data.value.ratePerMin)}
+              <dd className="text-text-primary font-mono mt-1 text-lg">
+                {formatRate(data.ratePerMin)}
               </dd>
             </div>
             <div>
-              <dt class="text-text-muted text-xs uppercase tracking-wide">
+              <dt className="text-text-muted text-xs uppercase tracking-wide">
                 Last 24h
               </dt>
-              <dd class="text-text-primary font-mono mt-1 text-lg">
-                {formatCount(data.value.last24h)}
+              <dd className="text-text-primary font-mono mt-1 text-lg">
+                {formatCount(data.last24h)}
               </dd>
             </div>
           </dl>
 
-          {data.value.cost && (
-            <div class="mt-4 pt-4 border-t border-border-subtle">
-              <div class="flex items-baseline justify-between mb-1">
-                <span class="text-text-muted text-xs uppercase tracking-wide">
+          {data.cost && (
+            <div className="mt-4 pt-4 border-t border-border-subtle">
+              <div className="flex items-baseline justify-between mb-1">
+                <span className="text-text-muted text-xs uppercase tracking-wide">
                   Estimated 24h spend
                 </span>
-                <span class="text-text-primary font-mono text-base">
-                  {formatUSD(data.value.cost.estimated24h)}{" "}
-                  <span class="text-xs text-text-muted">
-                    {data.value.cost.currency ?? ""}
+                <span className="text-text-primary font-mono text-base">
+                  {formatUSD(data.cost.estimated24h)}{" "}
+                  <span className="text-xs text-text-muted">
+                    {data.cost.currency ?? ""}
                   </span>
                 </span>
               </div>
-              <p class="text-xs text-text-muted leading-snug">
-                Rates as of {formatSnapshotDate(data.value.cost.lastUpdated)}{" "}
-                for {data.value.cost.billingProvider}; not connected to live
-                billing.
+              <p className="text-xs text-text-muted leading-snug">
+                Rates as of {formatSnapshotDate(data.cost.lastUpdated)} for{" "}
+                {data.cost.billingProvider}; not connected to live billing.
               </p>
             </div>
           )}
-          {!data.value.cost && data.value.ratePerMin !== null && (
-            <p class="text-xs text-text-muted mt-3 leading-snug">
+          {!data.cost && data.ratePerMin !== null && (
+            <p className="text-xs text-text-muted mt-3 leading-snug">
               Self-hosted provider — no cost estimate.
             </p>
           )}

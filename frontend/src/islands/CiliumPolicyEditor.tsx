@@ -1,12 +1,12 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import type { LabelEntry } from "@/lib/wizard-types.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface RuleRow {
   id: number;
@@ -69,42 +69,33 @@ export default function CiliumPolicyEditor({
   onClose,
 }: CiliumPolicyEditorProps) {
   const close = onClose ?? (() => globalThis.history.back());
-  const name = useSignal("");
-  const initNs = initialNamespace();
-  const namespace = useSignal(initNs);
-  const namespaces = useNamespaces();
-  const endpointSelector = useSignal<LabelEntry[]>([{ key: "", value: "" }]);
-  const rules = useSignal<RuleRow[]>([newRule()]);
-  const yamlPreview = useSignal("");
-  const showYaml = useSignal(false);
-  const submitting = useSignal(false);
-  const submitError = useSignal<string | null>(null);
-  const submitSuccess = useSignal(false);
-  const warnings = useSignal<PolicyWarning[]>([]);
+  const isClient = useIsClient();
+  const [name, setName] = useState("");
+  const [namespace, setNamespace] = useState(() => initialNamespace());
+  const [namespaceList] = useNamespaces();
+  const [endpointSelector, setEndpointSelector] = useState<LabelEntry[]>([
+    { key: "", value: "" },
+  ]);
+  const [rules, setRules] = useState<RuleRow[]>(() => [newRule()]);
+  const [yamlPreview, setYamlPreview] = useState("");
+  const [showYaml, setShowYaml] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [warnings, setWarnings] = useState<PolicyWarning[]>([]);
 
   // Generate YAML preview (debounced, skip when hidden)
   useEffect(() => {
-    if (!showYaml.value) return;
+    if (!showYaml) return;
     const timer = setTimeout(() => {
-      yamlPreview.value = buildPolicyYaml(
-        name.value,
-        namespace.value,
-        endpointSelector.value,
-        rules.value,
-      );
+      setYamlPreview(buildPolicyYaml(name, namespace, endpointSelector, rules));
     }, 150);
     return () => clearTimeout(timer);
-  }, [
-    name.value,
-    namespace.value,
-    endpointSelector.value,
-    rules.value,
-    showYaml.value,
-  ]);
+  }, [name, namespace, endpointSelector, rules, showYaml]);
 
-  useDirtyGuard(Boolean(name.value || rules.value.length > 1));
+  useDirtyGuard(Boolean(name || rules.length > 1));
 
-  if (!IS_BROWSER) {
+  if (!isClient) {
     // Must carry EDITOR_PAGE_CLASS, identical to the hydrated root below.
     // This island is mounted with client:load from
     // src/pages/networking/cilium-policies/new.astro, so it is server-rendered
@@ -113,42 +104,43 @@ export default function CiliumPolicyEditor({
     // `max-w-5xl`, the form lost its width constraint for the life of the
     // page with nothing in the build or the E2E suite to catch it.
     return (
-      <div class={EDITOR_PAGE_CLASS}>
-        <h1 class="text-2xl font-semibold text-text-primary">
+      <div className={EDITOR_PAGE_CLASS}>
+        <h1 className="text-2xl font-semibold text-text-primary">
           Create Cilium Network Policy
         </h1>
-        <p class="mt-2 text-text-muted">Loading editor...</p>
+        <p className="mt-2 text-text-muted">Loading editor...</p>
       </div>
     );
   }
 
   const addRule = () => {
-    rules.value = [...rules.value, newRule()];
+    setRules((prev) => [...prev, newRule()]);
   };
 
   const removeRule = (id: number) => {
-    if (rules.value.length <= 1) return;
-    rules.value = rules.value.filter((r) => r.id !== id);
+    setRules((prev) =>
+      prev.length <= 1 ? prev : prev.filter((r) => r.id !== id),
+    );
   };
 
   const updateRule = (id: number, updates: Partial<RuleRow>) => {
-    rules.value = rules.value.map((r) =>
-      r.id === id ? { ...r, ...updates } : r,
+    setRules((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, ...updates } : r)),
     );
   };
 
   const addSelectorLabel = () => {
-    endpointSelector.value = [
-      ...endpointSelector.value,
+    setEndpointSelector((prev) => [
+      ...prev,
       {
         key: "",
         value: "",
       },
-    ];
+    ]);
   };
 
   const removeSelectorLabel = (idx: number) => {
-    endpointSelector.value = endpointSelector.value.filter((_, i) => i !== idx);
+    setEndpointSelector((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const updateSelectorLabel = (
@@ -156,18 +148,18 @@ export default function CiliumPolicyEditor({
     field: "key" | "value",
     val: string,
   ) => {
-    endpointSelector.value = endpointSelector.value.map((l, i) =>
-      i === idx ? { ...l, [field]: val } : l,
+    setEndpointSelector((prev) =>
+      prev.map((l, i) => (i === idx ? { ...l, [field]: val } : l)),
     );
   };
 
   const validateForm = (): string | null => {
-    if (!name.value.trim()) return "Policy name is required";
-    if (!/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(name.value)) {
+    if (!name.trim()) return "Policy name is required";
+    if (!/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(name)) {
       return "Invalid policy name: must be lowercase alphanumeric with dashes";
     }
-    for (let i = 0; i < rules.value.length; i++) {
-      const r = rules.value[i];
+    for (let i = 0; i < rules.length; i++) {
+      const r = rules[i];
       if (r.peerType === "entities" && r.entities.length === 0) {
         return `Rule ${i + 1}: select at least one entity`;
       }
@@ -190,122 +182,116 @@ export default function CiliumPolicyEditor({
   };
 
   const handleSubmit = async () => {
-    submitError.value = null;
-    submitSuccess.value = false;
-    warnings.value = [];
+    setSubmitError(null);
+    setSubmitSuccess(false);
+    setWarnings([]);
 
     const validationError = validateForm();
     if (validationError) {
-      submitError.value = validationError;
+      setSubmitError(validationError);
       return;
     }
 
-    submitting.value = true;
+    setSubmitting(true);
 
     try {
-      const payload = buildPayload(
-        name.value,
-        namespace.value,
-        endpointSelector.value,
-        rules.value,
-      );
+      const payload = buildPayload(name, namespace, endpointSelector, rules);
       const resp = await apiPost<{
         resource: unknown;
         warnings?: PolicyWarning[];
-      }>(`/v1/resources/ciliumnetworkpolicies/${namespace.value}`, payload);
+      }>(`/v1/resources/ciliumnetworkpolicies/${namespace}`, payload);
       if (resp.data && typeof resp.data === "object") {
         const data = resp.data as {
           warnings?: PolicyWarning[];
         };
         if (data.warnings && data.warnings.length > 0) {
-          warnings.value = data.warnings;
+          setWarnings(data.warnings);
         }
       }
-      submitSuccess.value = true;
+      setSubmitSuccess(true);
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : "Failed to create policy";
-      submitError.value = msg;
+      setSubmitError(msg);
     } finally {
-      submitting.value = false;
+      setSubmitting(false);
     }
   };
 
   return (
-    <div class={EDITOR_PAGE_CLASS}>
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-semibold text-text-primary">
+    <div className={EDITOR_PAGE_CLASS}>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-semibold text-text-primary">
           Create Cilium Network Policy
         </h1>
         <button
           type="button"
           onClick={close}
-          class="text-sm text-text-muted hover:text-text-secondary"
+          className="text-sm text-text-muted hover:text-text-secondary"
         >
           Back to list
         </button>
       </div>
 
-      {submitSuccess.value && (
-        <div class="mb-4 rounded-md bg-success-dim p-4 border border-success">
-          <p class="text-sm text-success">
+      {submitSuccess && (
+        <div className="mb-4 rounded-md bg-success-dim p-4 border border-success">
+          <p className="text-sm text-success">
             Policy created successfully.{""}
-            <a href="/networking/cilium-policies" class="underline font-medium">
+            <a
+              href="/networking/cilium-policies"
+              className="underline font-medium"
+            >
               View all policies
             </a>
           </p>
         </div>
       )}
 
-      {warnings.value.length > 0 && (
-        <div class="mb-4 rounded-md bg-warning-dim p-4 border border-warning">
-          <p class="text-sm font-medium text-warning mb-1">Warnings</p>
-          {warnings.value.map((w) => (
-            <p key={w.code} class="text-sm text-warning">
+      {warnings.length > 0 && (
+        <div className="mb-4 rounded-md bg-warning-dim p-4 border border-warning">
+          <p className="text-sm font-medium text-warning mb-1">Warnings</p>
+          {warnings.map((w) => (
+            <p key={w.code} className="text-sm text-warning">
               {w.message}
             </p>
           ))}
         </div>
       )}
 
-      {submitError.value && (
-        <div class="mb-4 rounded-md bg-danger-dim p-4 border border-danger">
-          <p class="text-sm text-danger">{submitError.value}</p>
+      {submitError && (
+        <div className="mb-4 rounded-md bg-danger-dim p-4 border border-danger">
+          <p className="text-sm text-danger">{submitError}</p>
         </div>
       )}
 
       {/* Policy Name & Namespace */}
-      <section class="mb-6 bg-surface rounded-lg border border-border-primary p-4">
-        <h2 class="text-lg font-medium text-text-primary mb-3">
+      <section className="mb-6 bg-surface rounded-lg border border-border-primary p-4">
+        <h2 className="text-lg font-medium text-text-primary mb-3">
           Policy Details
         </h2>
-        <div class="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-4">
           <div>
-            <label class="block text-sm font-medium text-text-secondary mb-1">
+            <label className="block text-sm font-medium text-text-secondary mb-1">
               Name
             </label>
             <input
               type="text"
-              value={name.value}
-              onInput={(e) =>
-                (name.value = (e.target as HTMLInputElement).value)
-              }
+              value={name}
+              onChange={(e) => setName(e.currentTarget.value)}
               placeholder="my-policy"
-              class="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+              className="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
             />
           </div>
           <div>
-            <label class="block text-sm font-medium text-text-secondary mb-1">
+            <label className="block text-sm font-medium text-text-secondary mb-1">
               Namespace
             </label>
             <select
-              value={namespace.value}
-              onChange={(e) =>
-                (namespace.value = (e.target as HTMLSelectElement).value)
-              }
-              class="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+              value={namespace}
+              onChange={(e) => setNamespace(e.currentTarget.value)}
+              className="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option key={ns} value={ns}>
                   {ns}
                 </option>
@@ -316,51 +302,44 @@ export default function CiliumPolicyEditor({
       </section>
 
       {/* Endpoint Selector */}
-      <section class="mb-6 bg-surface rounded-lg border border-border-primary p-4">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-medium text-text-primary">
+      <section className="mb-6 bg-surface rounded-lg border border-border-primary p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-medium text-text-primary">
             Applied To (Endpoint Selector)
           </h2>
           <Button variant="ghost" onClick={addSelectorLabel}>
             + Add Label
           </Button>
         </div>
-        <p class="text-xs text-text-muted mb-3">
+        <p className="text-xs text-text-muted mb-3">
           Leave empty to match all pods in the namespace.
         </p>
-        {endpointSelector.value.map((label, idx) => (
-          <div key={idx} class="flex items-center gap-2 mb-2">
+        {endpointSelector.map((label, idx) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: label rows are plain key/value pairs with no id, and the inputs are controlled
+          <div key={idx} className="flex items-center gap-2 mb-2">
             <input
               type="text"
               value={label.key}
-              onInput={(e) =>
-                updateSelectorLabel(
-                  idx,
-                  "key",
-                  (e.target as HTMLInputElement).value,
-                )
+              onChange={(e) =>
+                updateSelectorLabel(idx, "key", e.currentTarget.value)
               }
               placeholder="key"
-              class="flex-1 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary"
+              className="flex-1 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary"
             />
-            <span class="text-text-muted">=</span>
+            <span className="text-text-muted">=</span>
             <input
               type="text"
               value={label.value}
-              onInput={(e) =>
-                updateSelectorLabel(
-                  idx,
-                  "value",
-                  (e.target as HTMLInputElement).value,
-                )
+              onChange={(e) =>
+                updateSelectorLabel(idx, "value", e.currentTarget.value)
               }
               placeholder="value"
-              class="flex-1 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary"
+              className="flex-1 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary"
             />
             <button
               type="button"
               onClick={() => removeSelectorLabel(idx)}
-              class="text-error hover:text-error text-sm px-2"
+              className="text-error hover:text-error text-sm px-2"
             >
               Remove
             </button>
@@ -369,37 +348,37 @@ export default function CiliumPolicyEditor({
       </section>
 
       {/* Rules Table */}
-      <section class="mb-6 bg-surface rounded-lg border border-border-primary p-4">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-medium text-text-primary">Rules</h2>
+      <section className="mb-6 bg-surface rounded-lg border border-border-primary p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-medium text-text-primary">Rules</h2>
           <Button variant="ghost" onClick={addRule}>
             + Add Rule
           </Button>
         </div>
 
-        <div class="overflow-x-auto">
-          <table class="min-w-full text-sm">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
             <thead>
-              <tr class="border-b border-border-primary text-left text-text-secondary">
-                <th class="py-2 px-2 font-medium">#</th>
-                <th class="py-2 px-2 font-medium">Direction</th>
-                <th class="py-2 px-2 font-medium">Peer Type</th>
-                <th class="py-2 px-2 font-medium">Peers</th>
-                <th class="py-2 px-2 font-medium">Ports</th>
-                <th class="py-2 px-2 font-medium">Protocol</th>
-                <th class="py-2 px-2 font-medium">Action</th>
-                <th class="py-2 px-2 font-medium"></th>
+              <tr className="border-b border-border-primary text-left text-text-secondary">
+                <th className="py-2 px-2 font-medium">#</th>
+                <th className="py-2 px-2 font-medium">Direction</th>
+                <th className="py-2 px-2 font-medium">Peer Type</th>
+                <th className="py-2 px-2 font-medium">Peers</th>
+                <th className="py-2 px-2 font-medium">Ports</th>
+                <th className="py-2 px-2 font-medium">Protocol</th>
+                <th className="py-2 px-2 font-medium">Action</th>
+                <th className="py-2 px-2 font-medium"></th>
               </tr>
             </thead>
             <tbody>
-              {rules.value.map((rule, idx) => (
+              {rules.map((rule, idx) => (
                 <RuleRowEditor
                   key={rule.id}
                   rule={rule}
                   index={idx}
                   onUpdate={(updates) => updateRule(rule.id, updates)}
                   onRemove={() => removeRule(rule.id)}
-                  canRemove={rules.value.length > 1}
+                  canRemove={rules.length > 1}
                 />
               ))}
             </tbody>
@@ -408,39 +387,41 @@ export default function CiliumPolicyEditor({
       </section>
 
       {/* YAML Preview */}
-      <section class="mb-6 bg-surface rounded-lg border border-border-primary">
+      <section className="mb-6 bg-surface rounded-lg border border-border-primary">
         <button
           type="button"
-          onClick={() => (showYaml.value = !showYaml.value)}
-          class="w-full flex items-center justify-between p-4 text-left"
+          onClick={() => setShowYaml((prev) => !prev)}
+          className="w-full flex items-center justify-between p-4 text-left"
         >
-          <h2 class="text-lg font-medium text-text-primary">YAML Preview</h2>
-          <span class="text-text-muted text-sm">
-            {showYaml.value ? "Hide" : "Show"}
+          <h2 className="text-lg font-medium text-text-primary">
+            YAML Preview
+          </h2>
+          <span className="text-text-muted text-sm">
+            {showYaml ? "Hide" : "Show"}
           </span>
         </button>
-        {showYaml.value && (
-          <div class="px-4 pb-4">
-            <pre class="bg-base text-success text-xs font-mono p-4 rounded-md overflow-x-auto whitespace-pre max-h-96 overflow-y-auto">
-              {yamlPreview.value}
+        {showYaml && (
+          <div className="px-4 pb-4">
+            <pre className="bg-base text-success text-xs font-mono p-4 rounded-md overflow-x-auto whitespace-pre max-h-96 overflow-y-auto">
+              {yamlPreview}
             </pre>
           </div>
         )}
       </section>
 
       {/* Submit */}
-      <div class="flex items-center gap-4">
+      <div className="flex items-center gap-4">
         <Button
           variant="primary"
           onClick={handleSubmit}
-          disabled={submitting.value || !name.value}
+          disabled={submitting || !name}
         >
-          {submitting.value ? "Creating..." : "Create Policy"}
+          {submitting ? "Creating..." : "Create Policy"}
         </Button>
         <button
           type="button"
           onClick={close}
-          class="text-sm text-text-muted hover:text-text-secondary"
+          className="text-sm text-text-muted hover:text-text-secondary"
         >
           Cancel
         </button>
@@ -465,63 +446,58 @@ function RuleRowEditor({
   canRemove,
 }: RuleRowEditorProps) {
   return (
-    <tr class="border-b border-border-subtle align-top">
-      <td class="py-2 px-2 text-text-muted">{index + 1}</td>
-      <td class="py-2 px-2">
+    <tr className="border-b border-border-subtle align-top">
+      <td className="py-2 px-2 text-text-muted">{index + 1}</td>
+      <td className="py-2 px-2">
         <select
           value={rule.direction}
           onChange={(e) =>
             onUpdate({
-              direction: (e.target as HTMLSelectElement)
-                .value as RuleRow["direction"],
+              direction: e.currentTarget.value as RuleRow["direction"],
             })
           }
-          class="rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+          className="rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
         >
           <option value="Ingress">Ingress</option>
           <option value="Egress">Egress</option>
         </select>
       </td>
-      <td class="py-2 px-2">
+      <td className="py-2 px-2">
         <select
           value={rule.peerType}
           onChange={(e) =>
             onUpdate({
-              peerType: (e.target as HTMLSelectElement)
-                .value as RuleRow["peerType"],
+              peerType: e.currentTarget.value as RuleRow["peerType"],
             })
           }
-          class="rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+          className="rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
         >
           <option value="endpoints">Endpoints</option>
           <option value="entities">Entities</option>
           <option value="cidr">CIDR</option>
         </select>
       </td>
-      <td class="py-2 px-2 min-w-[200px]">
+      <td className="py-2 px-2 min-w-[200px]">
         <PeerInput rule={rule} onUpdate={onUpdate} />
       </td>
-      <td class="py-2 px-2">
+      <td className="py-2 px-2">
         <input
           type="text"
           value={rule.ports}
-          onInput={(e) =>
-            onUpdate({ ports: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onUpdate({ ports: e.currentTarget.value })}
           placeholder="80,443"
-          class="w-24 rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+          className="w-24 rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
         />
       </td>
-      <td class="py-2 px-2">
+      <td className="py-2 px-2">
         <select
           value={rule.protocol}
           onChange={(e) =>
             onUpdate({
-              protocol: (e.target as HTMLSelectElement)
-                .value as RuleRow["protocol"],
+              protocol: e.currentTarget.value as RuleRow["protocol"],
             })
           }
-          class="rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+          className="rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
         >
           <option value="TCP">TCP</option>
           <option value="UDP">UDP</option>
@@ -529,16 +505,15 @@ function RuleRowEditor({
           <option value="ANY">ANY</option>
         </select>
       </td>
-      <td class="py-2 px-2">
+      <td className="py-2 px-2">
         <select
           value={rule.action}
           onChange={(e) =>
             onUpdate({
-              action: (e.target as HTMLSelectElement)
-                .value as RuleRow["action"],
+              action: e.currentTarget.value as RuleRow["action"],
             })
           }
-          class={`rounded border px-2 py-1 text-sm font-medium ${
+          className={`rounded border px-2 py-1 text-sm font-medium ${
             rule.action === "deny"
               ? "border-danger bg-danger-dim text-danger"
               : "border-success bg-success-dim text-success"
@@ -548,12 +523,12 @@ function RuleRowEditor({
           <option value="deny">Deny</option>
         </select>
       </td>
-      <td class="py-2 px-2">
+      <td className="py-2 px-2">
         {canRemove && (
           <button
             type="button"
             onClick={onRemove}
-            class="text-error hover:text-error text-sm"
+            className="text-error hover:text-error text-sm"
             title="Remove rule"
           >
             X
@@ -573,37 +548,38 @@ function PeerInput({
 }) {
   if (rule.peerType === "endpoints") {
     return (
-      <div class="space-y-1">
+      <div className="space-y-1">
         {rule.labels.map((label, idx) => (
-          <div key={idx} class="flex items-center gap-1">
+          // biome-ignore lint/suspicious/noArrayIndexKey: label rows are plain key/value pairs with no id, and the inputs are controlled
+          <div key={idx} className="flex items-center gap-1">
             <input
               type="text"
               value={label.key}
-              onInput={(e) => {
+              onChange={(e) => {
                 const labels = [...rule.labels];
                 labels[idx] = {
                   ...labels[idx],
-                  key: (e.target as HTMLInputElement).value,
+                  key: e.currentTarget.value,
                 };
                 onUpdate({ labels });
               }}
               placeholder="key"
-              class="w-20 rounded border border-border-primary bg-surface px-1.5 py-1 text-xs text-text-primary"
+              className="w-20 rounded border border-border-primary bg-surface px-1.5 py-1 text-xs text-text-primary"
             />
-            <span class="text-text-muted text-xs">=</span>
+            <span className="text-text-muted text-xs">=</span>
             <input
               type="text"
               value={label.value}
-              onInput={(e) => {
+              onChange={(e) => {
                 const labels = [...rule.labels];
                 labels[idx] = {
                   ...labels[idx],
-                  value: (e.target as HTMLInputElement).value,
+                  value: e.currentTarget.value,
                 };
                 onUpdate({ labels });
               }}
               placeholder="value"
-              class="w-20 rounded border border-border-primary bg-surface px-1.5 py-1 text-xs text-text-primary"
+              className="w-20 rounded border border-border-primary bg-surface px-1.5 py-1 text-xs text-text-primary"
             />
             {rule.labels.length > 1 && (
               <button
@@ -613,7 +589,7 @@ function PeerInput({
                     labels: rule.labels.filter((_, i) => i !== idx),
                   });
                 }}
-                class="text-error text-xs"
+                className="text-error text-xs"
               >
                 x
               </button>
@@ -625,7 +601,7 @@ function PeerInput({
           onClick={() =>
             onUpdate({ labels: [...rule.labels, { key: "", value: "" }] })
           }
-          class="text-xs text-accent hover:text-accent"
+          className="text-xs text-accent hover:text-accent"
         >
           + label
         </button>
@@ -635,22 +611,22 @@ function PeerInput({
 
   if (rule.peerType === "entities") {
     return (
-      <div class="space-y-1">
+      <div className="space-y-1">
         {VALID_ENTITIES.map((entity) => (
-          <label key={entity} class="flex items-center gap-1.5 text-xs">
+          <label key={entity} className="flex items-center gap-1.5 text-xs">
             <input
               type="checkbox"
               checked={rule.entities.includes(entity)}
               onChange={(e) => {
-                const checked = (e.target as HTMLInputElement).checked;
+                const checked = e.currentTarget.checked;
                 const entities = checked
                   ? [...rule.entities, entity]
                   : rule.entities.filter((e) => e !== entity);
                 onUpdate({ entities });
               }}
-              class="rounded border-border-primary"
+              className="rounded border-border-primary"
             />
-            <span class="text-text-secondary">{entity}</span>
+            <span className="text-text-secondary">{entity}</span>
           </label>
         ))}
       </div>
@@ -662,9 +638,9 @@ function PeerInput({
     <input
       type="text"
       value={rule.cidrs}
-      onInput={(e) => onUpdate({ cidrs: (e.target as HTMLInputElement).value })}
+      onChange={(e) => onUpdate({ cidrs: e.currentTarget.value })}
       placeholder="10.0.0.0/8, 192.168.0.0/16"
-      class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+      className="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
     />
   );
 }

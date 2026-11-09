@@ -1,8 +1,6 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import type { ReactNode } from "react";
 import { setAccessToken } from "@/lib/api.ts";
 import { LOCAL_CLUSTER_ID, switchCluster } from "@/src/lib/cluster.ts";
 // Static imports evaluate before this file's body, so these stores see the
@@ -10,6 +8,7 @@ import { LOCAL_CLUSTER_ID, switchCluster } from "@/src/lib/cluster.ts";
 // outlive the stub below.
 import { selectedNamespace } from "@/src/lib/namespace.ts";
 import "@/src/lib/resource-counts.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The pages that read a remote multi-source list's `coverage` field (R-8
@@ -18,14 +17,13 @@ import "@/src/lib/resource-counts.ts";
  *
  * Islands render nothing unless `IS_BROWSER` is true, and that constant is
  * fixed when `is-browser.ts` is first evaluated, which under `bun test` is
- * without a DOM. This file stubs it to true for its own islands and puts the
- * real value (false under `bun test`) back afterwards, so files that run
+ * without a DOM. `setupDom` stubs it to true for this file's islands and puts
+ * the real value (false under `bun test`) back afterwards, so files that run
  * later still see what they always saw. The signal stores that act on
  * IS_BROWSER at import are imported statically above, before the stub, so
  * none of them registers a browser-only effect here.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+setupDom({ browser: true });
 
 const { default: GitOpsApplications } = await import(
   "./GitOpsApplications.tsx"
@@ -36,12 +34,6 @@ const { default: GatewayAPIDashboard } = await import(
 );
 const { default: GatewayDetail } = await import("./GatewayDetail.tsx");
 
-afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
-});
-
-let host: HTMLElement | null = null;
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
@@ -55,11 +47,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   globalThis.fetch = originalFetch;
   setAccessToken(null);
   switchCluster(LOCAL_CLUSTER_ID, "local");
@@ -85,19 +72,14 @@ function serve(routes: Route[]) {
 }
 
 /** Mounts `node` and settles until its text contains `text`, or gives up. */
-async function mountUntil(
-  node: preact.ComponentChild,
-  text: string,
-): Promise<HTMLElement> {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(node, host as HTMLElement));
-  for (let i = 0; i < 50 && !host.textContent?.includes(text); i++) {
+async function mountUntil(node: ReactNode, text: string): Promise<Element> {
+  const { container } = render(node);
+  for (let i = 0; i < 50 && !container.textContent?.includes(text); i++) {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 5));
     });
   }
-  return host;
+  return container;
 }
 
 const UNREACHABLE = { status: "unavailable", reasonCode: "unreachable" };

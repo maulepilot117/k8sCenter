@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import {
   SeverityBadge,
   StatusBadge,
@@ -24,9 +25,10 @@ import {
   PAGE_SIZE,
 } from "@/lib/notification-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 import { useNotificationCrud } from "@/src/lib/useNotificationCrud.ts";
 
 interface AlertFormSource {
@@ -64,11 +66,13 @@ export default function FluxAlerts() {
     label: "alert",
   });
 
-  const form = useSignal<AlertForm>({ ...EMPTY_FORM });
+  const isClient = useIsClient();
+  const namespace = useSignalValue(selectedNamespace);
+  const [form, setForm] = useState<AlertForm>({ ...EMPTY_FORM });
 
   function openEdit(a: NormalizedAlert) {
     crud.openEdit(a, () => {
-      form.value = {
+      setForm({
         name: a.name,
         namespace: a.namespace,
         providerRef: a.providerRef,
@@ -79,23 +83,23 @@ export default function FluxAlerts() {
             : [{ kind: "Kustomization", name: "*" }],
         inclusionList: a.inclusionList.join(", "),
         exclusionList: a.exclusionList.join(", "),
-      };
+      });
     });
   }
 
   async function handleFormSubmit() {
-    if (crud.formSubmitting.value) return;
-    const f = form.value;
+    if (crud.formSubmittingRef.current) return;
+    const f = form;
     if (!f.name.trim()) {
-      crud.formError.value = "Name is required";
+      crud.setFormError("Name is required");
       return;
     }
     if (!f.providerRef.trim()) {
-      crud.formError.value = "Provider reference is required";
+      crud.setFormError("Provider reference is required");
       return;
     }
-    crud.formSubmitting.value = true;
-    crud.formError.value = null;
+    crud.setFormSubmitting(true);
+    crud.setFormError(null);
 
     const payload = {
       name: f.name,
@@ -118,11 +122,11 @@ export default function FluxAlerts() {
     };
 
     try {
-      if (crud.editingItem.value) {
+      if (crud.editingItem) {
         await apiPut(
           `/v1/gitops/notifications/alerts/${encodeURIComponent(
-            crud.editingItem.value.namespace,
-          )}/${encodeURIComponent(crud.editingItem.value.name)}`,
+            crud.editingItem.namespace,
+          )}/${encodeURIComponent(crud.editingItem.name)}`,
           payload,
         );
         showToast("Alert updated", "success");
@@ -130,49 +134,50 @@ export default function FluxAlerts() {
         await apiPost("/v1/gitops/notifications/alerts", payload);
         showToast("Alert created", "success");
       }
-      crud.showForm.value = false;
+      crud.setShowForm(false);
       await crud.fetchData();
     } catch (err) {
-      crud.formError.value =
-        err instanceof Error ? err.message : "Failed to save alert";
+      crud.setFormError(
+        err instanceof Error ? err.message : "Failed to save alert",
+      );
     } finally {
-      crud.formSubmitting.value = false;
+      crud.setFormSubmitting(false);
     }
   }
 
   function updateSource(index: number, field: "kind" | "name", value: string) {
-    const updated = form.value.eventSources.map((s, i) =>
+    const updated = form.eventSources.map((s, i) =>
       i === index ? { ...s, [field]: value } : s,
     );
-    form.value = { ...form.value, eventSources: updated };
+    setForm({ ...form, eventSources: updated });
   }
 
   function addSource() {
-    form.value = {
-      ...form.value,
+    setForm({
+      ...form,
       eventSources: [
-        ...form.value.eventSources,
+        ...form.eventSources,
         { kind: "Kustomization", name: "*" },
       ],
-    };
+    });
   }
 
   function removeSource(index: number) {
-    if (form.value.eventSources.length <= 1) return;
-    form.value = {
-      ...form.value,
-      eventSources: form.value.eventSources.filter((_, i) => i !== index),
-    };
+    if (form.eventSources.length <= 1) return;
+    setForm({
+      ...form,
+      eventSources: form.eventSources.filter((_, i) => i !== index),
+    });
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const notAvailable = !!(crud.status.value && !crud.status.value.available);
+  const notAvailable = !!(crud.status && !crud.status.available);
 
-  const nsByNs = filterByNamespace(crud.items.value, selectedNamespace.value);
+  const nsByNs = filterByNamespace(crud.items, namespace);
   const filtered = nsByNs.filter((a) => {
-    if (!crud.search.value) return true;
-    const q = crud.search.value.toLowerCase();
+    if (!crud.search) return true;
+    const q = crud.search.toLowerCase();
     return (
       a.name.toLowerCase().includes(q) ||
       a.namespace.toLowerCase().includes(q) ||
@@ -182,54 +187,53 @@ export default function FluxAlerts() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (crud.page.value > totalPages) crud.page.value = totalPages;
-  const displayed = filtered.slice(
-    (crud.page.value - 1) * PAGE_SIZE,
-    crud.page.value * PAGE_SIZE,
-  );
+  const page = Math.min(crud.page, totalPages);
+  if (crud.page > totalPages) crud.setPage(totalPages);
+  const displayed = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
-    <div class="p-6">
+    <div className="p-6">
       <NotificationPageHeader
         kind="Alert"
         description="Flux notification alerts &mdash; define forwarding rules from event sources to providers."
-        loading={crud.loading.value}
+        loading={crud.loading}
         notAvailable={notAvailable}
-        refreshing={crud.refreshing.value}
+        refreshing={crud.refreshing}
         onRefresh={crud.handleRefresh}
         onCreate={() =>
           crud.openCreate(() => {
-            form.value = {
+            setForm({
               ...EMPTY_FORM,
               eventSources: [{ kind: "Kustomization", name: "*" }],
-            };
+            });
           })
         }
       />
 
       <NotificationUnavailableBanner
-        visible={notAvailable && !crud.loading.value}
+        visible={notAvailable && !crud.loading}
         resourceLabel="alerts"
       />
 
       <NotificationSearchBar
         search={crud.search}
-        page={crud.page}
+        onSearchChange={crud.setSearch}
+        onPageChange={crud.setPage}
         filteredCount={filtered.length}
-        totalCount={crud.items.value.length}
+        totalCount={crud.items.length}
         resourceLabel="alerts"
         placeholder="Filter by name, namespace, provider..."
       />
 
-      <NotificationLoadingSpinner loading={crud.loading.value} />
+      <NotificationLoadingSpinner loading={crud.loading} />
 
-      {crud.error.value && (
-        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
-          {crud.error.value}
+      {crud.error && (
+        <p className="text-sm py-4" style={{ color: "var(--error)" }}>
+          {crud.error}
         </p>
       )}
 
-      {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
+      {!crud.loading && !crud.error && filtered.length > 0 && (
         <ResourceTable
           chevron={false}
           columns={[
@@ -247,19 +251,26 @@ export default function FluxAlerts() {
             cells: {
               name: (
                 <div>
-                  <div class="font-medium text-text-primary">{a.name}</div>
+                  <div className="font-medium text-text-primary">{a.name}</div>
                   {a.suspend && (
-                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                    <span
+                      className="text-xs"
+                      style={{ color: "var(--warning)" }}
+                    >
                       suspended
                     </span>
                   )}
                 </div>
               ),
               namespace: (
-                <span class="text-xs text-text-secondary">{a.namespace}</span>
+                <span className="text-xs text-text-secondary">
+                  {a.namespace}
+                </span>
               ),
               providerRef: (
-                <span class="text-xs text-text-secondary">{a.providerRef}</span>
+                <span className="text-xs text-text-secondary">
+                  {a.providerRef}
+                </span>
               ),
               eventSeverity: (
                 <SeverityBadge severity={a.eventSeverity || "info"} />
@@ -271,7 +282,7 @@ export default function FluxAlerts() {
                 <StatusBadge status={a.suspend ? "suspended" : a.status} />
               ),
               createdAt: (
-                <span class="text-xs text-text-muted">
+                <span className="text-xs text-text-muted">
                   {a.createdAt ? timeAgo(a.createdAt) : "-"}
                 </span>
               ),
@@ -280,10 +291,11 @@ export default function FluxAlerts() {
                   itemKey={`${a.namespace}/${a.name}`}
                   suspended={a.suspend}
                   openDropdown={crud.openDropdown}
+                  onOpenDropdownChange={crud.setOpenDropdown}
                   onEdit={() => openEdit(a)}
                   onSuspendToggle={() => crud.handleSuspendToggle(a)}
                   onDelete={() => {
-                    crud.deleteTarget.value = a;
+                    crud.setDeleteTarget(a);
                   }}
                 />
               ),
@@ -293,107 +305,110 @@ export default function FluxAlerts() {
       )}
 
       <NotificationPagination
-        loading={crud.loading.value}
-        error={crud.error.value}
+        loading={crud.loading}
+        error={crud.error}
         filteredCount={filtered.length}
-        page={crud.page}
+        page={page}
+        onPageChange={crud.setPage}
         totalPages={totalPages}
         resourceLabel="alerts"
       />
 
       <NotificationEmptyState
-        loading={crud.loading.value}
-        error={crud.error.value}
+        loading={crud.loading}
+        error={crud.error}
         filteredCount={filtered.length}
-        totalCount={crud.items.value.length}
+        totalCount={crud.items.length}
         notAvailable={notAvailable}
         kind="Alert"
         onCreate={() =>
           crud.openCreate(() => {
-            form.value = {
+            setForm({
               ...EMPTY_FORM,
               eventSources: [{ kind: "Kustomization", name: "*" }],
-            };
+            });
           })
         }
       />
 
-      {crud.showForm.value && (
+      {crud.showForm && (
         <NotificationFormShell
           id="alert-form"
-          title={crud.editingItem.value ? "Edit Alert" : "Create Alert"}
-          submitting={crud.formSubmitting.value}
-          error={crud.formError.value}
+          title={crud.editingItem ? "Edit Alert" : "Create Alert"}
+          submitting={crud.formSubmitting}
+          error={crud.formError}
           onSubmit={handleFormSubmit}
           onCancel={() => {
-            crud.showForm.value = false;
+            crud.setShowForm(false);
           }}
           wide
         >
           <div>
-            <label class="block text-sm text-text-secondary mb-1">Name</label>
+            <label className="block text-sm text-text-secondary mb-1">
+              Name
+            </label>
             <input
               type="text"
-              value={form.value.name}
-              disabled={!!crud.editingItem.value}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  name: (e.target as HTMLInputElement).value,
+              value={form.name}
+              disabled={!!crud.editingItem}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  name: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="my-alert"
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Namespace
             </label>
             <input
               type="text"
-              value={form.value.namespace}
-              disabled={!!crud.editingItem.value}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  namespace: (e.target as HTMLInputElement).value,
+              value={form.namespace}
+              disabled={!!crud.editingItem}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  namespace: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="default"
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Provider Reference
             </label>
             <input
               type="text"
-              value={form.value.providerRef}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  providerRef: (e.target as HTMLInputElement).value,
+              value={form.providerRef}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  providerRef: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="my-slack-provider"
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Event Severity
             </label>
             <select
-              value={form.value.eventSeverity}
+              value={form.eventSeverity}
               onChange={(e) =>
-                (form.value = {
-                  ...form.value,
-                  eventSeverity: (e.target as HTMLSelectElement).value,
+                setForm({
+                  ...form,
+                  eventSeverity: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
             >
               <option value="info">info</option>
               <option value="error">error</option>
@@ -402,22 +417,19 @@ export default function FluxAlerts() {
 
           {/* Event sources */}
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Event Sources
             </label>
-            <div class="space-y-2">
-              {form.value.eventSources.map((src, i) => (
-                <div key={i} class="flex items-center gap-2">
+            <div className="space-y-2">
+              {form.eventSources.map((src, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: rows are editable and have no id; the list is keyed by position as before
+                <div key={i} className="flex items-center gap-2">
                   <select
                     value={src.kind}
                     onChange={(e) =>
-                      updateSource(
-                        i,
-                        "kind",
-                        (e.target as HTMLSelectElement).value,
-                      )
+                      updateSource(i, "kind", e.currentTarget.value)
                     }
-                    class="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
+                    className="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                   >
                     {FLUX_RESOURCE_KINDS.map((k) => (
                       <option key={k} value={k}>
@@ -428,21 +440,17 @@ export default function FluxAlerts() {
                   <input
                     type="text"
                     value={src.name}
-                    onInput={(e) =>
-                      updateSource(
-                        i,
-                        "name",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateSource(i, "name", e.currentTarget.value)
                     }
-                    class="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
+                    className="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                     placeholder="* (wildcard)"
                   />
                   <button
                     type="button"
                     onClick={() => removeSource(i)}
-                    disabled={form.value.eventSources.length <= 1}
-                    class="rounded px-2 py-1 text-xs font-medium hover:bg-hover disabled:opacity-30"
+                    disabled={form.eventSources.length <= 1}
+                    className="rounded px-2 py-1 text-xs font-medium hover:bg-hover disabled:opacity-30"
                     style={{ color: "var(--error)" }}
                     title="Remove source"
                   >
@@ -454,43 +462,43 @@ export default function FluxAlerts() {
             <button
               type="button"
               onClick={addSource}
-              class="mt-2 text-xs font-medium text-brand hover:underline"
+              className="mt-2 text-xs font-medium text-brand hover:underline"
             >
               + Add Source
             </button>
           </div>
 
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Inclusion List
             </label>
             <input
               type="text"
-              value={form.value.inclusionList}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  inclusionList: (e.target as HTMLInputElement).value,
+              value={form.inclusionList}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  inclusionList: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="Comma-separated regex patterns"
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Exclusion List
             </label>
             <input
               type="text"
-              value={form.value.exclusionList}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  exclusionList: (e.target as HTMLInputElement).value,
+              value={form.exclusionList}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  exclusionList: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="Comma-separated regex patterns"
             />
           </div>
@@ -498,16 +506,16 @@ export default function FluxAlerts() {
       )}
 
       <NotificationDeleteDialog
-        target={crud.deleteTarget.value}
-        loading={crud.deleteLoading.value}
+        target={crud.deleteTarget}
+        loading={crud.deleteLoading}
         kind="Alert"
         onConfirm={() => {
-          if (crud.deleteTarget.value) {
-            crud.handleDelete(crud.deleteTarget.value);
+          if (crud.deleteTarget) {
+            crud.handleDelete(crud.deleteTarget);
           }
         }}
         onCancel={() => {
-          crud.deleteTarget.value = null;
+          crud.setDeleteTarget(null);
         }}
       />
     </div>

@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { Card } from "@/components/ui/Card.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
@@ -6,7 +7,7 @@ import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
 import { apiGet } from "@/lib/api.ts";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
 import { panelState } from "@/lib/networking-state.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface CNIFeatures {
   hubble: boolean;
@@ -47,33 +48,34 @@ export default function CniOverview() {
     failure,
     refetch,
   } = usePoll<CNIInfo>("/v1/networking/cni", { interval: 120_000 });
-  const refreshing = useSignal(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const isClient = useIsClient();
 
   const handleRefresh = async () => {
-    refreshing.value = true;
+    setRefreshing(true);
     try {
       await apiGet<CNIInfo>("/v1/networking/cni?refresh=true");
     } catch {
       /* ignore — next poll cycle picks up refreshed data */
     }
-    refreshing.value = false;
+    setRefreshing(false);
   };
 
-  if (!IS_BROWSER || loading.value) {
+  if (!isClient || loading) {
     return (
       <>
-        <div class="animate-pulse h-40 bg-elevated rounded-lg" />
-        <div class="animate-pulse h-40 bg-elevated rounded-lg" />
+        <div className="animate-pulse h-40 bg-elevated rounded-lg" />
+        <div className="animate-pulse h-40 bg-elevated rounded-lg" />
       </>
     );
   }
 
-  if (error.value) {
+  if (error) {
     return (
-      <div class="md:col-span-2">
+      <div className="md:col-span-2">
         <Card>
           <PanelStateNotice
-            state={panelState(failure.value, "the CNI status")}
+            state={panelState(failure, "the CNI status")}
             onRetry={refetch}
           />
         </Card>
@@ -81,24 +83,24 @@ export default function CniOverview() {
     );
   }
 
-  const info = cniData.value;
+  const info = cniData;
   if (!info || info.name === "unknown") {
     return (
-      <div class="md:col-span-2">
+      <div className="md:col-span-2">
         <Card>
-          <div class="p-6 text-center text-text-muted">
-            <p class="text-lg font-medium">No CNI Plugin Detected</p>
-            <p class="mt-2 text-sm">
+          <div className="p-6 text-center text-text-muted">
+            <p className="text-lg font-medium">No CNI Plugin Detected</p>
+            <p className="mt-2 text-sm">
               Could not detect a supported CNI plugin (Cilium, Calico, or
               Flannel).
             </p>
             <Button
               variant="secondary"
               onClick={handleRefresh}
-              disabled={refreshing.value}
+              disabled={refreshing}
               className="mt-4"
             >
-              {refreshing.value ? "Scanning..." : "Re-scan Cluster"}
+              {refreshing ? "Scanning..." : "Re-scan Cluster"}
             </Button>
           </div>
         </Card>
@@ -110,40 +112,36 @@ export default function CniOverview() {
     <>
       {/* Overview card */}
       <Card title="Overview">
-        <div class="flex justify-end -mt-8 mb-2">
-          <Button
-            variant="ghost"
-            onClick={handleRefresh}
-            disabled={refreshing.value}
-          >
-            {refreshing.value ? "..." : "Refresh"}
+        <div className="flex justify-end -mt-8 mb-2">
+          <Button variant="ghost" onClick={handleRefresh} disabled={refreshing}>
+            {refreshing ? "..." : "Refresh"}
           </Button>
         </div>
-        <div class="space-y-3">
-          <div class="flex justify-between">
-            <span class="text-text-muted">Plugin</span>
-            <span class="font-medium text-text-primary capitalize">
+        <div className="space-y-3">
+          <div className="flex justify-between">
+            <span className="text-text-muted">Plugin</span>
+            <span className="font-medium text-text-primary capitalize">
               {info.name}
             </span>
           </div>
           {info.version && (
-            <div class="flex justify-between">
-              <span class="text-text-muted">Version</span>
-              <span class="font-mono text-sm">
+            <div className="flex justify-between">
+              <span className="text-text-muted">Version</span>
+              <span className="font-mono text-sm">
                 {info.version.split("@")[0].replace(/^.*:/, "")}
               </span>
             </div>
           )}
-          <div class="flex justify-between">
-            <span class="text-text-muted">Namespace</span>
-            <span class="font-mono text-sm">{info.namespace || "N/A"}</span>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Namespace</span>
+            <span className="font-mono text-sm">{info.namespace || "N/A"}</span>
           </div>
-          <div class="flex justify-between">
-            <span class="text-text-muted">DaemonSet</span>
-            <span class="font-mono text-sm">{info.daemonSet || "N/A"}</span>
+          <div className="flex justify-between">
+            <span className="text-text-muted">DaemonSet</span>
+            <span className="font-mono text-sm">{info.daemonSet || "N/A"}</span>
           </div>
-          <div class="flex justify-between">
-            <span class="text-text-muted">CRDs</span>
+          <div className="flex justify-between">
+            <span className="text-text-muted">CRDs</span>
             <StatusBadge
               label={
                 info.hasCRDs
@@ -161,23 +159,23 @@ export default function CniOverview() {
       {/* Health card */}
       {info.status && info.status.desired > 0 && (
         <Card title="Health">
-          <div class="space-y-3">
-            <div class="flex justify-between items-center">
-              <span class="text-text-muted">Status</span>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-text-muted">Status</span>
               <StatusBadge
                 label={info.status.healthy ? "Healthy" : "Degraded"}
                 tone={info.status.healthy ? "ok" : "warn"}
               />
             </div>
-            <div class="flex justify-between">
-              <span class="text-text-muted">Ready Pods</span>
-              <span class="font-mono text-sm">
+            <div className="flex justify-between">
+              <span className="text-text-muted">Ready Pods</span>
+              <span className="font-mono text-sm">
                 {info.status.ready} / {info.status.desired}
               </span>
             </div>
-            <div class="w-full bg-elevated rounded-full h-2">
+            <div className="w-full bg-elevated rounded-full h-2">
               <div
-                class={`h-2 rounded-full ${
+                className={`h-2 rounded-full ${
                   info.status.healthy ? "bg-success" : "bg-warning"
                 }`}
                 style={{
