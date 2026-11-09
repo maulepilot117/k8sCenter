@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface PerformancePanelProps {
   kind: string;
@@ -256,11 +258,10 @@ export default function PerformancePanel({
   namespace,
 }: PerformancePanelProps) {
   const isClient = useIsClient();
-  const [charts, setChartsState] = useState<ChartData[]>([]);
+  const [charts, setCharts, chartsRef] = useStateRef<ChartData[]>([]);
   const [monAvailable, setMonAvailable] = useState<boolean | null>(null);
-  const [refreshInterval, setRefreshInterval] = useState(30_000);
-  const chartsRef = useRef<ChartData[]>([]);
-  const refreshIntervalRef = useRef(30_000);
+  const [refreshInterval, setRefreshInterval, refreshIntervalRef] =
+    useStateRef(30_000);
   const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(
     undefined,
   );
@@ -270,15 +271,6 @@ export default function PerformancePanel({
   const activeRef = useRef<{ resource: Resource; generation: number } | null>(
     null,
   );
-  const loadMetricsRef = useRef<
-    (resource: Resource, generation: number) => Promise<void>
-  >(async () => {});
-
-  function setCharts(next: ChartData[]) {
-    chartsRef.current = next;
-    setChartsState(next);
-  }
-
   const startInterval = useCallback(
     (resource: Resource, generation: number) => {
       if (intervalRef.current) clearInterval(intervalRef.current);
@@ -295,8 +287,7 @@ export default function PerformancePanel({
   useEffect(() => {
     const resource = { kind, name, namespace };
     // Another resource: none of the charts on screen are its data.
-    chartsRef.current = [];
-    setChartsState([]);
+    setCharts([]);
     const generation = ++generationRef.current;
     activeRef.current = { resource, generation };
 
@@ -415,7 +406,7 @@ export default function PerformancePanel({
     if (generation !== generationRef.current) return;
     setCharts(updated);
   }
-  loadMetricsRef.current = loadMetrics;
+  const loadMetricsRef = useLatest(loadMetrics);
 
   if (!isClient) return null;
 
@@ -474,7 +465,6 @@ export default function PerformancePanel({
           value={refreshInterval}
           onChange={(e) => {
             const next = Number(e.currentTarget.value);
-            refreshIntervalRef.current = next;
             setRefreshInterval(next);
             const active = activeRef.current;
             if (active) startInterval(active.resource, active.generation);

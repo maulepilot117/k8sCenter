@@ -84,7 +84,7 @@ export default function NotificationBell() {
 
   // Fetch recent notifications when panel opens (guarded against double-open)
   const openPanel = async () => {
-    if (loadingRef.current) return; // prevent double-fetch on rapid clicks
+    if (loadingRef.current) return;
     const opening = !showPanel;
     setShowPanel(opening);
     if (opening) {

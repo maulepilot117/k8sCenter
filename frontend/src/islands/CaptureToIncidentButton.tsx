@@ -589,7 +589,6 @@ export default function CaptureToIncidentButton({
       return id;
     });
 
-  const inFlight = busy;
   // Read after the version so a write or clear re-renders the label and link.
   void pendingVersion;
   const pending = userId ? readPendingCapture(key) : null;
@@ -663,7 +662,7 @@ export default function CaptureToIncidentButton({
                 )}
               </div>
             )}
-            {inFlight && (
+            {busy && (
               <p role="status" className="m-0 text-sm text-text-muted">
                 Capturing…
               </p>
@@ -672,7 +671,7 @@ export default function CaptureToIncidentButton({
               <button
                 ref={newButtonRef}
                 type="button"
-                aria-disabled={inFlight}
+                aria-disabled={busy}
                 data-testid="capture-create-anyway"
                 onClick={createAnyway}
                 className={BUTTON_PRIMARY}
@@ -683,7 +682,7 @@ export default function CaptureToIncidentButton({
               <button
                 ref={newButtonRef}
                 type="button"
-                aria-disabled={inFlight}
+                aria-disabled={busy}
                 data-testid="capture-to-new-incident"
                 onClick={captureNew}
                 className={BUTTON_PRIMARY}
@@ -732,7 +731,7 @@ export default function CaptureToIncidentButton({
                     <li key={incident.id}>
                       <button
                         type="button"
-                        aria-disabled={inFlight}
+                        aria-disabled={busy}
                         data-testid="capture-to-existing-incident"
                         onClick={() => captureExisting(incident.id)}
                         className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-md border border-border-subtle bg-transparent px-3 py-2 text-left text-sm text-text-primary hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"

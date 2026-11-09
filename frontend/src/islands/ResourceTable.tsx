@@ -300,7 +300,7 @@ export default function ResourceTableIsland({
   const [loadingMore, setLoadingMore] = useState(false);
 
   // Action state
-  const [actionMenuOpen, setActionMenuOpen] = useState<string | null>(null); // UID of open menu
+  const [actionMenuUid, setActionMenuUid] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmState | null>(null);
   const [scaleTarget, setScaleTarget] = useState<K8sResource | null>(null);
   const [scaleValue, setScaleValue] = useState(1);
@@ -313,7 +313,7 @@ export default function ResourceTableIsland({
   const cluster = useSignalValue(selectedCluster);
   const counts = useSignalValue(resourceCounts);
 
-  const columns = RESOURCE_COLUMNS[kind] ?? [];
+  const columns = useMemo(() => RESOURCE_COLUMNS[kind] ?? [], [kind]);
 
   // Determine which filter chips to show
   const podFilterKind = kind === "pods";
@@ -707,11 +707,11 @@ export default function ResourceTableIsland({
   );
 
   // Close action menu when clicking outside
-  const menuIsOpen = actionMenuOpen !== null;
+  const menuIsOpen = actionMenuUid !== null;
   useEffect(() => {
     if (!IS_BROWSER || !menuIsOpen) return;
     const handler = () => {
-      setActionMenuOpen(null);
+      setActionMenuUid(null);
     };
     globalThis.addEventListener("click", handler);
     return () => globalThis.removeEventListener("click", handler);
@@ -748,7 +748,7 @@ export default function ResourceTableIsland({
 
   const handleActionClick = (actionId: ActionId, resource: K8sResource) => {
     if (actionBusy.current) return;
-    setActionMenuOpen(null);
+    setActionMenuUid(null);
     const meta = getActionMeta(actionId, resource, kind);
 
     if (actionId === "scale") {
@@ -805,26 +805,30 @@ export default function ResourceTableIsland({
 
   // Map RESOURCE_COLUMNS (the Column shape in lib/resource-columns.ts) →
   // UIColumn[] for ResourceTable
-  const uiColumns: UIColumn[] = columns.map((col) => ({
-    key: col.key,
-    label: col.label,
-    // Right-align numeric/age columns
-    align:
-      col.key === "age" ||
-      col.key === "restarts" ||
-      col.key === "replicas" ||
-      col.key === "completions" ||
-      col.key === "active" ||
-      col.key === "upToDate"
-        ? "right"
-        : "left",
-    // The displayed-sort comparator only handles these keys, and a saved view
-    // may only store one of them. Deriving the gate from that same constant
-    // keeps the two from drifting apart: a column made sortable here without
-    // widening SAVED_VIEW_SORT_KEYS (and the Go allowlist behind it) would
-    // produce a sort the user could not save.
-    sortable: (SAVED_VIEW_SORT_KEYS as readonly string[]).includes(col.key),
-  }));
+  const uiColumns = useMemo<UIColumn[]>(
+    () =>
+      columns.map((col) => ({
+        key: col.key,
+        label: col.label,
+        // Right-align numeric/age columns
+        align:
+          col.key === "age" ||
+          col.key === "restarts" ||
+          col.key === "replicas" ||
+          col.key === "completions" ||
+          col.key === "active" ||
+          col.key === "upToDate"
+            ? "right"
+            : "left",
+        // The displayed-sort comparator only handles these keys, and a saved view
+        // may only store one of them. Deriving the gate from that same constant
+        // keeps the two from drifting apart: a column made sortable here without
+        // widening SAVED_VIEW_SORT_KEYS (and the Go allowlist behind it) would
+        // produce a sort the user could not save.
+        sortable: (SAVED_VIEW_SORT_KEYS as readonly string[]).includes(col.key),
+      })),
+    [columns],
+  );
 
   // Toggle/flip sort when a sortable header is clicked.
   const handleSort = (key: string) => {
@@ -835,38 +839,64 @@ export default function ResourceTableIsland({
     );
   };
 
-  // Build UIRow[] from K8sResource[] using the existing render functions
-  const uiRows: UIRow[] = displayed.map((resource): UIRow => {
-    const cells: Record<string, ReactNode> = {};
-    for (const col of columns) {
-      cells[col.key] = col.render
-        ? col.render(resource)
-        : String((resource as Record<string, unknown>)[col.key] ?? "");
-    }
-    // Inject kebab menu as last "actions" cell when there are actions.
-    if (actions.length > 0) {
-      cells._actions = (
-        <KebabCell
-          resource={resource}
-          actions={actions}
-          openUid={actionMenuOpen}
-          setOpenUid={setActionMenuOpen}
-          onAction={handleActionClick}
-        />
-      );
-    }
-    return {
-      id: resource.metadata.uid,
-      cells,
-      onClick: () => handleRowClick(resource),
-    };
-  });
+  // The per-row cells that do not depend on which menu is open, so opening a
+  // menu or typing in a dialog does not re-render every cell of every row.
+  const baseRows = useMemo(
+    () =>
+      displayed.map((resource) => {
+        const cells: Record<string, ReactNode> = {};
+        for (const col of columns) {
+          cells[col.key] = col.render
+            ? col.render(resource)
+            : String((resource as Record<string, unknown>)[col.key] ?? "");
+        }
+        return {
+          id: resource.metadata.uid,
+          cells,
+          onClick: () => handleRowClick(resource),
+        };
+      }),
+    [displayed, columns, handleRowClick],
+  );
+
+  const handleActionClickRef = useLatest(handleActionClick);
+  const onRowAction = useCallback(
+    (actionId: ActionId, resource: K8sResource) =>
+      handleActionClickRef.current(actionId, resource),
+    [],
+  );
+
+  // Inject kebab menu as last "actions" cell when there are actions.
+  const uiRows = useMemo<UIRow[]>(() => {
+    if (actions.length === 0) return baseRows;
+    return baseRows.map((row, i) => {
+      const resource = displayed[i] as K8sResource;
+      return {
+        ...row,
+        cells: {
+          ...row.cells,
+          _actions: (
+            <KebabCell
+              resource={resource}
+              actions={actions}
+              openUid={actionMenuUid}
+              setOpenUid={setActionMenuUid}
+              onAction={onRowAction}
+            />
+          ),
+        },
+      };
+    });
+  }, [baseRows, displayed, actions, actionMenuUid, onRowAction]);
 
   // Columns including optional actions column
-  const uiColumnsWithActions: UIColumn[] =
-    actions.length === 0
-      ? uiColumns
-      : [...uiColumns, { key: "_actions", label: "", width: "40px" }];
+  const uiColumnsWithActions = useMemo<UIColumn[]>(
+    () =>
+      actions.length === 0
+        ? uiColumns
+        : [...uiColumns, { key: "_actions", label: "", width: "40px" }],
+    [uiColumns, actions],
+  );
 
   // Confirmation dialog
   const confirmMeta = confirmAction

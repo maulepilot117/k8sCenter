@@ -169,7 +169,7 @@ export default function ClusterSwitcher() {
         const mapped: ClusterOption[] = [];
         for (const row of rows) {
           const o = toOption(row);
-          // A duplicate id would produce duplicate Preact keys and duplicate
+          // A duplicate id would produce duplicate React keys and duplicate
           // DOM ids, which breaks aria-activedescendant targeting.
           if (!o.id || seen.has(o.id)) continue;
           seen.add(o.id);

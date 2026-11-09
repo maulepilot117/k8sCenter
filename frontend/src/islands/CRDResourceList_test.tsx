@@ -107,14 +107,12 @@ test("renders a row per instance with its columns and links", async () => {
   await waitFor(() => body().getByText("alpha"));
 
   expect(body().getByText("beta")).toBeTruthy();
-  // namespace + printer column value
   expect(body().getAllByText("team-a").length).toBe(2);
   expect(body().getByText("size-alpha")).toBeTruthy();
   expect(body().getByText("Size")).toBeTruthy();
-  // filter tab + badge each
   expect(body().getAllByText("Ready").length).toBe(2);
   expect(body().getAllByText("Not Ready").length).toBe(2);
-  expect(body().getAllByText("Widgets").length).toBe(2); // breadcrumb + heading
+  expect(body().getAllByText("Widgets").length).toBe(2);
   const link = body().getByText("alpha").closest("a");
   expect(link?.getAttribute("href")).toBe(
     "/extensions/example.io/widgets/team-a/alpha",

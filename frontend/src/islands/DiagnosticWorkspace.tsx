@@ -12,6 +12,7 @@ import DiagnosticChecklist from "@/src/islands/DiagnosticChecklist.tsx";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface DiagnosticResponse {
@@ -131,8 +132,7 @@ export default function DiagnosticWorkspace() {
   // The field's current value for the effect below, which compares it with
   // what the top bar last filled in. Written when the field is filled from
   // the URL or the top bar so the comparison does not wait for a render.
-  const namespaceRef = useRef(namespace);
-  namespaceRef.current = namespace;
+  const namespaceRef = useLatest(namespace);
   const globalNs = useSignalValue(selectedNamespace);
 
   // Parse URL params on mount and auto-run if all present

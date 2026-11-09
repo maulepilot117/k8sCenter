@@ -18,6 +18,7 @@ import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 // ── Backend topology API types ──
 
@@ -370,7 +371,7 @@ export default function NamespaceTopology({
   const [remoteUnsupported, setRemoteUnsupported] = useState(false);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
-  const [view, setView] = useState({ zoom: 1, panX: 0, panY: 0 });
+  const [view, setView, viewRef] = useStateRef({ zoom: 1, panX: 0, panY: 0 });
   const [dragging, setDragging] = useState(false);
   const [overlayMode, setOverlayMode] = useState<OverlayMode>(defaultOverlay);
   const [unavailableOverlay, setUnavailableOverlay] =
@@ -378,10 +379,9 @@ export default function NamespaceTopology({
 
   const svgRef = useRef<SVGSVGElement>(null);
   // The wheel listener and the drag session run later than the render that
-  // created them, so they read the current view from a ref. The handlers
-  // write it too, so two events before the next render compound instead of
+  // created them, so they read the current view from the ref the setter
+  // writes first: two events before the next render compound instead of
   // overwriting each other.
-  const viewRef = useLatest(view);
   const dragRef = useRef({
     active: false,
     startX: 0,
@@ -495,7 +495,6 @@ export default function NamespaceTopology({
         panX: panX + (oldW - newW) * mx,
         panY: panY + (oldH - newH) * my,
       };
-      viewRef.current = next;
       setView(next);
     };
     svg.addEventListener("wheel", handleWheel, { passive: false });
@@ -544,7 +543,6 @@ export default function NamespaceTopology({
       panX: drag.panX - (e.clientX - drag.startX) * scaleX,
       panY: drag.panY - (e.clientY - drag.startY) * scaleY,
     };
-    viewRef.current = next;
     setView(next);
   };
 

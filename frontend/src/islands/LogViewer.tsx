@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
@@ -23,6 +23,7 @@ import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface LogViewerProps {
   namespace: string;
@@ -88,7 +89,7 @@ export default function LogViewer({
 }: LogViewerProps) {
   const isClient = useIsClient();
   const [activeTab, setActiveTab] = useState(0);
-  const [mode, setModeState] = useState<"follow" | "snapshot">("follow");
+  const [mode, setMode, modeRef] = useStateRef<"follow" | "snapshot">("follow");
   const [search, setSearch] = useState("");
   const [previous, setPrevious] = useState(false);
   const [splitView, setSplitView] = useState(false);
@@ -98,7 +99,7 @@ export default function LogViewer({
     containers.map(() => EMPTY_TAB),
   );
   const [loading, setLoading] = useState(true);
-  const [autoScroll, setAutoScrollState] = useState(true);
+  const [autoScroll, setAutoScroll, autoScrollRef] = useStateRef(true);
   const preRefs = useRef<(HTMLPreElement | null)[]>([]);
   const ansiUpRef = useRef<AnsiUpInstance | null>(null);
 
@@ -118,21 +119,10 @@ export default function LogViewer({
   // auto-scroll are written the moment a handler changes them: the stream
   // guard and the next flush must see the change before the re-render.
   const live = useLatest({ namespace, pod, allContainers });
-  const modeRef = useRef(mode);
-  const autoScrollRef = useRef(autoScroll);
   const previousRef = useRef(previous);
   const activeTabRef = useLatest(activeTab);
   const splitViewRef = useLatest(splitView);
   const splitTabRef = useLatest(splitTab);
-
-  const setMode = (next: "follow" | "snapshot") => {
-    modeRef.current = next;
-    setModeState(next);
-  };
-  const setAutoScroll = (next: boolean) => {
-    autoScrollRef.current = next;
-    setAutoScrollState(next);
-  };
 
   // WS refs — sockets are not render data
   const wsRefs = useRef<Map<number, WebSocket>>(new Map());
@@ -163,8 +153,6 @@ export default function LogViewer({
   // answer from an older generation is dropped.
   const snapshotGen = useRef(0);
   const scrollRafId = useRef(0);
-  // The HTML last written into each log pane, so a render that did not change
-  // a pane's content leaves it alone.
 
   // Load ansi_up dynamically (browser-only)
   useEffect(() => {
@@ -589,49 +577,6 @@ export default function LogViewer({
     }
   };
 
-  // Search filtering — operates on raw text, returns LogLine[]
-  const getFilteredLines = (tabIdx: number): LogLine[] => {
-    const state = getTabState(tabIdx);
-    if (!search.trim()) return state.lines;
-    const q = search.toLowerCase();
-    return state.lines.filter((line) => line.raw.toLowerCase().includes(q));
-  };
-
-  // Render log content using pre-cached HTML + search highlighting on raw text
-  const renderLogContent = (tabIdx: number): string => {
-    const filteredLines = getFilteredLines(tabIdx);
-    if (filteredLines.length === 0) {
-      if (loading) return "Loading logs...";
-      return "No log output";
-    }
-
-    const q = search.trim().toLowerCase();
-
-    if (!q) {
-      // Fast path: no search, just join pre-computed HTML
-      return filteredLines.map((l) => l.html).join("\n");
-    }
-
-    // Search highlighting: apply on the pre-computed HTML but only on text
-    // content (skip inside HTML tags to avoid breaking <span class="...">)
-    const re = new RegExp(escapeRegExp(q), "gi");
-    return filteredLines
-      .map((l) => {
-        return l.html.replace(
-          /(<[^>]*>)|([^<]+)/g,
-          (_full: string, tag: string, text: string) => {
-            if (tag) return tag; // pass HTML tags through unchanged
-            return text.replace(
-              re,
-              (match: string) =>
-                `<mark class="bg-warning-dim text-text-primary">${match}</mark>`,
-            );
-          },
-        );
-      })
-      .join("\n");
-  };
-
   // Download logs
   const downloadLogs = (tabIdx: number) => {
     const state = getTabState(tabIdx);
@@ -647,14 +592,34 @@ export default function LogViewer({
     URL.revokeObjectURL(url);
   };
 
+  // Search filtering and the panel HTML, per tab, on the inputs they read.
+  const activeLines = (tabStates[activeTab] ?? EMPTY_TAB).lines;
+  const splitLines = splitView
+    ? (tabStates[splitTab] ?? EMPTY_TAB).lines
+    : EMPTY_TAB.lines;
+  const activeFiltered = useMemo(
+    () => filterLines(activeLines, search),
+    [activeLines, search],
+  );
+  const splitFiltered = useMemo(
+    () => filterLines(splitLines, search),
+    [splitLines, search],
+  );
+  const activeHtml = useMemo(
+    () => logPanelHtml(activeFiltered, search, loading),
+    [activeFiltered, search, loading],
+  );
+  const splitHtml = useMemo(
+    () => logPanelHtml(splitFiltered, search, loading),
+    [splitFiltered, search, loading],
+  );
+
   if (!isClient) return null;
 
   const currentState = getTabState(activeTab);
-  // Compute match count inline (avoid conditional hook call)
-  const matchCount = search.trim() ? getFilteredLines(activeTab).length : 0;
+  const matchCount = search.trim() ? activeFiltered.length : 0;
 
-  const renderLogPanel = (tabIdx: number) => {
-    const html = renderLogContent(tabIdx);
+  const renderLogPanel = (tabIdx: number, html: string) => {
     return (
       <pre
         ref={(el) => {
@@ -877,17 +842,17 @@ export default function LogViewer({
             <div className="mb-1 text-xs font-medium text-text-muted">
               {allContainers[activeTab]?.name}
             </div>
-            {renderLogPanel(activeTab)}
+            {renderLogPanel(activeTab, activeHtml)}
           </div>
           <div>
             <div className="mb-1 text-xs font-medium text-text-muted">
               {allContainers[splitTab]?.name}
             </div>
-            {renderLogPanel(splitTab)}
+            {renderLogPanel(splitTab, splitHtml)}
           </div>
         </div>
       ) : (
-        renderLogPanel(activeTab)
+        renderLogPanel(activeTab, activeHtml)
       )}
 
       {/* Resume auto-scroll FAB */}
@@ -909,6 +874,51 @@ export default function LogViewer({
       )}
     </div>
   );
+}
+
+/** Search filtering: operates on raw text. */
+function filterLines(lines: LogLine[], search: string): LogLine[] {
+  if (!search.trim()) return lines;
+  const q = search.toLowerCase();
+  return lines.filter((line) => line.raw.toLowerCase().includes(q));
+}
+
+/** Log content using pre-cached HTML + search highlighting on raw text. */
+function logPanelHtml(
+  filteredLines: LogLine[],
+  search: string,
+  loading: boolean,
+): string {
+  if (filteredLines.length === 0) {
+    if (loading) return "Loading logs...";
+    return "No log output";
+  }
+
+  const q = search.trim().toLowerCase();
+
+  if (!q) {
+    // Fast path: no search, just join pre-computed HTML
+    return filteredLines.map((l) => l.html).join("\n");
+  }
+
+  // Search highlighting: apply on the pre-computed HTML but only on text
+  // content (skip inside HTML tags to avoid breaking <span class="...">)
+  const re = new RegExp(escapeRegExp(q), "gi");
+  return filteredLines
+    .map((l) => {
+      return l.html.replace(
+        /(<[^>]*>)|([^<]+)/g,
+        (_full: string, tag: string, text: string) => {
+          if (tag) return tag; // pass HTML tags through unchanged
+          return text.replace(
+            re,
+            (match: string) =>
+              `<mark class="bg-warning-dim text-text-primary">${match}</mark>`,
+          );
+        },
+      );
+    })
+    .join("\n");
 }
 
 function escapeHtml(s: string): string {

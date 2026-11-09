@@ -71,7 +71,7 @@ export default function CRDResourceList({ group, resource }: Props) {
   const isClient = useIsClient();
   const namespace = useSignalValue(selectedNamespace);
   const [loading, setLoading] = useState(true);
-  const [crdMeta, setCrdMeta] = useState<CRDInfo | null>(null);
+  const [meta, setMeta] = useState<CRDInfo | null>(null);
   const [items, setItems] = useState<CRDItem[]>([]);
   const [continueToken, setContinueToken] = useState<string | undefined>(
     undefined,
@@ -88,6 +88,9 @@ export default function CRDResourceList({ group, resource }: Props) {
   const loadingMoreRef = useRef(false);
   const deletingRef = useRef(false);
 
+  const listNsPath = namespace && namespace !== "all" ? `/${namespace}` : "";
+  const listUrl = `/v1/extensions/resources/${group}/${resource}${listNsPath}?limit=100`;
+
   // Fetch CRD metadata
   useEffect(() => {
     if (!isClient) return;
@@ -97,9 +100,9 @@ export default function CRDResourceList({ group, resource }: Props) {
         const res = await apiGet<{ info: CRDInfo; schema: unknown }>(
           `/v1/extensions/crds/${group}/${resource}`,
         );
-        setCrdMeta(res.data?.info ?? null);
+        setMeta(res.data?.info ?? null);
       } catch {
-        setCrdMeta(null);
+        setMeta(null);
       }
     };
     fetchMeta();
@@ -112,10 +115,7 @@ export default function CRDResourceList({ group, resource }: Props) {
     const fetchInstances = async () => {
       setLoading(true);
       try {
-        const nsPath = namespace && namespace !== "all" ? `/${namespace}` : "";
-        const res = await apiGet<CRDItem[]>(
-          `/v1/extensions/resources/${group}/${resource}${nsPath}?limit=100`,
-        );
+        const res = await apiGet<CRDItem[]>(listUrl);
         setItems(res.data ?? []);
         setContinueToken(
           (res as { metadata?: { continue?: string } }).metadata?.continue,
@@ -128,7 +128,7 @@ export default function CRDResourceList({ group, resource }: Props) {
       }
     };
     fetchInstances();
-  }, [isClient, group, resource, namespace]);
+  }, [isClient, listUrl]);
 
   // Load more handler
   const loadMore = async () => {
@@ -136,11 +136,8 @@ export default function CRDResourceList({ group, resource }: Props) {
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
-      const nsPath = namespace && namespace !== "all" ? `/${namespace}` : "";
       const res = await apiGet<CRDItem[]>(
-        `/v1/extensions/resources/${group}/${resource}${nsPath}?limit=100&continue=${encodeURIComponent(
-          continueToken,
-        )}`,
+        `${listUrl}&continue=${encodeURIComponent(continueToken)}`,
       );
       setItems((prev) => [...prev, ...(res.data ?? [])]);
       setContinueToken(
@@ -204,7 +201,6 @@ export default function CRDResourceList({ group, resource }: Props) {
     );
   }
 
-  const meta = crdMeta;
   const isNamespaced = meta?.scope === "Namespaced";
   const kind = meta?.kind ?? resource;
   const version = meta?.version ?? "v1";

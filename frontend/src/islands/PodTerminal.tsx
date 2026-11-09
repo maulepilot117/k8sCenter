@@ -5,6 +5,7 @@ import { getAccessToken, readyAccessToken } from "@/lib/api.ts";
 import { streamAuthFrame, streamErrorMessage } from "@/lib/stream-state.ts";
 import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface PodTerminalProps {
   namespace: string;
@@ -33,36 +34,23 @@ export default function PodTerminal({
   containers,
 }: PodTerminalProps) {
   const isClient = useIsClient();
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
+  // Socket callbacks, ref callbacks and rAF callbacks outlive the render that
+  // created them, so they read the live lists through the refs the setters
+  // write first.
+  const [sessions, commitSessions, sessionsRef] = useStateRef<Session[]>([]);
+  const [activeSessionId, commitActiveSessionId, activeSessionIdRef] =
+    useStateRef<number | null>(null);
   const [selectedContainer, setSelectedContainer] = useState(
     containers[0] || "",
   );
   const [fullscreen, setFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Socket callbacks, ref callbacks and rAF callbacks outlive the render that
-  // created them, so they read the live lists through refs written together
-  // with the state.
-  const sessionsRef = useRef<Session[]>([]);
-  const activeSessionIdRef = useRef<number | null>(null);
-
-  const commitSessions = useCallback((next: Session[]) => {
-    sessionsRef.current = next;
-    setSessions(next);
+  const updateSession = useCallback((id: number, update: Partial<Session>) => {
+    commitSessions(
+      sessionsRef.current.map((s) => (s.id === id ? { ...s, ...update } : s)),
+    );
   }, []);
-  const commitActiveSessionId = useCallback((next: number | null) => {
-    activeSessionIdRef.current = next;
-    setActiveSessionId(next);
-  }, []);
-  const updateSession = useCallback(
-    (id: number, update: Partial<Session>) => {
-      commitSessions(
-        sessionsRef.current.map((s) => (s.id === id ? { ...s, ...update } : s)),
-      );
-    },
-    [commitSessions],
-  );
 
   // Ref callback registry: maps session id -> DOM element
   const terminalRefs = useRef<Map<number, HTMLDivElement>>(new Map());

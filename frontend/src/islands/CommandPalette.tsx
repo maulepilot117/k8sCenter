@@ -211,19 +211,20 @@ export default function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const searchIndex = useMemo(() => buildSearchIndex(), []);
-  const results = fuzzySearch(searchIndex, query);
 
-  // Group results by type in defined order
-  const grouped: { type: string; items: SearchItem[] }[] = [];
-  for (const type of TYPE_ORDER) {
-    const items = results.filter((r) => r.type === type);
-    if (items.length > 0) {
-      grouped.push({ type, items });
+  const { grouped, flatResults } = useMemo(() => {
+    const results = fuzzySearch(searchIndex, query);
+    // Group results by type in defined order
+    const groups: { type: string; items: SearchItem[] }[] = [];
+    for (const type of TYPE_ORDER) {
+      const items = results.filter((r) => r.type === type);
+      if (items.length > 0) {
+        groups.push({ type, items });
+      }
     }
-  }
-
-  // Flat list for keyboard navigation
-  const flatResults = grouped.flatMap((g) => g.items);
+    // Flat list for keyboard navigation
+    return { grouped: groups, flatResults: groups.flatMap((g) => g.items) };
+  }, [searchIndex, query]);
 
   function openPalette() {
     setOpen(true);
