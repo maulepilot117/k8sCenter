@@ -247,6 +247,22 @@ test("Secret: the review shows the mask, is read-only, and applies the real YAML
   }
 });
 
+test("Secret: a clean apply lets the page be left without a prompt", async () => {
+  render(<SecretWizard onClose={() => {}} />);
+  fillSecret("applied", "API_TOKEN", "value");
+  expect(leaveIsBlocked()).toBe(true);
+  await next();
+  await previewBody("secret");
+
+  await act(async () => {
+    click(body().getByRole("button", { name: "Apply" }));
+  });
+  // The apply answer is handled after the click returns.
+  await waitFor(() => body().getByText("Created", { exact: false }));
+  expect(calls.some((c) => c.url.endsWith("/v1/yaml/apply"))).toBe(true);
+  expect(leaveIsBlocked()).toBe(false);
+});
+
 test("Secret: a value with no key blocks Next with a field error", async () => {
   render(<SecretWizard onClose={() => {}} />);
   type(body().getByPlaceholderText("e.g. my-secret"), "half-row");
