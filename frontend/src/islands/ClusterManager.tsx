@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import Field from "@/components/ui/form/Field.tsx";
@@ -54,105 +54,113 @@ type WizardStep = "list" | "connect";
  * Cluster management island — list clusters + add cluster wizard.
  */
 export default function ClusterManager() {
-  const clusters = useSignal<ClusterInfo[]>([]);
-  const loading = useSignal(true);
-  const step = useSignal<WizardStep>("list");
-  const error = useSignal("");
-  const saving = useSignal(false);
+  const [clusters, setClusters] = useState<ClusterInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [step, setStep] = useState<WizardStep>("list");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   // Wizard form state
-  const name = useSignal("");
-  const displayName = useSignal("");
-  const apiServerUrl = useSignal("");
-  const token = useSignal("");
-  const caCert = useSignal("");
+  const [name, setName] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [apiServerUrl, setApiServerUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [caCert, setCaCert] = useState("");
   // F#2 — admin-only opt-in for unverified TLS. Bearer tokens travel over
   // the connection, so default-false. Backend re-validates admin role and
   // rejects registrations missing both CA and this opt-in.
-  const allowInsecureTLS = useSignal(false);
+  const [allowInsecureTLS, setAllowInsecureTLS] = useState(false);
 
   // Per-cluster metrics binding form (one open at a time); the form owns its
   // fields, this island keeps which cluster is open and each cluster's badge.
-  const metricsFor = useSignal<string | null>(null);
-  const metricsState = useSignal<Record<string, MetricsState>>({});
+  const [metricsFor, setMetricsFor] = useState<string | null>(null);
+  const [metricsState, setMetricsStates] = useState<
+    Record<string, MetricsState>
+  >({});
   // Same shape for the optional Loki binding form.
-  const logsFor = useSignal<string | null>(null);
-  const logsState = useSignal<Record<string, LokiState>>({});
+  const [logsFor, setLogsFor] = useState<string | null>(null);
+  const [logsState, setLogsStates] = useState<Record<string, LokiState>>({});
   // Same shape for the compliance-history identity form.
-  const identityFor = useSignal<string | null>(null);
-  const identityState = useSignal<Record<string, ComplianceIdentityState>>({});
+  const [identityFor, setIdentityFor] = useState<string | null>(null);
+  const [identityState, setIdentityStates] = useState<
+    Record<string, ComplianceIdentityState>
+  >({});
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `loadClusters` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
     loadClusters();
   }, []);
 
+  // The binding forms report after their own requests finish, so these merge
+  // into the latest map rather than the one from the render that opened them.
   function setMetricsState(id: string, state: MetricsState) {
-    metricsState.value = { ...metricsState.value, [id]: state };
+    setMetricsStates((prev) => ({ ...prev, [id]: state }));
   }
 
   function setLogsState(id: string, state: LokiState) {
-    logsState.value = { ...logsState.value, [id]: state };
+    setLogsStates((prev) => ({ ...prev, [id]: state }));
   }
 
   function setIdentityState(id: string, state: ComplianceIdentityState) {
-    identityState.value = { ...identityState.value, [id]: state };
+    setIdentityStates((prev) => ({ ...prev, [id]: state }));
   }
 
   function toggleIdentity(id: string) {
-    identityFor.value = identityFor.value === id ? null : id;
+    setIdentityFor((cur) => (cur === id ? null : id));
   }
 
   function toggleMetrics(id: string) {
-    metricsFor.value = metricsFor.value === id ? null : id;
+    setMetricsFor((cur) => (cur === id ? null : id));
   }
 
   function toggleLogs(id: string) {
-    logsFor.value = logsFor.value === id ? null : id;
+    setLogsFor((cur) => (cur === id ? null : id));
   }
 
   async function loadClusters() {
-    loading.value = true;
+    setLoading(true);
     try {
       const res = await apiGet<ClusterInfo[]>("/v1/clusters");
-      clusters.value = Array.isArray(res.data) ? res.data : [];
+      setClusters(Array.isArray(res.data) ? res.data : []);
     } catch {
       // May not have database configured
-      clusters.value = [];
+      setClusters([]);
     } finally {
-      loading.value = false;
+      setLoading(false);
     }
   }
 
   async function addCluster() {
-    error.value = "";
-    saving.value = true;
+    setError("");
+    setSaving(true);
     try {
       await api("/v1/clusters", {
         method: "POST",
         body: JSON.stringify({
-          name: name.value,
-          displayName: displayName.value,
-          apiServerUrl: apiServerUrl.value,
-          token: token.value,
-          caCert: caCert.value,
-          allowInsecureTLS: allowInsecureTLS.value,
+          name,
+          displayName,
+          apiServerUrl,
+          token,
+          caCert,
+          allowInsecureTLS,
         }),
       });
       // Reset wizard and reload
-      step.value = "list";
-      name.value = "";
-      displayName.value = "";
-      apiServerUrl.value = "";
-      token.value = "";
-      caCert.value = "";
-      allowInsecureTLS.value = false;
+      setStep("list");
+      setName("");
+      setDisplayName("");
+      setApiServerUrl("");
+      setToken("");
+      setCaCert("");
+      setAllowInsecureTLS(false);
       await loadClusters();
     } catch (err) {
-      error.value =
-        err instanceof Error ? err.message : "Failed to register cluster";
+      setError(
+        err instanceof Error ? err.message : "Failed to register cluster",
+      );
     } finally {
-      saving.value = false;
+      setSaving(false);
     }
   }
 
@@ -173,7 +181,7 @@ export default function ClusterManager() {
     }
   }
 
-  if (loading.value) {
+  if (loading) {
     return (
       <div
         style={{ display: "flex", justifyContent: "center", padding: "48px 0" }}
@@ -184,17 +192,17 @@ export default function ClusterManager() {
   }
 
   // Add Cluster Wizard
-  if (step.value === "connect") {
+  if (step === "connect") {
     return (
       <WidgetShell title="Add Cluster">
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          {error.value && <ErrorBanner message={error.value} />}
+          {error && <ErrorBanner message={error} />}
 
           <Field label="Cluster Name">
             <TextField
-              value={name.value}
+              value={name}
               onInput={(v) => {
-                name.value = v;
+                setName(v);
               }}
               placeholder="production-us-east"
             />
@@ -202,9 +210,9 @@ export default function ClusterManager() {
 
           <Field label="Display Name" hint="Optional human-readable label">
             <TextField
-              value={displayName.value}
+              value={displayName}
               onInput={(v) => {
-                displayName.value = v;
+                setDisplayName(v);
               }}
               placeholder="Production US East"
             />
@@ -212,9 +220,9 @@ export default function ClusterManager() {
 
           <Field label="API Server URL">
             <TextField
-              value={apiServerUrl.value}
+              value={apiServerUrl}
               onInput={(v) => {
-                apiServerUrl.value = v;
+                setApiServerUrl(v);
               }}
               placeholder="https://k8s-api.example.com:6443"
             />
@@ -222,9 +230,9 @@ export default function ClusterManager() {
 
           <Field label="Service Account Token">
             <textarea
-              value={token.value}
-              onInput={(e) => {
-                token.value = (e.target as HTMLTextAreaElement).value;
+              value={token}
+              onChange={(e) => {
+                setToken(e.currentTarget.value);
               }}
               rows={3}
               placeholder="eyJhbGciOiJSUzI1NiIs..."
@@ -249,9 +257,9 @@ export default function ClusterManager() {
             hint="Optional when insecure TLS opt-in is enabled below"
           >
             <textarea
-              value={caCert.value}
-              onInput={(e) => {
-                caCert.value = (e.target as HTMLTextAreaElement).value;
+              value={caCert}
+              onChange={(e) => {
+                setCaCert(e.currentTarget.value);
               }}
               rows={3}
               placeholder="-----BEGIN CERTIFICATE-----"
@@ -289,9 +297,9 @@ export default function ClusterManager() {
               }}
             >
               <Toggle
-                checked={allowInsecureTLS.value}
+                checked={allowInsecureTLS}
                 onChange={(v) => {
-                  allowInsecureTLS.value = v;
+                  setAllowInsecureTLS(v);
                 }}
               />
               <span>
@@ -325,13 +333,13 @@ export default function ClusterManager() {
             <Button
               type="button"
               variant="primary"
-              loading={saving.value}
+              loading={saving}
               onClick={addCluster}
               disabled={
-                !name.value ||
-                !apiServerUrl.value ||
-                !token.value ||
-                (!caCert.value && !allowInsecureTLS.value)
+                !name ||
+                !apiServerUrl ||
+                !token ||
+                (!caCert && !allowInsecureTLS)
               }
             >
               Register Cluster
@@ -340,7 +348,7 @@ export default function ClusterManager() {
               type="button"
               variant="ghost"
               onClick={() => {
-                step.value = "list";
+                setStep("list");
               }}
             >
               Cancel
@@ -360,7 +368,7 @@ export default function ClusterManager() {
     { key: "actions", label: "", width: "160px", align: "right" },
   ];
 
-  const rows: Row[] = clusters.value.map((c) => ({
+  const rows: Row[] = clusters.map((c) => ({
     id: c.id,
     cells: {
       name: (
@@ -428,59 +436,57 @@ export default function ClusterManager() {
               </span>
             )}
           </div>
-          {!c.isLocal && metricsState.value[c.id] && (
+          {!c.isLocal && metricsState[c.id] && (
             <div style={{ marginTop: "4px" }}>
               <StatusBadge
                 label={
-                  metricsState.value[c.id] === "configured"
+                  metricsState[c.id] === "configured"
                     ? "metrics: configured"
                     : "metrics: not configured"
                 }
-                tone={metricsState.value[c.id] === "configured" ? "ok" : "warn"}
+                tone={metricsState[c.id] === "configured" ? "ok" : "warn"}
               />
             </div>
           )}
-          {!c.isLocal && logsState.value[c.id] && (
+          {!c.isLocal && logsState[c.id] && (
             <div style={{ marginTop: "4px" }}>
               <StatusBadge
                 label={
-                  logsState.value[c.id] === "configured"
+                  logsState[c.id] === "configured"
                     ? "logs: configured Loki URL"
                     : "logs: in-cluster Loki"
                 }
-                tone={logsState.value[c.id] === "configured" ? "ok" : "neutral"}
+                tone={logsState[c.id] === "configured" ? "ok" : "neutral"}
               />
             </div>
           )}
-          {!c.isLocal && identityState.value[c.id] && (
+          {!c.isLocal && identityState[c.id] && (
             <div style={{ marginTop: "4px" }}>
               <StatusBadge
                 label={
-                  identityState.value[c.id] === "configured"
+                  identityState[c.id] === "configured"
                     ? "compliance history: configured"
                     : "compliance history: not configured"
                 }
-                tone={
-                  identityState.value[c.id] === "configured" ? "ok" : "warn"
-                }
+                tone={identityState[c.id] === "configured" ? "ok" : "warn"}
               />
             </div>
           )}
-          {!c.isLocal && identityFor.value === c.id && (
+          {!c.isLocal && identityFor === c.id && (
             <ComplianceIdentityForm
               key={c.id}
               clusterId={c.id}
               onIdentity={setIdentityState}
             />
           )}
-          {!c.isLocal && metricsFor.value === c.id && (
+          {!c.isLocal && metricsFor === c.id && (
             <MetricsBindingForm
               key={c.id}
               clusterId={c.id}
               onBinding={setMetricsState}
             />
           )}
-          {!c.isLocal && logsFor.value === c.id && (
+          {!c.isLocal && logsFor === c.id && (
             <LokiBindingForm
               key={c.id}
               clusterId={c.id}
@@ -545,8 +551,10 @@ export default function ClusterManager() {
                 const res = await apiPost<ClusterInfo>(
                   `/v1/clusters/${c.id}/test`,
                 );
-                clusters.value = clusters.value.map((cl) =>
-                  cl.id === c.id ? { ...cl, ...res.data } : cl,
+                setClusters((prev) =>
+                  prev.map((cl) =>
+                    cl.id === c.id ? { ...cl, ...res.data } : cl,
+                  ),
                 );
                 showToast(
                   res.data.status === "connected"
@@ -608,21 +616,21 @@ export default function ClusterManager() {
         }}
       >
         <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-          {clusters.value.length} cluster
-          {clusters.value.length !== 1 ? "s" : ""} registered
+          {clusters.length} cluster
+          {clusters.length !== 1 ? "s" : ""} registered
         </span>
         <Button
           type="button"
           variant="primary"
           onClick={() => {
-            step.value = "connect";
+            setStep("connect");
           }}
         >
           Add Cluster
         </Button>
       </div>
 
-      {clusters.value.length === 0 ? (
+      {clusters.length === 0 ? (
         <div
           style={{
             background: "var(--bg-surface)",

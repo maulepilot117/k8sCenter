@@ -142,12 +142,11 @@ export default function YamlApplyPage() {
   const repairClusterId =
     repairNow.status === "valid" ? repairNow.clusterId : undefined;
   const pinnedClusterId = pinNow?.target.clusterId;
-  const clusterNames = useClusterNames([
+  const namesNow = useClusterNames([
     selected,
     pinnedClusterId,
     repairClusterId,
   ]);
-  const namesNow = useSignalValue(clusterNames);
 
   // Change tracking (Release E): whether the server can keep a record, and
   // who manages the previewed objects.
