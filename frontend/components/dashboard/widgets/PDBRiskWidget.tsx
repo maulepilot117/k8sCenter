@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The blocked/no-pods/unknown distinction lives in lib/, under test, because
 // telling a budget that blocks a drain apart from one that merely covers
@@ -8,8 +9,8 @@ import {
   pdbHref,
   pdbRiskView,
 } from "@/lib/dashboard/autoscaling.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { ResourceListPage } from "@/lib/dashboard/wire-types.ts";
 
 /** How many rows the card lists. The header counts cover the whole page. */
@@ -47,7 +48,7 @@ const STATE_BADGE: Readonly<Record<PDBState, string>> = {
  * was removed. That distinction is `pdbRiskView`'s, not this file's.
  */
 function PDBRisk() {
-  const page = dashboardData.state<ResourceListPage>("pdbs-list").data;
+  const page = useSourceState<ResourceListPage>("pdbs-list").data;
   const view = pdbRiskView(page, ROW_LIMIT);
 
   return (
@@ -57,13 +58,16 @@ function PDBRisk() {
         view.blocked > 0 ? (
           <span
             data-testid="pdb-risk-summary"
-            class="text-xs"
+            className="text-xs"
             style={{ color: "var(--error)" }}
           >
             {view.blocked} blocking
           </span>
         ) : view.healthy > 0 ? (
-          <span data-testid="pdb-risk-summary" class="text-xs text-text-muted">
+          <span
+            data-testid="pdb-risk-summary"
+            className="text-xs text-text-muted"
+          >
             {view.healthy} allow disruption
           </span>
         ) : undefined
@@ -76,21 +80,21 @@ function PDBRisk() {
         // unanswered read is the failure this release exists to prevent.
         <p
           data-testid="pdb-risk-unreadable-page"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The budget roll-up returned a result this card cannot read.
         </p>
       ) : view.pdbs.length === 0 ? (
         <p
           data-testid="pdb-risk-empty"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           {view.total === 0
             ? "No PodDisruptionBudgets on this cluster."
             : `All ${view.healthy} budget${view.healthy === 1 ? "" : "s"} allow at least one disruption.`}
         </p>
       ) : (
-        <ul class="flex flex-col gap-1.5" data-testid="pdb-risk-list">
+        <ul className="flex flex-col gap-1.5" data-testid="pdb-risk-list">
           {view.pdbs.map((p) => (
             <PDBRow key={`${p.namespace}/${p.name}`} pdb={p} />
           ))}
@@ -100,7 +104,7 @@ function PDBRisk() {
       {view.truncated && (
         <p
           data-testid="pdb-risk-truncated"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           Ranked across the first {view.counted} of {view.total} budgets.
         </p>
@@ -108,7 +112,7 @@ function PDBRisk() {
 
       <a
         href={PDB_LIST_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all budgets →
       </a>
@@ -132,23 +136,23 @@ function PDBRow({ pdb }: { pdb: PDBStatus }) {
       : `${pdb.currentHealthy}/${pdb.desiredHealthy}`;
 
   return (
-    <li class="flex items-center justify-between gap-2 text-xs">
-      <span class="flex min-w-0 items-center gap-2">
+    <li className="flex items-center justify-between gap-2 text-xs">
+      <span className="flex min-w-0 items-center gap-2">
         <span
           aria-hidden="true"
-          class="size-2 shrink-0 rounded-full"
+          className="size-2 shrink-0 rounded-full"
           style={{ background: STATE_COLOR[pdb.state] }}
         />
         <a
           href={pdbHref(pdb.namespace, pdb.name)}
           title={`${pdb.namespace}/${pdb.name}`}
-          class="truncate text-text-secondary no-underline hover:text-accent"
+          className="truncate text-text-secondary no-underline hover:text-accent"
         >
           {pdb.name}
         </a>
         {badge !== "" && (
           <span
-            class="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
             style={{
               background:
                 pdb.state === "blocked"
@@ -162,7 +166,7 @@ function PDBRow({ pdb }: { pdb: PDBStatus }) {
         )}
       </span>
       <span
-        class="shrink-0 font-mono font-semibold"
+        className="shrink-0 font-mono font-semibold"
         style={{ color: STATE_COLOR[pdb.state] }}
         title="healthy pods / minimum the budget insists on"
       >

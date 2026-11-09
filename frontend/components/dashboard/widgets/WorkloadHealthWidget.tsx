@@ -1,6 +1,7 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type {
   ResourceCounts,
   ResourceListPage,
@@ -49,17 +50,14 @@ import {
  * release exists to remove.
  */
 function WorkloadHealth() {
-  const counts = dashboardData.state<ResourceCounts>("resource-counts").data;
+  const counts = useSourceState<ResourceCounts>("resource-counts").data;
   const roll = rollUpWorkloadHealth(counts, {
     deployments:
-      dashboardData.state<ResourceListPage>("deployments-list").data?.items ??
-      null,
+      useSourceState<ResourceListPage>("deployments-list").data?.items ?? null,
     statefulsets:
-      dashboardData.state<ResourceListPage>("statefulsets-list").data?.items ??
-      null,
+      useSourceState<ResourceListPage>("statefulsets-list").data?.items ?? null,
     daemonsets:
-      dashboardData.state<ResourceListPage>("daemonsets-list").data?.items ??
-      null,
+      useSourceState<ResourceListPage>("daemonsets-list").data?.items ?? null,
   });
 
   return (
@@ -69,7 +67,7 @@ function WorkloadHealth() {
         roll.ready + roll.degraded > 0 ? (
           <span
             data-testid="workload-health-summary"
-            class="text-xs"
+            className="text-xs"
             style={{
               color: roll.degraded > 0 ? "var(--warning)" : "var(--success)",
             }}
@@ -83,12 +81,12 @@ function WorkloadHealth() {
       {roll.empty ? (
         <p
           data-testid="workload-health-empty"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           No Deployments, StatefulSets or DaemonSets on this cluster.
         </p>
       ) : (
-        <div class="flex flex-col gap-2" data-testid="workload-health-rows">
+        <div className="flex flex-col gap-2" data-testid="workload-health-rows">
           {roll.kinds.map((k) => (
             <KindRow key={k.kind} kind={k} />
           ))}
@@ -98,7 +96,7 @@ function WorkloadHealth() {
       {roll.unknownKinds.length > 0 && (
         <p
           data-testid="workload-health-unknown"
-          class="mt-3 text-[11px] leading-snug text-text-muted"
+          className="mt-3 text-[11px] leading-snug text-text-muted"
         >
           {roll.unknownKinds.map((k) => WORKLOAD_KIND_LABELS[k]).join(", ")}
           {roll.unknownKinds.length === 1 ? " is" : " are"} not visible to this
@@ -110,7 +108,7 @@ function WorkloadHealth() {
       {roll.truncated && (
         <p
           data-testid="workload-health-truncated"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           Readiness covers the first page of each kind; the totals are complete.
         </p>
@@ -128,30 +126,30 @@ function KindRow({ kind }: { kind: WorkloadKindHealth }) {
     kind.counted > 0 ? Math.round((kind.ready / kind.counted) * 100) : 0;
 
   return (
-    <div class="flex items-center gap-3 text-xs">
+    <div className="flex items-center gap-3 text-xs">
       <a
         href={WORKLOAD_KIND_HREFS[kind.kind]}
-        class="w-24 shrink-0 truncate font-semibold text-text-primary no-underline hover:text-accent"
+        className="w-24 shrink-0 truncate font-semibold text-text-primary no-underline hover:text-accent"
       >
         {label}
       </a>
 
       {kind.visibility === "unknown" ? (
-        <span class="flex-1 text-[11px] italic text-text-muted">
+        <span className="flex-1 text-[11px] italic text-text-muted">
           Not visible to this account
         </span>
       ) : kind.visibility === "pending" ? (
-        <span class="flex-1 text-[11px] text-text-muted">
+        <span className="flex-1 text-[11px] text-text-muted">
           {kind.total} total · checking readiness…
         </span>
       ) : (
         <>
           <span
             aria-hidden="true"
-            class="h-2 flex-1 overflow-hidden rounded-sm bg-hover"
+            className="h-2 flex-1 overflow-hidden rounded-sm bg-hover"
           >
             <span
-              class="block h-full rounded-sm"
+              className="block h-full rounded-sm"
               style={{
                 width: `${kind.counted > 0 ? pct : 0}%`,
                 background:
@@ -159,7 +157,7 @@ function KindRow({ kind }: { kind: WorkloadKindHealth }) {
               }}
             />
           </span>
-          <span class="w-20 shrink-0 text-right font-mono text-text-secondary">
+          <span className="w-20 shrink-0 text-right font-mono text-text-secondary">
             {kind.ready}/{kind.counted}
             {kind.truncated ? ` of ${kind.total}` : ""}
           </span>

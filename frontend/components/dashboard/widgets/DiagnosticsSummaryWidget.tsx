@@ -1,5 +1,5 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The severity mapping and the counting live in lib/, under test, because
 // this repo has no component test harness (D-10) and the direction the
 // mapping errs in is a judgement an operator acts on. Do not inline them.
@@ -7,6 +7,7 @@ import { rollUpDiagnostics } from "@/lib/dashboard/diagnostics-summary.ts";
 import { PARAM_KEY_NAMESPACE, sourceKeyFor } from "@/lib/dashboard/params.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { DiagnosticsSummary } from "@/lib/dashboard/wire-types.ts";
 
 /**
@@ -38,7 +39,7 @@ import type { DiagnosticsSummary } from "@/lib/dashboard/wire-types.ts";
  */
 function DiagnosticsSummaryCard({ params }: WidgetProps) {
   const namespace = params[PARAM_KEY_NAMESPACE] ?? "";
-  const state = dashboardData.state<DiagnosticsSummary>(
+  const state = useSourceState<DiagnosticsSummary>(
     sourceKeyFor("diagnostics-summary", params),
   );
   const roll = rollUpDiagnostics(state.data);
@@ -50,7 +51,7 @@ function DiagnosticsSummaryCard({ params }: WidgetProps) {
         <span
           data-testid="diagnostics-namespace"
           title={namespace}
-          class="max-w-[10rem] truncate rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted"
+          className="max-w-[10rem] truncate rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted"
         >
           {namespace}
         </span>
@@ -62,18 +63,18 @@ function DiagnosticsSummaryCard({ params }: WidgetProps) {
         // from here -- so the card says the one thing it does know.
         <p
           data-testid="diagnostics-empty"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           No workloads found in {namespace}. The namespace may be empty, or it
           may no longer exist.
         </p>
       ) : (
-        <div class="flex flex-col gap-3">
-          <div class="flex items-baseline gap-4">
+        <div className="flex flex-col gap-3">
+          <div className="flex items-baseline gap-4">
             <div>
               <div
                 data-testid="diagnostics-critical"
-                class="font-mono text-2xl font-bold leading-none"
+                className="font-mono text-2xl font-bold leading-none"
                 style={{
                   color:
                     roll.critical > 0 ? "var(--error)" : "var(--text-muted)",
@@ -81,12 +82,12 @@ function DiagnosticsSummaryCard({ params }: WidgetProps) {
               >
                 {roll.critical}
               </div>
-              <div class="mt-1 text-[11px] text-text-muted">critical</div>
+              <div className="mt-1 text-[11px] text-text-muted">critical</div>
             </div>
             <div>
               <div
                 data-testid="diagnostics-warning"
-                class="font-mono text-2xl font-bold leading-none"
+                className="font-mono text-2xl font-bold leading-none"
                 style={{
                   color:
                     roll.warning > 0 ? "var(--warning)" : "var(--text-muted)",
@@ -94,36 +95,39 @@ function DiagnosticsSummaryCard({ params }: WidgetProps) {
               >
                 {roll.warning}
               </div>
-              <div class="mt-1 text-[11px] text-text-muted">pending</div>
+              <div className="mt-1 text-[11px] text-text-muted">pending</div>
             </div>
-            <div class="ml-auto text-right">
+            <div className="ml-auto text-right">
               <div
                 data-testid="diagnostics-healthy"
-                class="font-mono text-2xl font-bold leading-none text-text-primary"
+                className="font-mono text-2xl font-bold leading-none text-text-primary"
               >
                 {roll.healthy}
               </div>
-              <div class="mt-1 text-[11px] text-text-muted">
+              <div className="mt-1 text-[11px] text-text-muted">
                 of {roll.total} healthy
               </div>
             </div>
           </div>
 
           {roll.reasons.length === 0 ? (
-            <p class="text-xs text-text-secondary">
+            <p className="text-xs text-text-secondary">
               Nothing failing in this namespace.
             </p>
           ) : (
-            <ul class="flex flex-col gap-1.5" data-testid="diagnostics-reasons">
+            <ul
+              className="flex flex-col gap-1.5"
+              data-testid="diagnostics-reasons"
+            >
               {roll.reasons.map((r) => (
                 <li
                   key={r.reason}
-                  class="flex items-center justify-between gap-2 text-xs"
+                  className="flex items-center justify-between gap-2 text-xs"
                 >
-                  <span class="flex min-w-0 items-center gap-2">
+                  <span className="flex min-w-0 items-center gap-2">
                     <span
                       aria-hidden="true"
-                      class="size-2 shrink-0 rounded-full"
+                      className="size-2 shrink-0 rounded-full"
                       style={{
                         background:
                           r.severity === "critical"
@@ -131,9 +135,11 @@ function DiagnosticsSummaryCard({ params }: WidgetProps) {
                             : "var(--warning)",
                       }}
                     />
-                    <span class="truncate text-text-secondary">{r.reason}</span>
+                    <span className="truncate text-text-secondary">
+                      {r.reason}
+                    </span>
                   </span>
-                  <span class="shrink-0 font-mono font-semibold text-text-primary">
+                  <span className="shrink-0 font-mono font-semibold text-text-primary">
                     {r.count}
                   </span>
                 </li>

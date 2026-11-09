@@ -1,8 +1,8 @@
+/** @jsxImportSource react */
 import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The state vocabulary, the worst-first roll-up and the unreadable-row
 // accounting live in lib/, under test, because none of them is a field read
 // (D-10, KTD8). Do not inline them.
@@ -12,6 +12,7 @@ import {
   clusterStatusView,
 } from "@/lib/dashboard/platform.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /** How many clusters the card lists. The counts above them cover every cluster
  * the registry returned, not just these. */
@@ -53,7 +54,7 @@ const STATE_TONE: Record<ClusterState, Tone> = {
  */
 function ClusterStatus() {
   const view = clusterStatusView(
-    dashboardData.state("clusters-list").data,
+    useSourceState("clusters-list").data,
     ROW_LIMIT,
   );
   const unhealthy =
@@ -69,7 +70,7 @@ function ClusterStatus() {
         view.readable && view.total > 0 ? (
           <span
             data-testid="cluster-status-summary"
-            class="text-xs text-text-muted"
+            className="text-xs text-text-muted"
           >
             {view.total} cluster{view.total === 1 ? "" : "s"}
           </span>
@@ -81,7 +82,7 @@ function ClusterStatus() {
         // empty list here would read as an install managing nothing.
         <p
           data-testid="cluster-status-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The clusters endpoint returned a result this card cannot read.
         </p>
@@ -92,14 +93,14 @@ function ClusterStatus() {
         // clusters is not a healthy install.
         <p
           data-testid="cluster-status-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           No clusters are registered, not even this one.
         </p>
       ) : (
         <>
           <div
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
             data-testid="cluster-status-counts"
           >
             <SeverityCount
@@ -129,7 +130,7 @@ function ClusterStatus() {
             />
           </div>
 
-          <ul class="flex flex-col gap-2" data-testid="cluster-status-list">
+          <ul className="flex flex-col gap-2" data-testid="cluster-status-list">
             {view.rows.map((row) => (
               <ClusterItem key={row.id} row={row} />
             ))}
@@ -138,7 +139,7 @@ function ClusterStatus() {
           {unhealthy === 0 && view.rows.length === view.total && (
             <p
               data-testid="cluster-status-clear"
-              class="mt-2 text-center text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-center text-[11px] leading-snug text-text-muted"
             >
               Every registered cluster last probed as connected.
             </p>
@@ -147,7 +148,7 @@ function ClusterStatus() {
           {view.total > view.rows.length && (
             <p
               data-testid="cluster-status-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing the {view.rows.length} worst of {view.total}.
             </p>
@@ -158,7 +159,7 @@ function ClusterStatus() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="cluster-status-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no cluster this card
@@ -169,7 +170,7 @@ function ClusterStatus() {
 
       <a
         href={CLUSTERS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         Manage clusters →
       </a>
@@ -184,22 +185,22 @@ function ClusterStatus() {
  */
 function ClusterItem({ row }: { row: ClusterRow }) {
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <span
-          class="min-w-0 truncate text-xs text-text-secondary"
+          className="min-w-0 truncate text-xs text-text-secondary"
           title={row.id}
         >
           {row.name}
           {row.isLocal && (
-            <span class="ml-1.5 text-[10px] text-text-muted">local</span>
+            <span className="ml-1.5 text-[10px] text-text-muted">local</span>
           )}
         </span>
-        <span class="shrink-0">
+        <span className="shrink-0">
           <StatusBadge label={row.state} tone={STATE_TONE[row.state]} />
         </span>
       </span>
-      <span class="truncate text-[10px] text-text-muted">
+      <span className="truncate text-[10px] text-text-muted">
         {row.statusMessage !== ""
           ? row.statusMessage
           : [

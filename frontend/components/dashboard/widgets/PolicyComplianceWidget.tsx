@@ -1,8 +1,8 @@
+/** @jsxImportSource react */
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 // The score band, the ungoverned case and the trend delta live in lib/, under
 // test, because none of them is a field read (D-10, KTD8). Do not inline them.
@@ -10,6 +10,7 @@ import {
   COMPLIANCE_PAGE_HREF,
   policyComplianceView,
 } from "@/lib/dashboard/severity.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import { scoreColor } from "@/lib/score-color.ts";
 
 /**
@@ -36,8 +37,8 @@ import { scoreColor } from "@/lib/score-color.ts";
  * card degrades to a line of copy instead of the shell's error state.
  */
 function PolicyCompliance() {
-  const score = dashboardData.state("policy-compliance-score");
-  const history = dashboardData.state("policy-compliance-history");
+  const score = useSourceState("policy-compliance-score");
+  const history = useSourceState("policy-compliance-history");
   const view = policyComplianceView(score.data, history.data);
 
   return (
@@ -47,7 +48,7 @@ function PolicyCompliance() {
         view.readable && view.governed ? (
           <span
             data-testid="policy-compliance-total"
-            class="text-xs text-text-muted"
+            className="text-xs text-text-muted"
           >
             {view.total} polic{view.total === 1 ? "y" : "ies"}
           </span>
@@ -60,21 +61,21 @@ function PolicyCompliance() {
         // non-compliance rather than as an unreadable response.
         <p
           data-testid="policy-compliance-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The compliance endpoint returned a result this card cannot read.
         </p>
       ) : !view.governed ? (
         <p
           data-testid="policy-compliance-ungoverned"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           A policy engine is running, but no policies are defined. There is
           nothing to score yet.
         </p>
       ) : (
-        <div class="flex flex-wrap items-center gap-4">
-          <div class="shrink-0">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="shrink-0">
             <GaugeRing
               value={view.score}
               size={96}
@@ -84,17 +85,17 @@ function PolicyCompliance() {
             />
           </div>
 
-          <div class="flex min-w-[9rem] flex-1 flex-col gap-2">
-            <div class="flex items-baseline gap-3 text-xs">
+          <div className="flex min-w-[9rem] flex-1 flex-col gap-2">
+            <div className="flex items-baseline gap-3 text-xs">
               <span data-testid="policy-compliance-pass">
-                <span class="font-mono font-semibold text-text-primary">
+                <span className="font-mono font-semibold text-text-primary">
                   {view.pass}
                 </span>
-                <span class="ml-1 text-text-muted">passing</span>
+                <span className="ml-1 text-text-muted">passing</span>
               </span>
               <span data-testid="policy-compliance-fail">
                 <span
-                  class="font-mono font-semibold"
+                  className="font-mono font-semibold"
                   style={{
                     color:
                       view.fail > 0 ? "var(--error)" : "var(--text-primary)",
@@ -102,11 +103,11 @@ function PolicyCompliance() {
                 >
                   {view.fail}
                 </span>
-                <span class="ml-1 text-text-muted">blocked</span>
+                <span className="ml-1 text-text-muted">blocked</span>
               </span>
               <span data-testid="policy-compliance-warn">
                 <span
-                  class="font-mono font-semibold"
+                  className="font-mono font-semibold"
                   style={{
                     color:
                       view.warn > 0 ? "var(--warning)" : "var(--text-primary)",
@@ -114,21 +115,21 @@ function PolicyCompliance() {
                 >
                   {view.warn}
                 </span>
-                <span class="ml-1 text-text-muted">audited</span>
+                <span className="ml-1 text-text-muted">audited</span>
               </span>
             </div>
 
             {view.fail === 0 && view.warn === 0 ? (
               <p
                 data-testid="policy-compliance-clear"
-                class="text-xs text-text-secondary"
+                className="text-xs text-text-secondary"
               >
                 Every policy is passing.
               </p>
             ) : (
               <div
                 data-testid="policy-compliance-severities"
-                class="flex flex-wrap gap-1.5"
+                className="flex flex-wrap gap-1.5"
               >
                 {view.failuresBySeverity.map((bucket) => (
                   <SeverityCount
@@ -149,7 +150,7 @@ function PolicyCompliance() {
       {view.readable && view.governed && (
         <p
           data-testid="policy-compliance-trend"
-          class="mt-3 text-[11px] leading-snug text-text-muted"
+          className="mt-3 text-[11px] leading-snug text-text-muted"
         >
           {view.history.delta !== null ? (
             <>
@@ -183,7 +184,7 @@ function PolicyCompliance() {
 
       <a
         href={COMPLIANCE_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View compliance report →
       </a>

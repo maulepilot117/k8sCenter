@@ -1,5 +1,5 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The partial-answer accounting, the zero-versus-absent rule and the error-rate
 // rounding live in lib/, under test (D-10, KTD8). The first of those especially:
 // the route answers with a zero for every query Prometheus refused, and a card
@@ -15,6 +15,7 @@ import {
 } from "@/lib/dashboard/params.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import { goldenSignalsReasonCopy } from "@/lib/metrics-reasons.ts";
 
 /**
@@ -39,7 +40,7 @@ function MeshGoldenSignals({ params }: WidgetProps) {
   const namespace = params[PARAM_KEY_NAMESPACE] ?? "";
   const service = params[PARAM_KEY_SERVICE] ?? "";
   const view = goldenSignalsView(
-    dashboardData.state(sourceKeyFor("mesh-golden-signals", params)).data,
+    useSourceState(sourceKeyFor("mesh-golden-signals", params)).data,
   );
 
   return (
@@ -49,7 +50,7 @@ function MeshGoldenSignals({ params }: WidgetProps) {
         <span
           data-testid="golden-signals-target"
           title={`${namespace}/${service}`}
-          class="max-w-[12rem] truncate rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted"
+          className="max-w-[12rem] truncate rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted"
         >
           {namespace}/{service}
         </span>
@@ -60,7 +61,7 @@ function MeshGoldenSignals({ params }: WidgetProps) {
         // Empty numbers here would read as a silent service.
         <p
           data-testid="golden-signals-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The service mesh endpoint returned a result this card cannot read.
         </p>
@@ -70,13 +71,16 @@ function MeshGoldenSignals({ params }: WidgetProps) {
         // the whole reason this branch exists rather than rendering zeros.
         <p
           data-testid="golden-signals-unmeasured"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           {unmeasuredCopy(view.reason)}
         </p>
       ) : (
         <>
-          <div class="mb-3 grid grid-cols-2 gap-2" data-testid="golden-signals">
+          <div
+            className="mb-3 grid grid-cols-2 gap-2"
+            data-testid="golden-signals"
+          >
             <Signal
               testId="golden-signals-rps"
               label="requests/s"
@@ -101,7 +105,7 @@ function MeshGoldenSignals({ params }: WidgetProps) {
           </div>
 
           <div
-            class="flex flex-wrap gap-1.5"
+            className="flex flex-wrap gap-1.5"
             data-testid="golden-signals-latency"
           >
             <Quantile label="p50" value={view.p50Ms} />
@@ -114,7 +118,7 @@ function MeshGoldenSignals({ params }: WidgetProps) {
             // service and nothing is calling it.
             <p
               data-testid="golden-signals-idle"
-              class="mt-3 text-[11px] leading-snug text-text-muted"
+              className="mt-3 text-[11px] leading-snug text-text-muted"
             >
               No traffic reached this service in the last window.
             </p>
@@ -129,7 +133,7 @@ function MeshGoldenSignals({ params }: WidgetProps) {
       {view.missing.length > 0 && (
         <p
           data-testid="golden-signals-partial"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           Prometheus could not answer {view.missing.join(", ")}, so{" "}
           {view.missing.length === 1 ? "that signal is" : "those signals are"}{" "}
@@ -139,7 +143,7 @@ function MeshGoldenSignals({ params }: WidgetProps) {
 
       <a
         href={goldenSignalsServiceHref(namespace, service)}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View service →
       </a>
@@ -179,15 +183,15 @@ function Signal({
   color?: string;
 }) {
   return (
-    <div class="flex flex-col">
+    <div className="flex flex-col">
       <span
         data-testid={testId}
-        class="text-lg font-semibold leading-tight"
+        className="text-lg font-semibold leading-tight"
         style={color !== undefined && value !== null ? { color } : undefined}
       >
         {value === null ? "—" : format(value)}
       </span>
-      <span class="text-[11px] text-text-muted">{label}</span>
+      <span className="text-[11px] text-text-muted">{label}</span>
     </div>
   );
 }
@@ -196,11 +200,11 @@ function Signal({
 function Quantile({ label, value }: { label: string; value: number | null }) {
   return (
     <span
-      class="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs"
+      className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs"
       style={{ backgroundColor: "var(--surface-subtle)" }}
     >
-      <span class="text-text-muted">{label}</span>
-      <span class="font-medium text-text-secondary">
+      <span className="text-text-muted">{label}</span>
+      <span className="font-medium text-text-secondary">
         {value === null ? "—" : `${Math.round(value)}ms`}
       </span>
     </span>

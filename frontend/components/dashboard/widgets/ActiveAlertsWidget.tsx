@@ -1,8 +1,10 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/lib/cluster.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
  * Firing alert counts: a critical line, a warning remainder, and a link out.
@@ -10,14 +12,15 @@ import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
  * Lifted from the pre-registry DashboardV2 card.
  */
 function ActiveAlerts() {
-  const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
+  const s = useSourceState<DashboardSummary>("dashboard-summary").data;
 
   const activeAlerts = s?.alerts.active ?? 0;
   const criticalAlerts = s?.alerts.critical ?? 0;
   const warningAlerts = activeAlerts - criticalAlerts;
   // The Alerts page feeds stay local (R15): a link from a remote cluster's
   // card would open another cluster's alerts under this one's name.
-  const isRemote = selectedCluster.value !== LOCAL_CLUSTER_ID;
+  const cluster = useSignalValue(selectedCluster);
+  const isRemote = cluster !== LOCAL_CLUSTER_ID;
 
   return (
     <WidgetShell
@@ -59,7 +62,7 @@ function ActiveAlerts() {
             viewBox="0 0 24 24"
             fill="none"
             stroke="var(--success)"
-            stroke-width="2"
+            strokeWidth="2"
           >
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
             <polyline points="22 4 12 14.01 9 11.01" />

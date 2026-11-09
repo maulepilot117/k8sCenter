@@ -1,6 +1,7 @@
+/** @jsxImportSource react */
 import { NetworkTile } from "@/components/ui/NetworkTile.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { DashboardTrends } from "@/lib/dashboard/wire-types.ts";
 import { percentile } from "@/lib/format.ts";
 
@@ -19,7 +20,7 @@ const DEFAULT_RANGE = "1h";
  * shell today, the grid in P2 -- has to know this widget needs it.
  */
 function NetworkTileWidget() {
-  const trends = dashboardData.state<DashboardTrends>("dashboard-trends");
+  const trends = useSourceState<DashboardTrends>("dashboard-trends");
   const t = trends.data;
 
   return (

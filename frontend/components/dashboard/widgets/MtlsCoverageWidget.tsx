@@ -1,7 +1,7 @@
+/** @jsxImportSource react */
 import { MeshBadge, MTLSStateBadge } from "@/components/ui/MeshBadges.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 // The coverage fraction, the meshed/unmeshed split and the percent rounding
 // live in lib/, under test (D-10, KTD8). The rounding especially: plain
@@ -12,6 +12,7 @@ import {
   MESH_MTLS_PAGE_HREF,
   mtlsCoverageView,
 } from "@/lib/dashboard/sync-state.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { MeshType, MTLSState } from "@/lib/mesh-types.ts";
 
 /** How many non-strict workloads the card lists. */
@@ -40,10 +41,7 @@ const ROW_LIMIT = 5;
  * mesh that IS installed and has no workloads can safely say so here.
  */
 function MtlsCoverage() {
-  const view = mtlsCoverageView(
-    dashboardData.state("mesh-mtls").data,
-    ROW_LIMIT,
-  );
+  const view = mtlsCoverageView(useSourceState("mesh-mtls").data, ROW_LIMIT);
 
   return (
     <WidgetShell
@@ -52,7 +50,7 @@ function MtlsCoverage() {
         view.readable && view.percent !== null ? (
           <span
             data-testid="mtls-coverage-percent"
-            class="text-xs font-semibold"
+            className="text-xs font-semibold"
             style={{
               color:
                 view.percent === 100
@@ -72,7 +70,7 @@ function MtlsCoverage() {
         // empty posture here would read as a mesh with nothing unencrypted.
         <p
           data-testid="mtls-coverage-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The service mesh endpoint returned a result this card cannot read.
         </p>
@@ -81,7 +79,7 @@ function MtlsCoverage() {
         // nothing in it. Distinct from both "no mesh" and "everything strict".
         <p
           data-testid="mtls-coverage-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           A service mesh is installed but no workload you can see is running in
           it yet.
@@ -92,12 +90,12 @@ function MtlsCoverage() {
               denominator, so a cluster whose workloads are mostly unmeshed
               does not read as one that is mostly unencrypted. */}
           <div
-            class="mb-1 h-2 w-full overflow-hidden rounded-full"
+            className="mb-1 h-2 w-full overflow-hidden rounded-full"
             style={{ backgroundColor: "var(--surface-subtle)" }}
             data-testid="mtls-coverage-bar"
           >
             <div
-              class="h-full rounded-full"
+              className="h-full rounded-full"
               style={{
                 width: `${view.percent ?? 0}%`,
                 backgroundColor:
@@ -110,7 +108,7 @@ function MtlsCoverage() {
             />
           </div>
           <p
-            class="mb-3 text-[11px] leading-snug text-text-muted"
+            className="mb-3 text-[11px] leading-snug text-text-muted"
             data-testid="mtls-coverage-caption"
           >
             {view.meshed === 0
@@ -126,7 +124,7 @@ function MtlsCoverage() {
           </p>
 
           <div
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
             data-testid="mtls-coverage-counts"
           >
             <SeverityCount
@@ -162,14 +160,17 @@ function MtlsCoverage() {
           {view.rows.length === 0 ? (
             <p
               data-testid="mtls-coverage-clear"
-              class="py-2 text-center text-xs text-text-muted"
+              className="py-2 text-center text-xs text-text-muted"
             >
               {view.meshed === 0
                 ? "No meshed workload to report on."
                 : "Every meshed workload you can see enforces strict mTLS."}
             </p>
           ) : (
-            <ul class="flex flex-col gap-2" data-testid="mtls-coverage-list">
+            <ul
+              className="flex flex-col gap-2"
+              data-testid="mtls-coverage-list"
+            >
               {view.rows.map((row) => (
                 <WorkloadItem
                   key={`${row.namespace}/${row.workload}`}
@@ -182,7 +183,7 @@ function MtlsCoverage() {
           {view.counts.inactive + view.counts.mixed > view.rows.length && (
             <p
               data-testid="mtls-coverage-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing {view.rows.length} of{" "}
               {view.counts.inactive + view.counts.mixed} not enforcing strict
@@ -199,7 +200,7 @@ function MtlsCoverage() {
       {view.partial.length > 0 && (
         <p
           data-testid="mtls-coverage-partial"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           This posture is incomplete ({view.partial.join(", ")}).
         </p>
@@ -208,7 +209,7 @@ function MtlsCoverage() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="mtls-coverage-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no workload this card
@@ -219,7 +220,7 @@ function MtlsCoverage() {
 
       <a
         href={MESH_MTLS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View mTLS posture →
       </a>
@@ -238,19 +239,19 @@ function MtlsCoverage() {
  */
 function WorkloadItem({ row }: { row: MtlsRow }) {
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <span
           title={`${row.namespace}/${row.workload}`}
-          class="min-w-0 truncate text-xs text-text-secondary"
+          className="min-w-0 truncate text-xs text-text-secondary"
         >
           {row.workload}
         </span>
-        <span class="shrink-0">
+        <span className="shrink-0">
           <MTLSStateBadge state={row.state as MTLSState} />
         </span>
       </span>
-      <span class="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
+      <span className="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
         <MeshBadge mesh={row.mesh as MeshType} />
         {row.namespace}
         {row.workloadKind === ""

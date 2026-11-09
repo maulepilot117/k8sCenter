@@ -1,9 +1,10 @@
+/** @jsxImportSource react */
 import BarRow from "@/components/charts/BarRow.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";
 import { withheldReason } from "@/lib/dashboard/coverage.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /**
  * Node capacity: CPU, memory, pod and readiness bars, with a readiness
@@ -47,7 +48,7 @@ function SectionBar({
 }
 
 function Nodes() {
-  const s = dashboardData.state<CoveredSummary>("dashboard-summary").data;
+  const s = useSourceState<CoveredSummary>("dashboard-summary").data;
 
   const nodeCount = s?.nodes.total ?? 0;
   const nodesReady = s?.nodes.ready ?? 0;

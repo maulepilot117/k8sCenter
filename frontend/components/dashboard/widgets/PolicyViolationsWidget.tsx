@@ -1,8 +1,8 @@
+/** @jsxImportSource react */
 import { BlockingBadge, SeverityBadge } from "@/components/ui/PolicyBadges.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 // The severity ranking, the tiebreak and the unreadable-row accounting live
 // in lib/, under test, because none of them is a field read (D-10, KTD8). Do
@@ -12,6 +12,7 @@ import {
   policyViolationsView,
   VIOLATIONS_PAGE_HREF,
 } from "@/lib/dashboard/severity.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /** How many rows the card lists. The header counts cover every violation the
  * endpoint returned, not just these. */
@@ -35,7 +36,7 @@ const ROW_LIMIT = 6;
  */
 function PolicyViolations() {
   const view = policyViolationsView(
-    dashboardData.state("policy-violations-list").data,
+    useSourceState("policy-violations-list").data,
     ROW_LIMIT,
   );
 
@@ -46,7 +47,7 @@ function PolicyViolations() {
         view.readable && view.total > 0 ? (
           <span
             data-testid="policy-violations-summary"
-            class="text-xs"
+            className="text-xs"
             style={{
               color: view.blocking > 0 ? "var(--error)" : "var(--warning)",
             }}
@@ -62,7 +63,7 @@ function PolicyViolations() {
         // An empty list here would read as a cluster with nothing in breach.
         <p
           data-testid="policy-violations-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The violations endpoint returned a result this card cannot read.
         </p>
@@ -71,7 +72,7 @@ function PolicyViolations() {
         // known to be installed by the time this renders.
         <p
           data-testid="policy-violations-clear"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           No policy violations. Every resource you can see satisfies the
           policies in force.
@@ -80,7 +81,7 @@ function PolicyViolations() {
         <>
           <div
             data-testid="policy-violations-severities"
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
           >
             {view.bySeverity.map((bucket) => (
               <SeverityCount
@@ -92,7 +93,10 @@ function PolicyViolations() {
             ))}
           </div>
 
-          <ul class="flex flex-col gap-2" data-testid="policy-violations-list">
+          <ul
+            className="flex flex-col gap-2"
+            data-testid="policy-violations-list"
+          >
             {view.rows.map((row) => (
               <ViolationItem
                 key={`${row.policy}/${row.namespace}/${row.kind}/${row.name}`}
@@ -104,7 +108,7 @@ function PolicyViolations() {
           {view.total > view.rows.length && (
             <p
               data-testid="policy-violations-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing the {view.rows.length} most severe of {view.total}.
             </p>
@@ -115,7 +119,7 @@ function PolicyViolations() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="policy-violations-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} violation
           {view.unreadableRows === 1 ? "" : "s"} named no resource this card
@@ -126,7 +130,7 @@ function PolicyViolations() {
 
       <a
         href={VIOLATIONS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all violations →
       </a>
@@ -145,21 +149,21 @@ function PolicyViolations() {
 function ViolationItem({ row }: { row: ViolationRow }) {
   const scope = row.namespace === "" ? "cluster-scoped" : row.namespace;
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <span
-          class="min-w-0 truncate text-xs text-text-secondary"
+          className="min-w-0 truncate text-xs text-text-secondary"
           title={row.policy}
         >
           {row.policy === "" ? "unnamed policy" : row.policy}
         </span>
-        <span class="flex shrink-0 items-center gap-1">
+        <span className="flex shrink-0 items-center gap-1">
           <SeverityBadge severity={row.severity} />
           <BlockingBadge blocking={row.blocking} />
         </span>
       </span>
       <span
-        class="truncate text-[10px] text-text-muted"
+        className="truncate text-[10px] text-text-muted"
         title={`${row.kind} ${scope}/${row.name}`}
       >
         {row.kind === "" ? "resource" : row.kind} · {scope}/{row.name}

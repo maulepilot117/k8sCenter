@@ -1,6 +1,6 @@
+/** @jsxImportSource react */
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The readiness reading, the parentRef resolution and the worst-first ranking
 // live in lib/, under test (D-10, KTD8). The first of those especially: a
 // Gateway the controller has not touched carries no Programmed condition at
@@ -11,6 +11,7 @@ import {
   gatewayRoutesView,
 } from "@/lib/dashboard/networking.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /** How many gateways the card lists. The counts above them cover all of
  * them, not just these. */
@@ -39,8 +40,8 @@ const ROW_LIMIT = 5;
  */
 function GatewayRoutes() {
   const view = gatewayRoutesView(
-    dashboardData.state("gateway-gateways").data,
-    dashboardData.state("gateway-httproutes").data,
+    useSourceState("gateway-gateways").data,
+    useSourceState("gateway-httproutes").data,
     ROW_LIMIT,
   );
 
@@ -51,7 +52,7 @@ function GatewayRoutes() {
         view.readable ? (
           <span
             data-testid="gateway-routes-total"
-            class="text-xs font-semibold"
+            className="text-xs font-semibold"
             style={{
               color:
                 view.notReady > 0
@@ -72,7 +73,7 @@ function GatewayRoutes() {
         // misrouted.
         <p
           data-testid="gateway-routes-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The Gateway API endpoints returned a result this card cannot read.
         </p>
@@ -82,14 +83,14 @@ function GatewayRoutes() {
         // Gateway API", which is the shell's unavailable state.
         <p
           data-testid="gateway-routes-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           Gateway API is installed but no Gateway you can see is declared yet.
         </p>
       ) : (
         <>
           <p
-            class="mb-3 text-[11px] leading-snug text-text-muted"
+            className="mb-3 text-[11px] leading-snug text-text-muted"
             data-testid="gateway-routes-caption"
           >
             {view.routeCount} HTTP route{view.routeCount === 1 ? "" : "s"} you
@@ -100,7 +101,7 @@ function GatewayRoutes() {
           </p>
 
           <div
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
             data-testid="gateway-routes-counts"
           >
             <SeverityCount
@@ -123,12 +124,15 @@ function GatewayRoutes() {
           {view.rows.length === 0 ? (
             <p
               data-testid="gateway-routes-unnamed"
-              class="py-2 text-center text-xs text-text-muted"
+              className="py-2 text-center text-xs text-text-muted"
             >
               No gateway in this inventory named itself.
             </p>
           ) : (
-            <ul class="flex flex-col gap-2" data-testid="gateway-routes-list">
+            <ul
+              className="flex flex-col gap-2"
+              data-testid="gateway-routes-list"
+            >
               {view.rows.map((row) => (
                 <GatewayItem key={`${row.namespace}/${row.name}`} row={row} />
               ))}
@@ -138,7 +142,7 @@ function GatewayRoutes() {
           {view.gatewayCount - view.unreadableRows > view.rows.length && (
             <p
               data-testid="gateway-routes-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing {view.rows.length} of{" "}
               {view.gatewayCount - view.unreadableRows} gateways.
@@ -150,7 +154,7 @@ function GatewayRoutes() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="gateway-routes-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no gateway this card
@@ -161,7 +165,7 @@ function GatewayRoutes() {
 
       <a
         href={GATEWAY_API_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View Gateway API →
       </a>
@@ -184,16 +188,16 @@ function GatewayRoutes() {
  */
 function GatewayItem({ row }: { row: GatewayRow }) {
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <span
           title={`${row.namespace}/${row.name}`}
-          class="min-w-0 truncate text-xs text-text-secondary"
+          className="min-w-0 truncate text-xs text-text-secondary"
         >
           {row.name}
         </span>
         <span
-          class="shrink-0 text-[10px] font-medium"
+          className="shrink-0 text-[10px] font-medium"
           style={{
             color:
               row.ready === true
@@ -210,7 +214,7 @@ function GatewayItem({ row }: { row: GatewayRow }) {
               : "no status yet"}
         </span>
       </span>
-      <span class="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
+      <span className="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
         {row.namespace}
         {row.className === "" ? "" : ` · ${row.className}`}
         {` · ${row.listeners} listener${row.listeners === 1 ? "" : "s"}`}

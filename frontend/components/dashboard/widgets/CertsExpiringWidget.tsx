@@ -1,7 +1,7 @@
+/** @jsxImportSource react */
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The classification, the ranking and the unreadable-row accounting live in
 // lib/, under test, because none of them is a field read (D-10, KTD8). Do not
 // inline them -- and in particular do not inline a threshold.
@@ -12,6 +12,7 @@ import {
   certsExpiringView,
 } from "@/lib/dashboard/expiry.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /** How many certificates the card lists. The counts above them cover every
  * certificate the endpoint returned, not just these. */
@@ -52,7 +53,7 @@ const CLASS_COLORS: Record<ExpiryClass, string> = {
  */
 function CertsExpiring() {
   const view = certsExpiringView(
-    dashboardData.state("certificates-list").data,
+    useSourceState("certificates-list").data,
     ROW_LIMIT,
   );
 
@@ -63,7 +64,7 @@ function CertsExpiring() {
         view.readable && view.total > 0 ? (
           <span
             data-testid="certs-expiring-summary"
-            class="text-xs"
+            className="text-xs"
             style={{
               color:
                 view.critical > 0
@@ -83,7 +84,7 @@ function CertsExpiring() {
         // read. Zero expiring here would read as a fleet in good order.
         <p
           data-testid="certs-expiring-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The certificates endpoint returned a result this card cannot read.
         </p>
@@ -93,14 +94,14 @@ function CertsExpiring() {
         // not the same as everything being healthy either.
         <p
           data-testid="certs-expiring-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           cert-manager is installed but manages no certificates you can see.
         </p>
       ) : view.expiring === 0 ? (
         <p
           data-testid="certs-expiring-clear"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           None of the {view.total} certificate{view.total === 1 ? "" : "s"} you
           can see is inside its renewal threshold.
@@ -109,7 +110,7 @@ function CertsExpiring() {
         <>
           <div
             data-testid="certs-expiring-counts"
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
           >
             <SeverityCount
               label="critical"
@@ -128,7 +129,7 @@ function CertsExpiring() {
             />
           </div>
 
-          <ul class="flex flex-col gap-2" data-testid="certs-expiring-list">
+          <ul className="flex flex-col gap-2" data-testid="certs-expiring-list">
             {view.rows.map((row) => (
               <CertificateItem key={`${row.namespace}/${row.name}`} row={row} />
             ))}
@@ -137,7 +138,7 @@ function CertsExpiring() {
           {view.expiring > view.rows.length && (
             <p
               data-testid="certs-expiring-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing the {view.rows.length} soonest of {view.expiring}.
             </p>
@@ -152,7 +153,7 @@ function CertsExpiring() {
         // classification without explaining it looks like it ignored them.
         <p
           data-testid="certs-expiring-conflicts"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.conflicted === 1
             ? "1 certificate carries conflicting threshold annotations and is"
@@ -166,7 +167,7 @@ function CertsExpiring() {
         // payload did not carry is one nobody is watching.
         <p
           data-testid="certs-expiring-unclassified"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unclassified} certificate
           {view.unclassified === 1 ? " has" : "s have"} no readable expiry and{" "}
@@ -178,7 +179,7 @@ function CertsExpiring() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="certs-expiring-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no certificate this
@@ -189,7 +190,7 @@ function CertsExpiring() {
 
       <a
         href={CERTIFICATES_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all certificates →
       </a>
@@ -209,16 +210,16 @@ function CertsExpiring() {
 function CertificateItem({ row }: { row: CertExpiryRow }) {
   const scope = row.namespace === "" ? "cluster-scoped" : row.namespace;
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <a
           href={certificateHref(row.namespace, row.name)}
           title={`${scope}/${row.name}`}
-          class="min-w-0 truncate text-xs text-text-secondary no-underline hover:text-accent"
+          className="min-w-0 truncate text-xs text-text-secondary no-underline hover:text-accent"
         >
           {row.name}
         </a>
-        <span class="shrink-0">
+        <span className="shrink-0">
           <ColorBadge
             label={
               row.daysRemaining < 0 ? "expired" : `${row.daysRemaining}d left`
@@ -228,7 +229,7 @@ function CertificateItem({ row }: { row: CertExpiryRow }) {
         </span>
       </span>
       <span
-        class="truncate text-[10px] text-text-muted"
+        className="truncate text-[10px] text-text-muted"
         title={`critical at ${row.criticalDays}d, warning at ${row.warnDays}d`}
       >
         {scope} · {row.class} below{" "}

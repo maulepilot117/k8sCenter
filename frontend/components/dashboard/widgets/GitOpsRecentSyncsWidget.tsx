@@ -1,6 +1,6 @@
+/** @jsxImportSource react */
 import { SyncStatusBadge, ToolBadge } from "@/components/ui/GitOpsBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 // The ranking, the never-synced accounting and the revision shortening live in
 // lib/, under test (D-10, KTD8). The revision shortening in particular is not
@@ -11,6 +11,7 @@ import {
   GITOPS_APPLICATIONS_PAGE_HREF,
   gitopsRecentSyncsView,
 } from "@/lib/dashboard/sync-state.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { SyncStatus } from "@/lib/gitops-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 
@@ -46,7 +47,7 @@ const ROW_LIMIT = 6;
  */
 function GitOpsRecentSyncs() {
   const view = gitopsRecentSyncsView(
-    dashboardData.state("gitops-applications").data,
+    useSourceState("gitops-applications").data,
     ROW_LIMIT,
   );
 
@@ -57,7 +58,7 @@ function GitOpsRecentSyncs() {
         view.readable && view.rows.length > 0 ? (
           <span
             data-testid="gitops-recent-syncs-summary"
-            class="text-xs text-text-muted"
+            className="text-xs text-text-muted"
           >
             {view.rows.length} of {view.total - view.untimed}
           </span>
@@ -67,14 +68,14 @@ function GitOpsRecentSyncs() {
       {!view.readable ? (
         <p
           data-testid="gitops-recent-syncs-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The GitOps endpoint returned a result this card cannot read.
         </p>
       ) : view.total === 0 ? (
         <p
           data-testid="gitops-recent-syncs-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           GitOps is installed but no application you can see is managed yet.
         </p>
@@ -84,12 +85,15 @@ function GitOpsRecentSyncs() {
         // reconciled, which is a finding rather than a blank.
         <p
           data-testid="gitops-recent-syncs-never"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           No application you can see reports a sync yet.
         </p>
       ) : (
-        <ul class="flex flex-col gap-2" data-testid="gitops-recent-syncs-list">
+        <ul
+          className="flex flex-col gap-2"
+          data-testid="gitops-recent-syncs-list"
+        >
           {view.rows.map((row) => (
             <SyncItem key={row.id} row={row} />
           ))}
@@ -99,7 +103,7 @@ function GitOpsRecentSyncs() {
       {view.readable && view.untimed > 0 && view.rows.length > 0 && (
         <p
           data-testid="gitops-recent-syncs-untimed"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.untimed} application{view.untimed === 1 ? "" : "s"} report
           {view.untimed === 1 ? "s" : ""} no sync time and{" "}
@@ -110,7 +114,7 @@ function GitOpsRecentSyncs() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="gitops-recent-syncs-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no application this
@@ -121,7 +125,7 @@ function GitOpsRecentSyncs() {
 
       <a
         href={GITOPS_APPLICATIONS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all applications →
       </a>
@@ -139,24 +143,24 @@ function GitOpsRecentSyncs() {
  */
 function SyncItem({ row }: { row: RecentSyncRow }) {
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <a
           href={row.href}
           title={`${row.namespace}/${row.name}`}
-          class="min-w-0 truncate text-xs text-text-secondary no-underline hover:text-accent"
+          className="min-w-0 truncate text-xs text-text-secondary no-underline hover:text-accent"
         >
           {row.name}
         </a>
-        <span class="shrink-0">
+        <span className="shrink-0">
           <SyncStatusBadge status={row.syncStatus as SyncStatus} />
         </span>
       </span>
-      <span class="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
+      <span className="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
         <ToolBadge tool={row.tool} />
         <time dateTime={row.syncedAt}>{timeAgo(row.syncedAt)}</time>
         {row.revision !== "" && (
-          <span class="truncate font-mono">{row.revision}</span>
+          <span className="truncate font-mono">{row.revision}</span>
         )}
       </span>
     </li>

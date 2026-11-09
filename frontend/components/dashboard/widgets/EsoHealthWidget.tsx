@@ -1,7 +1,7 @@
+/** @jsxImportSource react */
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The status ranking, the four-state drift reading and the unreadable-row
 // accounting live in lib/, under test, because none of them is a field read
 // (D-10, KTD8). Do not inline them.
@@ -12,6 +12,7 @@ import {
   externalSecretHref,
 } from "@/lib/dashboard/expiry.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { Status } from "@/lib/eso-types.ts";
 
 /** How many ExternalSecrets the card lists. The counts above them cover every
@@ -45,7 +46,7 @@ const ROW_LIMIT = 5;
  */
 function EsoHealth() {
   const view = esoHealthView(
-    dashboardData.state("external-secrets-list").data,
+    useSourceState("external-secrets-list").data,
     ROW_LIMIT,
   );
 
@@ -56,7 +57,7 @@ function EsoHealth() {
         view.readable && view.total > 0 ? (
           <span
             data-testid="eso-health-summary"
-            class="text-xs"
+            className="text-xs"
             style={{
               color:
                 view.failing > 0
@@ -76,7 +77,7 @@ function EsoHealth() {
         // read. An empty list here would read as a fleet with nothing wrong.
         <p
           data-testid="eso-health-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The external-secrets endpoint returned a result this card cannot read.
         </p>
@@ -85,7 +86,7 @@ function EsoHealth() {
         // nothing to sync. Distinct from both "no ESO" and "all healthy".
         <p
           data-testid="eso-health-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           External Secrets is installed but no ExternalSecret you can see exists
           yet.
@@ -93,7 +94,7 @@ function EsoHealth() {
       ) : (
         <>
           <div
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
             data-testid="eso-health-counts"
           >
             <SeverityCount
@@ -121,12 +122,12 @@ function EsoHealth() {
           {view.unhealthy === 0 ? (
             <p
               data-testid="eso-health-clear"
-              class="py-2 text-center text-xs text-text-muted"
+              className="py-2 text-center text-xs text-text-muted"
             >
               Every ExternalSecret you can see is synced.
             </p>
           ) : (
-            <ul class="flex flex-col gap-2" data-testid="eso-health-list">
+            <ul className="flex flex-col gap-2" data-testid="eso-health-list">
               {view.rows.map((row) => (
                 <ExternalSecretItem
                   key={`${row.namespace}/${row.name}`}
@@ -139,7 +140,7 @@ function EsoHealth() {
           {view.unhealthy > view.rows.length && (
             <p
               data-testid="eso-health-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing the {view.rows.length} worst of {view.unhealthy} not
               synced.
@@ -152,7 +153,7 @@ function EsoHealth() {
           {view.drift.Unknown + view.drift.unobserved > 0 && (
             <p
               data-testid="eso-health-drift-unknown"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Drift is undetermined for {view.drift.Unknown} and unchecked for{" "}
               {view.drift.unobserved} of them.
@@ -164,7 +165,7 @@ function EsoHealth() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="eso-health-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no ExternalSecret this
@@ -175,7 +176,7 @@ function EsoHealth() {
 
       <a
         href={EXTERNAL_SECRETS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all external secrets →
       </a>
@@ -193,20 +194,20 @@ function EsoHealth() {
  */
 function ExternalSecretItem({ row }: { row: EsoRow }) {
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <a
           href={externalSecretHref(row.namespace, row.name)}
           title={`${row.namespace}/${row.name}`}
-          class="min-w-0 truncate text-xs text-text-secondary no-underline hover:text-accent"
+          className="min-w-0 truncate text-xs text-text-secondary no-underline hover:text-accent"
         >
           {row.name}
         </a>
-        <span class="shrink-0">
+        <span className="shrink-0">
           <StatusBadge status={row.status as Status} />
         </span>
       </span>
-      <span class="truncate text-[10px] text-text-muted">
+      <span className="truncate text-[10px] text-text-muted">
         {row.namespace}
         {row.store === "" ? "" : ` · ${row.store}`}
         {row.drift === "Unknown" ? " · drift undetermined" : ""}

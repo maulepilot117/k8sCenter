@@ -1,5 +1,5 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The ranking, the no-quota exclusion and the band arithmetic live in lib/,
 // under test, because none of them is a field read (D-10, KTD8). Do not
 // inline them.
@@ -13,6 +13,7 @@ import {
   quotaPressureView,
 } from "@/lib/dashboard/pressure.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /** How many rows the card lists. The header counts cover every quota'd
  * namespace in the payload, not just these. */
@@ -44,7 +45,7 @@ const LEVEL_COLOR: Readonly<Record<PressureLevel, string>> = {
  */
 function QuotaPressure() {
   const view = quotaPressureView(
-    dashboardData.state("limits-namespaces").data,
+    useSourceState("limits-namespaces").data,
     ROW_LIMIT,
   );
 
@@ -55,7 +56,7 @@ function QuotaPressure() {
         view.atRisk > 0 ? (
           <span
             data-testid="quota-pressure-summary"
-            class="text-xs"
+            className="text-xs"
             style={{ color: "var(--warning)" }}
           >
             {view.atRisk} near limit
@@ -63,7 +64,7 @@ function QuotaPressure() {
         ) : view.quotaed > 0 ? (
           <span
             data-testid="quota-pressure-summary"
-            class="text-xs text-text-muted"
+            className="text-xs text-text-muted"
           >
             {view.quotaed} with quota
           </span>
@@ -76,21 +77,21 @@ function QuotaPressure() {
         // a cluster where no namespace is near its quota.
         <p
           data-testid="quota-pressure-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The quota roll-up returned a result this card cannot read.
         </p>
       ) : view.rows.length === 0 ? (
         <p
           data-testid="quota-pressure-empty"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           {view.quotaed === 0
             ? "No namespace on this cluster has a ResourceQuota."
             : `All ${view.quotaed} quota${view.quotaed === 1 ? "" : "s"} have room.`}
         </p>
       ) : (
-        <ul class="flex flex-col gap-2" data-testid="quota-pressure-list">
+        <ul className="flex flex-col gap-2" data-testid="quota-pressure-list">
           {view.rows.map((row) => (
             <QuotaRow key={row.namespace} row={row} />
           ))}
@@ -100,7 +101,7 @@ function QuotaPressure() {
       {view.unquotaed > 0 && (
         <p
           data-testid="quota-pressure-unquotaed"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unquotaed} namespace{view.unquotaed === 1 ? "" : "s"} here{" "}
           {view.unquotaed === 1 ? "has" : "have"} no quota, so{" "}
@@ -111,7 +112,7 @@ function QuotaPressure() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="quota-pressure-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} namespace
           {view.unreadableRows === 1 ? "" : "s"} reported no readable
@@ -121,7 +122,7 @@ function QuotaPressure() {
 
       <a
         href={QUOTA_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View namespace limits →
       </a>
@@ -146,32 +147,32 @@ function QuotaRow({ row }: { row: QuotaPressureRow }) {
   }
 
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2 text-xs">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2 text-xs">
         <a
           href={namespaceHref(row.namespace)}
           title={row.namespace}
-          class="min-w-0 truncate text-text-secondary no-underline hover:text-accent"
+          className="min-w-0 truncate text-text-secondary no-underline hover:text-accent"
         >
           {row.namespace}
         </a>
-        <span class="shrink-0 font-mono font-semibold" style={{ color }}>
+        <span className="shrink-0 font-mono font-semibold" style={{ color }}>
           {Math.round(row.percent)}%
         </span>
       </span>
       <span
         aria-hidden="true"
-        class="block h-1.5 w-full overflow-hidden rounded-sm bg-hover"
+        className="block h-1.5 w-full overflow-hidden rounded-sm bg-hover"
       >
         <span
-          class="block h-full rounded-sm"
+          className="block h-full rounded-sm"
           style={{
             width: `${Math.max(0, Math.min(100, row.percent))}%`,
             background: color,
           }}
         />
       </span>
-      <span class="text-[10px] text-text-muted">
+      <span className="text-[10px] text-text-muted">
         {dims.length > 0
           ? dims.join(" · ")
           : `${row.quotaCount} quota${row.quotaCount === 1 ? "" : "s"}, no CPU or memory limit`}

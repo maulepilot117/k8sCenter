@@ -1,5 +1,5 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The four-condition selection, the silent/not-ready distinction and the
 // ranking live in lib/, under test, because none of them is a field read
 // (D-10, KTD8). Do not inline them.
@@ -11,6 +11,7 @@ import {
   nodeHref,
 } from "@/lib/dashboard/pressure.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { ResourceListPage } from "@/lib/dashboard/wire-types.ts";
 
 /** How many nodes the card lists. The header counts cover the whole page. */
@@ -41,7 +42,7 @@ const CONDITION_COLOR: Readonly<Record<NodeConditionKind, string>> = {
  * many are clear.
  */
 function NodeConditions() {
-  const page = dashboardData.state<ResourceListPage>("nodes-list").data;
+  const page = useSourceState<ResourceListPage>("nodes-list").data;
   const view = nodeConditionsView(page, ROW_LIMIT);
 
   return (
@@ -51,7 +52,7 @@ function NodeConditions() {
         view.affected > 0 ? (
           <span
             data-testid="node-conditions-summary"
-            class="text-xs"
+            className="text-xs"
             style={{ color: "var(--error)" }}
           >
             {view.affected} of {view.counted} affected
@@ -59,7 +60,7 @@ function NodeConditions() {
         ) : view.clear > 0 ? (
           <span
             data-testid="node-conditions-summary"
-            class="text-xs"
+            className="text-xs"
             style={{ color: "var(--success)" }}
           >
             {view.clear} clear
@@ -75,21 +76,24 @@ function NodeConditions() {
         // a question that was never answered.
         <p
           data-testid="node-conditions-unreadable-page"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The node roll-up returned a result this card cannot read.
         </p>
       ) : view.nodes.length === 0 ? (
         <p
           data-testid="node-conditions-empty"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           {view.clear === 0
             ? "No node data available."
             : `All ${view.clear} node${view.clear === 1 ? "" : "s"} are ready and reporting no pressure.`}
         </p>
       ) : (
-        <ul class="flex flex-col gap-1.5" data-testid="node-conditions-list">
+        <ul
+          className="flex flex-col gap-1.5"
+          data-testid="node-conditions-list"
+        >
           {view.nodes.map((node) => (
             <NodeRow key={node.name} node={node} />
           ))}
@@ -99,7 +103,7 @@ function NodeConditions() {
       {view.unreadable > 0 && (
         <p
           data-testid="node-conditions-unreadable"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadable} entr{view.unreadable === 1 ? "y" : "ies"} could not
           be read as a node.
@@ -109,7 +113,7 @@ function NodeConditions() {
       {view.truncated && (
         <p
           data-testid="node-conditions-truncated"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           Checked the first {view.counted} of {view.total} nodes.
         </p>
@@ -117,7 +121,7 @@ function NodeConditions() {
 
       <a
         href={NODE_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all nodes →
       </a>
@@ -137,23 +141,23 @@ function NodeRow({ node }: { node: NodeIssue }) {
   const lead = node.conditions[0];
 
   return (
-    <li class="flex items-center justify-between gap-2 text-xs">
-      <span class="flex min-w-0 items-center gap-2">
+    <li className="flex items-center justify-between gap-2 text-xs">
+      <span className="flex min-w-0 items-center gap-2">
         <span
           aria-hidden="true"
-          class="size-2 shrink-0 rounded-full"
+          className="size-2 shrink-0 rounded-full"
           style={{ background: CONDITION_COLOR[lead] }}
         />
         <a
           href={nodeHref(node.name)}
           title={node.name}
-          class="truncate text-text-secondary no-underline hover:text-accent"
+          className="truncate text-text-secondary no-underline hover:text-accent"
         >
           {node.name}
         </a>
         {node.silent && (
           <span
-            class="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
             style={{ background: "var(--error-dim)", color: "var(--error)" }}
             title="the kubelet has stopped reporting; this is the last status the control plane heard"
           >
@@ -161,11 +165,11 @@ function NodeRow({ node }: { node: NodeIssue }) {
           </span>
         )}
       </span>
-      <span class="flex shrink-0 items-center gap-1">
+      <span className="flex shrink-0 items-center gap-1">
         {node.conditions.map((kind) => (
           <span
             key={kind}
-            class="rounded-md px-1.5 py-0.5 text-[10px] font-semibold"
+            className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold"
             style={{
               background: "var(--bg-hover)",
               color: CONDITION_COLOR[kind],

@@ -1,5 +1,5 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The vector parsing, the ranking and the band arithmetic live in lib/, under
 // test, because none of them is a field read (D-10, KTD8). The slug is named
 // in data.ts, so this file holds no route knowledge at all.
@@ -10,6 +10,7 @@ import {
   storageCapacityView,
 } from "@/lib/dashboard/pressure.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /** How many volumes and classes the card lists. The slug's `topk` already caps
  * the query at ten server-side; this is the display cap, and the smaller of
@@ -39,9 +40,9 @@ const ROW_LIMIT = 6;
  * reads as the first unless the card says which one it is.
  */
 function StorageCapacity() {
-  const capacity = dashboardData.state("volume-capacity");
+  const capacity = useSourceState("volume-capacity");
   const view = storageCapacityView(
-    dashboardData.state("storage-classes").data,
+    useSourceState("storage-classes").data,
     capacity.data,
     ROW_LIMIT,
   );
@@ -53,7 +54,7 @@ function StorageCapacity() {
         view.classTotal > 0 ? (
           <span
             data-testid="storage-capacity-summary"
-            class="text-xs text-text-muted"
+            className="text-xs text-text-muted"
           >
             {view.classTotal} class{view.classTotal === 1 ? "" : "es"}
           </span>
@@ -63,36 +64,39 @@ function StorageCapacity() {
       {!view.classesReadable ? (
         <p
           data-testid="storage-capacity-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The storage class list returned a result this card cannot read.
         </p>
       ) : view.classes.length === 0 ? (
         <p
           data-testid="storage-capacity-no-classes"
-          class="py-3 text-center text-xs text-text-muted"
+          className="py-3 text-center text-xs text-text-muted"
         >
           No StorageClass on this cluster. A PersistentVolumeClaim with no class
           name will stay Pending.
         </p>
       ) : (
-        <ul class="flex flex-col gap-1" data-testid="storage-capacity-classes">
+        <ul
+          className="flex flex-col gap-1"
+          data-testid="storage-capacity-classes"
+        >
           {view.classes.map((c) => (
             <li
               key={c.name}
-              class="flex items-center justify-between gap-2 text-xs"
+              className="flex items-center justify-between gap-2 text-xs"
             >
-              <span class="flex min-w-0 items-center gap-1.5">
+              <span className="flex min-w-0 items-center gap-1.5">
                 <a
                   href={`/cluster/storageclasses/${encodeURIComponent(c.name)}`}
                   title={c.name}
-                  class="truncate text-text-secondary no-underline hover:text-accent"
+                  className="truncate text-text-secondary no-underline hover:text-accent"
                 >
                   {c.name}
                 </a>
                 {c.isDefault && (
                   <span
-                    class="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                    className="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
                     style={{
                       background: "var(--bg-hover)",
                       color: "var(--accent)",
@@ -102,7 +106,7 @@ function StorageCapacity() {
                   </span>
                 )}
               </span>
-              <span class="shrink-0 truncate text-[10px] text-text-muted">
+              <span className="shrink-0 truncate text-[10px] text-text-muted">
                 {c.provisioner}
               </span>
             </li>
@@ -113,14 +117,14 @@ function StorageCapacity() {
       {view.classesReadable && view.defaultClass === null && (
         <p
           data-testid="storage-capacity-no-default"
-          class="mt-2 text-[11px] leading-snug"
+          className="mt-2 text-[11px] leading-snug"
           style={{ color: "var(--warning)" }}
         >
           No default StorageClass.
         </p>
       )}
 
-      <p class="mt-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+      <p className="mt-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
         Fullest volumes
       </p>
 
@@ -133,7 +137,7 @@ function StorageCapacity() {
         // would be an invitation to wait for something that will never come.
         <p
           data-testid="storage-capacity-volumes-missing"
-          class="py-2 text-center text-xs text-text-muted"
+          className="py-2 text-center text-xs text-text-muted"
         >
           {capacity.errorKind === "permission"
             ? "This account may not read cluster-wide volume usage."
@@ -146,12 +150,15 @@ function StorageCapacity() {
       ) : view.volumes.length === 0 ? (
         <p
           data-testid="storage-capacity-volumes-empty"
-          class="py-2 text-center text-xs text-text-muted"
+          className="py-2 text-center text-xs text-text-muted"
         >
           Prometheus reported no volume statistics.
         </p>
       ) : (
-        <ul class="flex flex-col gap-1.5" data-testid="storage-capacity-list">
+        <ul
+          className="flex flex-col gap-1.5"
+          data-testid="storage-capacity-list"
+        >
           {view.volumes.map((row) => (
             <VolumeRow key={`${row.namespace}/${row.claim}`} row={row} />
           ))}
@@ -161,7 +168,7 @@ function StorageCapacity() {
       {view.volumesDropped > 0 && (
         <p
           data-testid="storage-capacity-dropped"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.volumesDropped} series carried no readable value and{" "}
           {view.volumesDropped === 1 ? "was" : "were"} left out.
@@ -171,7 +178,7 @@ function StorageCapacity() {
       {view.volumeWarnings.length > 0 && (
         <p
           data-testid="storage-capacity-warnings"
-          class="mt-2 text-[11px] leading-snug"
+          className="mt-2 text-[11px] leading-snug"
           style={{ color: "var(--warning)" }}
           title={view.volumeWarnings.join("\n")}
         >
@@ -181,7 +188,7 @@ function StorageCapacity() {
 
       <a
         href={STORAGE_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View storage →
       </a>
@@ -202,21 +209,23 @@ function VolumeRow({ row }: { row: VolumePressureRow }) {
   const color = LEVEL_COLOR[row.level];
 
   return (
-    <li class="flex items-center gap-2 text-xs">
+    <li className="flex items-center gap-2 text-xs">
       <a
         href={claimHref(row)}
         title={`${row.namespace}/${row.claim}`}
-        class="min-w-0 flex-1 truncate text-text-secondary no-underline hover:text-accent"
+        className="min-w-0 flex-1 truncate text-text-secondary no-underline hover:text-accent"
       >
         {row.claim}
-        <span class="ml-1.5 text-[10px] text-text-muted">{row.namespace}</span>
+        <span className="ml-1.5 text-[10px] text-text-muted">
+          {row.namespace}
+        </span>
       </a>
       <span
         aria-hidden="true"
-        class="hidden h-1.5 w-16 shrink-0 overflow-hidden rounded-sm bg-hover sm:block"
+        className="hidden h-1.5 w-16 shrink-0 overflow-hidden rounded-sm bg-hover sm:block"
       >
         <span
-          class="block h-full rounded-sm"
+          className="block h-full rounded-sm"
           style={{
             width: `${Math.max(0, Math.min(100, row.percent))}%`,
             background: color,
@@ -224,7 +233,7 @@ function VolumeRow({ row }: { row: VolumePressureRow }) {
         />
       </span>
       <span
-        class="w-12 shrink-0 text-right font-mono font-semibold"
+        className="w-12 shrink-0 text-right font-mono font-semibold"
         style={{ color }}
       >
         {Math.round(row.percent)}%
