@@ -12,7 +12,6 @@ import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { useLatest } from "@/src/lib/use-latest.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface RestoreFormState {
   name: string;
@@ -124,8 +123,7 @@ export default function RestoreSnapshotWizard({
   }));
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList] = useNamespaces();
   const storageClasses = useStorageClasses();
   const [snapshotsAvailable, setSnapshotsAvailable] = useState(true);
 

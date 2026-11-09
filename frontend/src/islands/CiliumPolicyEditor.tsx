@@ -7,7 +7,6 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import type { LabelEntry } from "@/lib/wizard-types.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface RuleRow {
   id: number;
@@ -73,7 +72,7 @@ export default function CiliumPolicyEditor({
   const isClient = useIsClient();
   const [name, setName] = useState("");
   const [namespace, setNamespace] = useState(() => initialNamespace());
-  const namespaceList = useSignalValue(useNamespaces());
+  const [namespaceList] = useNamespaces();
   const [endpointSelector, setEndpointSelector] = useState<LabelEntry[]>([
     { key: "", value: "" },
   ]);

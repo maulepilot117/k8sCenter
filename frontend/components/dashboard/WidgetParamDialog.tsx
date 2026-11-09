@@ -19,7 +19,6 @@ import {
 import type { LayoutItem, WidgetDef } from "@/lib/dashboard/types.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useNamespacedServices } from "@/lib/hooks/use-services.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
  * The values a parameterized widget needs, collected before it is placed and
@@ -118,7 +117,7 @@ export default function WidgetParamDialog({
   // dialog is mounted from a click and unmounted on the way out, so the read
   // is made by someone who is about to use it, and a failure leaves the list
   // at its "default" fallback rather than blocking the dialog.
-  const namespaceOptions = useSignalValue(useNamespaces());
+  const [namespaceOptions] = useNamespaces();
   // The service picker's options, scoped to whatever namespace is currently
   // chosen. Re-read when that changes, which is why it takes the value rather
   // than the signal: this component re-renders on every value change already,

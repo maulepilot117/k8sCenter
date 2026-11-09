@@ -8,7 +8,6 @@ import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface HPAMetricState {
   type: "Resource";
@@ -75,8 +74,7 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
   const [dirty, setDirty] = useState(false);
   const metricKeys = useRowKeys(form.metrics.length);
 
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList] = useNamespaces();
 
   const [previewYaml, setPreviewYaml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);

@@ -9,7 +9,6 @@ import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface RestoreFormState {
   name: string;
@@ -64,8 +63,7 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
   const [dirty, setDirty] = useState(false);
   const formRef = useLatest(form);
 
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList] = useNamespaces();
   const [backups, setBackups] = useState<Backup[]>([]);
 
   const [previewYaml, setPreviewYaml] = useState("");

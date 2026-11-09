@@ -107,7 +107,7 @@ export default function NamespaceLimitsWizard({
   const errors = useSignal<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
 
-  const namespaces = useNamespaces();
+  const [namespaces] = useNamespaces();
 
   const [previewYaml, setPreviewYaml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);

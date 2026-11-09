@@ -12,7 +12,6 @@ import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface SnapshotFormState {
   name: string;
@@ -88,8 +87,7 @@ export default function SnapshotWizard({
   }));
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList] = useNamespaces();
   const [pvcs, setPvcs] = useState<PVCItem[]>([]);
   const [snapshotClasses, setSnapshotClasses] = useState<SnapshotClassItem[]>(
     [],

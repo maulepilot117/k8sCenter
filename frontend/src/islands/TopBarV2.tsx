@@ -20,7 +20,7 @@ export default function TopBarV2() {
     fetchCurrentUser,
     refreshPermissions,
   } = useAuth();
-  const namespaces = useSignalValue(useNamespaces());
+  const [namespaces] = useNamespaces();
   const user = useSignalValue(userSignal);
   const namespace = useSignalValue(selectedNamespace);
   const isClient = useIsClient();

@@ -8,7 +8,6 @@ import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export interface CertificateWizardForm {
   name: string;
@@ -113,7 +112,7 @@ export default function CertificateWizard({
 
   const [issuers, setIssuers] = useState<Issuer[]>([]);
   const [issuersLoading, setIssuersLoading] = useState(true);
-  const namespaces = useSignalValue(useNamespaces());
+  const [namespaces] = useNamespaces();
 
   const [previewYaml, setPreviewYaml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);

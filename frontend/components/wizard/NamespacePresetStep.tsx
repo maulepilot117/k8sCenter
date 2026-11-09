@@ -9,7 +9,7 @@ import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 interface NamespacePresetStepProps {
   form: FormState;
   errors: Signal<Record<string, string>>;
-  namespaces: Signal<string[]>;
+  namespaces: string[];
   onUpdateField: <K extends keyof FormState>(
     field: K,
     value: FormState[K],
@@ -25,7 +25,6 @@ export function NamespacePresetStep({
   onApplyPreset,
 }: NamespacePresetStepProps) {
   const errorMap = useSignalValue(errors);
-  const namespaceList = useSignalValue(namespaces);
   return (
     <div
       style={{
@@ -54,7 +53,7 @@ export function NamespacePresetStep({
           onChange={(e) => onUpdateField("namespace", e.currentTarget.value)}
           className={WIZARD_INPUT_CLASS}
         >
-          {namespaceList.map((ns) => (
+          {namespaces.map((ns) => (
             <option key={ns} value={ns}>
               {ns}
             </option>

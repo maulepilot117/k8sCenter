@@ -238,6 +238,7 @@
         "frontend/lib/hooks/use-dirty-guard_test.tsx",
         "frontend/lib/hooks/use-modal-dialog-keys.ts",
         "frontend/lib/hooks/use-namespaces.ts",
+        "frontend/lib/hooks/use-namespaces_test.tsx",
         "frontend/lib/hooks/use-poll.ts",
         "frontend/lib/hooks/use-poll_test.tsx",
         "frontend/lib/hooks/use-services.ts",

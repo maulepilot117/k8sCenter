@@ -13,7 +13,6 @@ import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface ContainerState {
   image: string;
@@ -124,8 +123,7 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
 
-  const namespaces = useNamespaces();
-  const namespaceList = useSignalValue(namespaces);
+  const [namespaceList] = useNamespaces();
 
   const [previewYaml, setPreviewYaml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);

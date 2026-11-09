@@ -15,7 +15,6 @@ import { hasDom } from "@/src/lib/has-dom.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface FlowRecord {
@@ -132,7 +131,7 @@ export default function FlowViewer() {
   const [namespace, setNamespace, namespaceRef] = useStateRef(
     initialNamespace(),
   );
-  const namespaceList = useSignalValue(useNamespaces());
+  const [namespaceList] = useNamespaces();
   const [verdict, setVerdict, verdictRef] = useStateRef("");
   const [flows, setFlows, flowsRef] = useStateRef<FlowRecord[]>([]);
   const [loading, setLoading] = useState(false);
