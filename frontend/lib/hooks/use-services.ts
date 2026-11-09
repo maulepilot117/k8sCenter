@@ -5,6 +5,9 @@ import { hasDom } from "@/src/lib/has-dom.ts";
 /** The route caps a page here anyway; asking for more silently gets this. */
 const PAGE_LIMIT = 500;
 
+/** One empty list, so clearing an already-empty list is not a change. */
+const NONE: string[] = [];
+
 /**
  * Service names in one namespace, for a dropdown.
  *
@@ -26,14 +29,14 @@ const PAGE_LIMIT = 500;
  * the adapter kind and the API resource name.
  */
 export function useNamespacedServices(namespace: string): string[] {
-  const [services, setServices] = useState<string[]>([]);
+  const [services, setServices] = useState<string[]>(NONE);
 
   useEffect(() => {
     if (!hasDom()) return;
     // Cleared synchronously rather than left showing the previous namespace's
     // services while the new list is in flight: a dropdown that briefly offers
     // values from somewhere else is one a fast user can pick from.
-    setServices([]);
+    setServices(NONE);
     if (namespace === "") return;
 
     const controller = new AbortController();
@@ -57,7 +60,7 @@ export function useNamespacedServices(namespace: string): string[] {
         );
       })
       .catch(() => {
-        if (live) setServices([]);
+        if (live) setServices(NONE);
       });
 
     return () => {

@@ -32,6 +32,7 @@ import {
   DASHBOARD_ROW_HEIGHT,
 } from "@/lib/dashboard/types.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /**
  * Below this grid width the layout renders as one column. It is the grid's own
@@ -474,7 +475,7 @@ function GridItem({
         style={{ height: "100%", minWidth: 0, minHeight: 0 }}
       >
         <CellFillContext.Provider value={true}>
-          <WidgetHost def={def} params={item.params ?? {}} />
+          <WidgetHost def={def} params={item.params} />
         </CellFillContext.Provider>
       </div>
     </div>
@@ -567,25 +568,23 @@ export default function DashboardGrid({
   // display half of the unknown-id contract (telling the user belongs to the
   // editor). Today's only caller passes the default layout, where this is a
   // no-op; P3's stored layouts are what make it matter.
-  const [items, setItemsState] = useState<LayoutItem[]>(() =>
+  // The pointer sessions and key handlers read the working copy, the mode and
+  // the session in the same tick as the write that precedes them, and a window
+  // listener registered at pointerdown runs long after the render that created
+  // it, so each is also readable from a ref its setter writes at once.
+  const [initialItems] = useState(() =>
     resolveRenderable(initial.items, getWidget).map((r) => r.item),
   );
-  const [narrow, setNarrow] = useState(false);
-  const [session, setSession] = useState<{
+  const [items, setItemsState, itemsRef] =
+    useStateRef<LayoutItem[]>(initialItems);
+  const [narrow, setNarrow, narrowRef] = useStateRef(false);
+  const [session, setSessionNow, sessionRef] = useStateRef<{
     kind: SessionKind;
     instanceId: string;
   } | null>(null);
   /** What the live region is saying. Keyboard changes only: a pointer user is
    * watching the thing they just moved. */
   const [announcement, setAnnouncement] = useState("");
-  // The pointer sessions and key handlers read the working copy, the mode and
-  // the session synchronously, in the same tick as the write that precedes
-  // them, and a window listener registered at pointerdown runs long after the
-  // render that created it. State is for rendering; these refs are what those
-  // callers read, and every write below updates both.
-  const itemsRef = useRef(items);
-  const narrowRef = useRef(narrow);
-  const sessionRef = useRef(session);
   const onChangeRef = useLatest(onChange);
   const gridRef = useRef<HTMLDivElement | null>(null);
   /** Ends the session in flight, if there is one. Set for the grid's life. */
@@ -624,16 +623,8 @@ export default function DashboardGrid({
       }
       heldScroll.current = held;
     }
-    itemsRef.current = next;
     setItemsState(next);
     onChangeRef.current?.(next);
-  }
-
-  function setSessionNow(
-    next: { kind: SessionKind; instanceId: string } | null,
-  ) {
-    sessionRef.current = next;
-    setSession(next);
   }
 
   // No dependencies: this has to run after whichever render carried the held
@@ -659,7 +650,6 @@ export default function DashboardGrid({
       const next =
         el.clientWidth <
         (narrowRef.current ? WIDE_GRID_WIDTH : NARROW_GRID_WIDTH);
-      narrowRef.current = next;
       setNarrow(next);
     };
     const ro = new ResizeObserver(measure);

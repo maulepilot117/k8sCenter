@@ -71,6 +71,7 @@ import { preferenceReason } from "@/lib/preferences.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /**
  * What Save's title says once a write has been refused.
@@ -103,25 +104,6 @@ const familyStatuses = computed<FamilyStatuses>(() =>
     FAMILY_STATUS_KEYS.map((key) => [key, dashboardData.signalFor(key).value]),
   ),
 );
-
-/**
- * State that handlers read back synchronously.
- *
- * The edit session and the in-flight save are consulted by handlers that run
- * in the same turn as a write -- a guard that must see the write before the
- * next render. The ref is updated by the setter itself, so a handler reads the
- * value its caller just wrote, where the rendered value would still be the old
- * one.
- */
-function useSyncState<T>(initial: T) {
-  const [value, setValue] = useState(initial);
-  const ref = useRef(initial);
-  const set = useCallback((next: T) => {
-    ref.current = next;
-    setValue(next);
-  }, []);
-  return [value, set, ref] as const;
-}
 
 /**
  * Every source this layout's widgets read, plus the two the header reads for
@@ -266,10 +248,10 @@ export default function DashboardV2() {
    * session holds the baseline and the revision alongside the working copy so
    * a Save cannot write a stale revision — see edit-session.ts.
    */
-  const [session, setSession, sessionRef] = useSyncState<EditSession | null>(
+  const [session, setSession, sessionRef] = useStateRef<EditSession | null>(
     null,
   );
-  const [saving, setSaving, savingRef] = useSyncState(false);
+  const [saving, setSaving, savingRef] = useStateRef(false);
   /** The catalog palette. Only meaningful while a session is open. */
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** The copy dialog. Only meaningful while a session is open. */
@@ -286,7 +268,7 @@ export default function DashboardV2() {
    * collects have to reach the open edit session, and both of those are
    * components that do not have one.
    */
-  const [paramTarget, setParamTarget, paramTargetRef] = useSyncState<{
+  const [paramTarget, setParamTarget, paramTargetRef] = useStateRef<{
     def: WidgetDef;
     editing?: LayoutItem;
   } | null>(null);
@@ -392,9 +374,7 @@ export default function DashboardV2() {
    * reasoning about which effect will notice it.
    *
    * It is handed edit mode because that is the render focus has to ride: the
-   * toolbar swaps its buttons on it. The grid re-mount a gesture makes is
-   * batched with the call that arms the hook, so the hook rides that render
-   * without being told about the epoch.
+   * toolbar swaps its buttons on it.
    */
   const focus = useDashboardFocus(editing);
 

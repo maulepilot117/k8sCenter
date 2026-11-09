@@ -372,9 +372,6 @@ export function useDashboardFocus(editing: boolean): DashboardFocus {
         setInsertion({ instanceId });
       },
       focusAfterRemoval(vacatedIndex: number) {
-        // Before the caller's layout write, so both land in one render: the
-        // updates made in the same turn are batched, and the effect that
-        // spends this runs against the DOM the new layout made.
         setRemoval({ vacated: vacatedIndex });
       },
       focusAddButton() {

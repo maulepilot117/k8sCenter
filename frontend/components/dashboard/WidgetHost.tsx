@@ -1,13 +1,11 @@
 /** @jsxImportSource react */
 import {
+  memo,
   type ReactElement,
-  useCallback,
   useContext,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
@@ -23,6 +21,7 @@ import { dashboardData, type SourceState } from "@/lib/dashboard/data.ts";
 import { pickMode } from "@/lib/dashboard/display-mode.ts";
 import { sourceKeyFor } from "@/lib/dashboard/params.ts";
 import type { WidgetDef } from "@/lib/dashboard/types.ts";
+import { useSourceStates } from "@/lib/dashboard/use-source-state.ts";
 // Which of the seven outcomes this box shows is a pure decision with unit
 // tests, because this repo has no component test harness (D-10). Do not move
 // it back inline.
@@ -83,58 +82,7 @@ const LOCK_ICON = (
   </>
 );
 
-/**
- * The state of every key the host reads, re-rendering the host when any of
- * them changes. The key list varies with the widget and its params, so this
- * is one subscription over the whole set rather than one hook per key. The
- * snapshot keeps its identity until a state in it changes, as
- * `useSyncExternalStore` requires.
- */
-function useSourceStates(
-  keys: readonly string[],
-): ReadonlyMap<string, SourceState> {
-  // Deduplicated: a widget that declares the summary as its own source and
-  // also headlines one of its sections names it twice, and a repeated key
-  // would make the cached snapshot below never match, so every read would
-  // return a new map and re-render forever.
-  const keyId = JSON.stringify([...new Set(keys)]);
-  const stable = useMemo(() => JSON.parse(keyId) as string[], [keyId]);
-  const subscribe = useCallback(
-    (onChange: () => void) => {
-      const unsubscribers = stable.map((key) => {
-        // `subscribe` calls back once immediately with the current value,
-        // which is not a change.
-        let initial = true;
-        return dashboardData.signalFor(key).subscribe(() => {
-          if (initial) {
-            initial = false;
-            return;
-          }
-          onChange();
-        });
-      });
-      return () => {
-        for (const off of unsubscribers) off();
-      };
-    },
-    [stable],
-  );
-  const cache = useRef<ReadonlyMap<string, SourceState> | null>(null);
-  const read = () => {
-    const prev = cache.current;
-    const next = new Map<string, SourceState>();
-    let same = prev !== null && prev.size === stable.length;
-    for (const key of stable) {
-      const value = dashboardData.signalFor(key).peek();
-      next.set(key, value);
-      if (same && prev?.get(key) !== value) same = false;
-    }
-    if (prev !== null && same) return prev;
-    cache.current = next;
-    return next;
-  };
-  return useSyncExternalStore(subscribe, read, read);
-}
+const NO_PARAMS: Record<string, string> = {};
 
 interface WidgetHostProps {
   def: WidgetDef;
@@ -163,7 +111,7 @@ interface WidgetHostProps {
  * Deliberately thin. Everything here that could be wrong lives in pickMode and
  * resolveWidgetState, both pure functions with unit tests.
  */
-export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
+function WidgetHost({ def, params = NO_PARAMS }: WidgetHostProps) {
   const box = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
   const [height, setHeight] = useState(0);
@@ -433,3 +381,8 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
     </div>
   );
 }
+
+// Memoized: the grid re-renders every cell on each step of a drag, and a card
+// whose widget and params are unchanged has nothing new to draw. A widget's
+// own data and store reads re-render it through their subscriptions.
+export default memo(WidgetHost);

@@ -1,7 +1,6 @@
 /** @jsxImportSource react */
 import {
   type KeyboardEvent,
-  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -26,6 +25,8 @@ import type {
 import { WIDGET_FAMILIES } from "@/lib/dashboard/types.ts";
 import type { Searchable } from "@/lib/fuzzy-search.ts";
 import { fuzzySearch } from "@/lib/fuzzy-search.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /**
  * The catalog of widgets that can be added to the dashboard being edited.
@@ -154,15 +155,9 @@ export default function WidgetPalette({
 }: WidgetPaletteProps) {
   const [query, setQuery] = useState("");
   /** Index into the flattened list below; -1 while nothing is selectable. */
-  const [selectedIndex, setSelectedIndexState] = useState(-1);
-  // The handlers read the selection after an event, and two arrow presses can
-  // land before the next render, so the current value lives in a ref that the
-  // setter updates at once.
-  const selectedIndexRef = useRef(-1);
-  const setSelectedIndex = useCallback((next: number) => {
-    selectedIndexRef.current = next;
-    setSelectedIndexState(next);
-  }, []);
+  // Two arrow presses can land before the next render, so the key handler
+  // reads the selection through the ref the setter writes at once.
+  const [selectedIndex, setSelectedIndex, selectedIndexRef] = useStateRef(-1);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Depends only on the scope, the placed items, the column count and the
@@ -210,9 +205,7 @@ export default function WidgetPalette({
   // list to find out which index it is.
   const positions = new Map(flat.map((e, i) => [e, i]));
   const selected = flat[selectedIndex];
-  // The effects below run after a render but must see this render's list.
-  const flatRef = useRef(flat);
-  flatRef.current = flat;
+  const flatRef = useLatest(flat);
   // Which visible rows can be added, as a string so an effect can depend on it.
   const addableKey = flat
     .map((e) => (e.disabledReason === null ? "1" : "0"))
@@ -244,7 +237,7 @@ export default function WidgetPalette({
   useLayoutEffect(() => {
     selectionQuery.current = query;
     setSelectedIndex(firstAddable(flatRef.current));
-  }, [query, setSelectedIndex]);
+  }, [query]);
 
   // The selection also has to follow a row that stops being addable underneath
   // it. `entries` recomputes when a discovery status or the admin signal
@@ -265,7 +258,7 @@ export default function WidgetPalette({
         selectedIndexRef.current,
       ),
     );
-  }, [addableKey, setSelectedIndex]);
+  }, [addableKey]);
 
   function choose(entry: Entry | undefined) {
     if (entry === undefined || entry.disabledReason !== null) return;
