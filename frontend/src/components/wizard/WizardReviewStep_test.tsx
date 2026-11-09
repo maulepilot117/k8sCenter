@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { afterEach, expect, mock, test } from "bun:test";
-import { type Signal, signal } from "@preact/signals-core";
+import { signal } from "@preact/signals-core";
 import type { ReactNode } from "react";
 import { setAccessToken } from "@/lib/api.ts";
 import type { WizardPrimaryAction } from "@/lib/wizard-primary-action.ts";
@@ -86,7 +86,7 @@ function mount(
   opts: {
     yaml?: string;
     loading?: boolean;
-    dirty?: Signal<boolean>;
+    onDirtyChange?: (dirty: boolean) => void;
     maskValues?: (yaml: string) => string;
     onYamlChange?: (yaml: string) => void;
   } = {},
@@ -101,7 +101,7 @@ function mount(
         loading={opts.loading ?? false}
         error={null}
         detailBasePath="/config/configmaps"
-        dirty={opts.dirty}
+        onDirtyChange={opts.onDirtyChange}
         maskValues={opts.maskValues}
       />
     </WizardPrimaryActionContext.Provider>
@@ -120,8 +120,9 @@ test("the preview shows the YAML", async () => {
 
 test("a clean apply shows the result, clears dirty and links to the resource", async () => {
   stubApply(0);
-  const dirty = signal(true);
-  const { primary } = mount({ dirty });
+  const dirtyChanges: boolean[] = [];
+  const onDirtyChange = (d: boolean) => dirtyChanges.push(d);
+  const { primary } = mount({ onDirtyChange });
   expect(primary.value?.label).toBe("Apply");
   expect(primary.value?.disabled).toBe(false);
 
@@ -131,7 +132,7 @@ test("a clean apply shows the result, clears dirty and links to the resource", a
   await waitFor(() =>
     expect(document.body.textContent).toContain("Applied successfully"),
   );
-  expect(dirty.value).toBe(false);
+  expect(dirtyChanges).toEqual([false]);
   expect(wizardBusy.value).toBe(false);
   expect(primary.value?.label).toBe("View resource");
   expect(primary.value?.href).toBe("/config/configmaps/team-a/cm");
@@ -141,8 +142,9 @@ test("a clean apply shows the result, clears dirty and links to the resource", a
 
 test("a partial failure shows failed rows, keeps dirty and offers Done", async () => {
   stubApply(1);
-  const dirty = signal(true);
-  const { primary } = mount({ dirty });
+  const dirtyChanges: boolean[] = [];
+  const onDirtyChange = (d: boolean) => dirtyChanges.push(d);
+  const { primary } = mount({ onDirtyChange });
 
   await act(async () => {
     primary.value?.onClick?.();
@@ -152,7 +154,7 @@ test("a partial failure shows failed rows, keeps dirty and offers Done", async (
   );
   expect(document.body.textContent).not.toContain("Applied successfully");
   expect(document.body.textContent).toContain("(denied)");
-  expect(dirty.value).toBe(true);
+  expect(dirtyChanges).toEqual([]);
   expect(primary.value?.label).toBe("Done");
   expect(primary.value?.href).toBeUndefined();
 });

@@ -8,7 +8,6 @@ import type { LabelEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -57,7 +56,7 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<PDBFormState>(initialState);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
   const labelKeys = useRowKeys(form.selectorLabels.length);
 
   const namespaces = useNamespaces();
@@ -70,37 +69,34 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({ ...prev, [field]: value }));
-    },
-    [dirty],
-  );
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
   const updateLabel = useCallback(
     (index: number, field: "key" | "value", val: string) => {
-      dirty.value = true;
+      setDirty(true);
       setForm((prev) => {
         const selectorLabels = [...prev.selectorLabels];
         selectorLabels[index] = { ...selectorLabels[index], [field]: val };
         return { ...prev, selectorLabels };
       });
     },
-    [dirty],
+    [],
   );
 
   const addLabel = useCallback(() => {
-    dirty.value = true;
+    setDirty(true);
     setForm((prev) => ({
       ...prev,
       selectorLabels: [...prev.selectorLabels, { key: "", value: "" }],
     }));
-  }, [dirty]);
+  }, []);
 
   const removeLabel = useCallback(
     (index: number) => {
-      dirty.value = true;
+      setDirty(true);
       labelKeys.removeAt(index);
       setForm((prev) => {
         const selectorLabels = prev.selectorLabels.filter(
@@ -115,7 +111,7 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
         };
       });
     },
-    [dirty, labelKeys],
+    [labelKeys],
   );
 
   const validateStep = (): boolean => {
@@ -400,7 +396,7 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading}
           error={previewError}
           detailBasePath="/scaling/pdbs"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

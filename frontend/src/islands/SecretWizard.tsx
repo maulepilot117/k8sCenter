@@ -8,7 +8,6 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -167,7 +166,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<SecretFormState>(initialState);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
 
   const namespaces = useNamespaces();
   const namespaceList = useSignalValue(namespaces);
@@ -180,37 +179,34 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({ ...prev, [field]: value }));
-    },
-    [dirty],
-  );
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
   const updateOpaqueEntry = useCallback(
     (index: number, field: "key" | "value", value: string) => {
-      dirty.value = true;
+      setDirty(true);
       setForm((prev) => {
         const entries = [...prev.opaqueEntries];
         entries[index] = { ...entries[index], [field]: value };
         return { ...prev, opaqueEntries: entries };
       });
     },
-    [dirty],
+    [],
   );
 
   const addOpaqueEntry = useCallback(() => {
-    dirty.value = true;
+    setDirty(true);
     setForm((prev) => ({
       ...prev,
       opaqueEntries: [...prev.opaqueEntries, { key: "", value: "" }],
     }));
-  }, [dirty]);
+  }, []);
 
   const removeOpaqueEntry = useCallback(
     (index: number) => {
-      dirty.value = true;
+      setDirty(true);
       rowKeys.removeAt(index);
       setForm((prev) => {
         const entries = prev.opaqueEntries.filter((_, i) => i !== index);
@@ -221,7 +217,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
         };
       });
     },
-    [dirty, rowKeys],
+    [rowKeys],
   );
 
   const validateStep = (): boolean => {
@@ -867,7 +863,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading}
           error={previewError}
           detailBasePath="/config/secrets"
-          dirty={dirty}
+          onDirtyChange={setDirty}
           maskValues={maskSecretYaml}
         />
       )}

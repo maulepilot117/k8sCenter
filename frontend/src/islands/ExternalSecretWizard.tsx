@@ -8,7 +8,6 @@ import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -74,7 +73,7 @@ export default function ExternalSecretWizard({
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<ExternalSecretWizardForm>(initialForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
   const namespaces = useNamespaces();
   const namespaceList = useSignalValue(namespaces);
 
@@ -132,7 +131,7 @@ export default function ExternalSecretWizard({
   }, []);
 
   function updateField(field: keyof ExternalSecretWizardForm, value: unknown) {
-    dirty.value = true;
+    setDirty(true);
     // Switching kind clears the selected store so a stale selection doesn't
     // bleed into the new kind's option list.
     if (field === "storeRefKind") {
@@ -153,7 +152,7 @@ export default function ExternalSecretWizard({
     field: "secretKey" | "key" | "property",
     value: string,
   ) {
-    dirty.value = true;
+    setDirty(true);
     setForm((prev) => ({
       ...prev,
       data: prev.data.map((item, i) =>
@@ -175,12 +174,12 @@ export default function ExternalSecretWizard({
   }
 
   function addDataItem() {
-    dirty.value = true;
+    setDirty(true);
     setForm((prev) => ({ ...prev, data: [...prev.data, newDataItem()] }));
   }
 
   function removeDataItem(index: number) {
-    dirty.value = true;
+    setDirty(true);
     setForm((prev) => ({
       ...prev,
       data: prev.data.filter((_, i) => i !== index),
@@ -342,7 +341,7 @@ export default function ExternalSecretWizard({
           loading={previewLoading}
           error={previewError}
           detailBasePath="/external-secrets/external-secrets"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

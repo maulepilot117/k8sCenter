@@ -16,7 +16,6 @@ import type { ProbeState } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface DeploymentFormState {
@@ -80,7 +79,7 @@ export default function DeploymentWizard({
   const namespaces = useNamespaces();
   const namespaceList = useSignalValue(namespaces);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
 
   // Review step state
   const [previewYaml, setPreviewYaml] = useState("");
@@ -90,27 +89,22 @@ export default function DeploymentWizard({
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => {
-        const f = { ...prev, [field]: value };
-        // Auto-sync app label value with name
-        if (field === "name") {
-          const idx = f.labels.findIndex(
-            (l: { key: string }) => l.key === "app",
-          );
-          if (idx >= 0) {
-            const updated = [...f.labels];
-            updated[idx] = { ...updated[idx], value: value as string };
-            f.labels = updated;
-          }
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => {
+      const f = { ...prev, [field]: value };
+      // Auto-sync app label value with name
+      if (field === "name") {
+        const idx = f.labels.findIndex((l: { key: string }) => l.key === "app");
+        if (idx >= 0) {
+          const updated = [...f.labels];
+          updated[idx] = { ...updated[idx], value: value as string };
+          f.labels = updated;
         }
-        return f;
-      });
-    },
-    [dirty],
-  );
+      }
+      return f;
+    });
+  }, []);
 
   const validateStep = (step: number): boolean => {
     const f = form;
@@ -328,7 +322,7 @@ export default function DeploymentWizard({
           loading={previewLoading}
           error={previewError}
           detailBasePath="/workloads/deployments"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

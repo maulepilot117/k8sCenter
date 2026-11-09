@@ -12,7 +12,6 @@ import type { LabelEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
@@ -138,7 +137,7 @@ export default function NetworkPolicyWizard({
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<NetworkPolicyFormState>(initialState);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
   const formRef = useLatest(form);
   const stepRef = useLatest(currentStep);
 
@@ -157,10 +156,10 @@ export default function NetworkPolicyWizard({
 
   const updateForm = useCallback(
     (updater: (prev: NetworkPolicyFormState) => NetworkPolicyFormState) => {
-      dirty.value = true;
+      setDirty(true);
       setForm(updater);
     },
-    [dirty],
+    [],
   );
 
   const updateField = (field: string, value: unknown) => {
@@ -910,7 +909,7 @@ export default function NetworkPolicyWizard({
           loading={previewLoading}
           error={previewError}
           detailBasePath="/networking/networkpolicies"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

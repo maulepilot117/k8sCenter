@@ -11,7 +11,6 @@ import {
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
@@ -102,7 +101,7 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<IngressFormState>(initialState);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
   const formRef = useLatest(form);
 
   const namespaces = useNamespaces();
@@ -114,29 +113,26 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({ ...prev, [field]: value }));
-    },
-    [dirty],
-  );
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
   const updateRule = useCallback(
     (ruleIdx: number, field: string, value: unknown) => {
-      dirty.value = true;
+      setDirty(true);
       setForm((prev) => {
         const rules = [...prev.rules];
         rules[ruleIdx] = { ...rules[ruleIdx], [field]: value };
         return { ...prev, rules };
       });
     },
-    [dirty],
+    [],
   );
 
   const updatePath = useCallback(
     (ruleIdx: number, pathIdx: number, field: string, value: unknown) => {
-      dirty.value = true;
+      setDirty(true);
       setForm((prev) => {
         const rules = [...prev.rules];
         const paths = [...rules[ruleIdx].paths];
@@ -145,55 +141,46 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
         return { ...prev, rules };
       });
     },
-    [dirty],
+    [],
   );
 
   const addRule = useCallback(() => {
-    dirty.value = true;
+    setDirty(true);
     setForm((prev) => ({ ...prev, rules: [...prev.rules, newRule()] }));
-  }, [dirty]);
+  }, []);
 
-  const removeRule = useCallback(
-    (ruleIdx: number) => {
-      dirty.value = true;
-      setForm((prev) => {
-        const rules = prev.rules.filter((_, i) => i !== ruleIdx);
-        return { ...prev, rules: rules.length > 0 ? rules : [newRule()] };
-      });
-    },
-    [dirty],
-  );
+  const removeRule = useCallback((ruleIdx: number) => {
+    setDirty(true);
+    setForm((prev) => {
+      const rules = prev.rules.filter((_, i) => i !== ruleIdx);
+      return { ...prev, rules: rules.length > 0 ? rules : [newRule()] };
+    });
+  }, []);
 
-  const addPath = useCallback(
-    (ruleIdx: number) => {
-      dirty.value = true;
-      setForm((prev) => {
-        const rules = [...prev.rules];
-        rules[ruleIdx] = {
-          ...rules[ruleIdx],
-          paths: [...rules[ruleIdx].paths, newPath()],
-        };
-        return { ...prev, rules };
-      });
-    },
-    [dirty],
-  );
+  const addPath = useCallback((ruleIdx: number) => {
+    setDirty(true);
+    setForm((prev) => {
+      const rules = [...prev.rules];
+      rules[ruleIdx] = {
+        ...rules[ruleIdx],
+        paths: [...rules[ruleIdx].paths, newPath()],
+      };
+      return { ...prev, rules };
+    });
+  }, []);
 
-  const removePath = useCallback(
-    (ruleIdx: number, pathIdx: number) => {
-      dirty.value = true;
-      setForm((prev) => {
-        const rules = [...prev.rules];
-        const paths = rules[ruleIdx].paths.filter((_, i) => i !== pathIdx);
-        rules[ruleIdx] = {
-          ...rules[ruleIdx],
-          paths: paths.length > 0 ? paths : [newPath()],
-        };
-        return { ...prev, rules };
-      });
-    },
-    [dirty],
-  );
+  const removePath = useCallback((ruleIdx: number, pathIdx: number) => {
+    setDirty(true);
+    setForm((prev) => {
+      const rules = [...prev.rules];
+      const paths = rules[ruleIdx].paths.filter((_, i) => i !== pathIdx);
+      rules[ruleIdx] = {
+        ...rules[ruleIdx],
+        paths: paths.length > 0 ? paths : [newPath()],
+      };
+      return { ...prev, rules };
+    });
+  }, []);
 
   const validateStep = (step: number): boolean => {
     const f = formRef.current;
@@ -316,21 +303,18 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
   };
 
   // Sync TLS hosts from rules when TLS is toggled on
-  const toggleTLS = useCallback(
-    (enabled: boolean) => {
-      dirty.value = true;
-      setForm((prev) => {
-        if (!enabled) return { ...prev, enableTLS: false, tls: [] };
-        const hosts = prev.rules.map((r) => r.host).filter((h) => h !== "");
-        return {
-          ...prev,
-          enableTLS: true,
-          tls: [{ hosts: [...new Set(hosts)], secretName: "" }],
-        };
-      });
-    },
-    [dirty],
-  );
+  const toggleTLS = useCallback((enabled: boolean) => {
+    setDirty(true);
+    setForm((prev) => {
+      if (!enabled) return { ...prev, enableTLS: false, tls: [] };
+      const hosts = prev.rules.map((r) => r.host).filter((h) => h !== "");
+      return {
+        ...prev,
+        enableTLS: true,
+        tls: [{ hosts: [...new Set(hosts)], secretName: "" }],
+      };
+    });
+  }, []);
 
   const f = form;
 
@@ -386,7 +370,7 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading}
           error={previewError}
           detailBasePath="/networking/ingresses"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

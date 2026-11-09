@@ -1,5 +1,4 @@
 /** @jsxImportSource react */
-import type { Signal } from "@preact/signals-core";
 import {
   useContext,
   useEffect,
@@ -41,11 +40,11 @@ interface WizardReviewStepProps {
   /** Base path for building the detail link (e.g."/workloads/deployments") */
   detailBasePath: string;
   /**
-   * The wizard's unsaved-changes flag (the one its `useDirtyGuard` watches).
-   * Cleared once an apply finishes with nothing failed, so leaving for the
-   * new resource does not prompt.
+   * Sets the wizard's unsaved-changes flag (the one its `useDirtyGuard`
+   * watches). Called with false once an apply finishes with nothing failed,
+   * so leaving for the new resource does not prompt.
    */
-  dirty?: Signal<boolean>;
+  onDirtyChange?: (dirty: boolean) => void;
   /**
    * Masks values for display (the Secret wizard's `maskSecretYaml`). While
    * masked the preview is read-only, so an edit can never write the mask
@@ -66,7 +65,7 @@ export function WizardReviewStep({
   loading,
   error,
   detailBasePath,
-  dirty,
+  onDirtyChange,
   maskValues,
 }: WizardReviewStepProps) {
   const [revealed, setRevealed] = useState(false);
@@ -75,7 +74,7 @@ export function WizardReviewStep({
   const [applyResult, setApplyResult] = useState<ApplyResponse | null>(null);
   const applyGuard = useRef(false);
   const primary = useContext(WizardPrimaryActionContext);
-  const dirtyRef = useLatest(dirty);
+  const onDirtyChangeRef = useLatest(onDirtyChange);
 
   // Reset the shared wizard-busy flag if this step unmounts mid-apply, so a
   // stale `true` can never wedge the next wizard's close controls.
@@ -101,8 +100,7 @@ export function WizardReviewStep({
         "text/yaml",
       );
       setApplyResult(resp.data);
-      if (resp.data.summary.failed === 0 && dirtyRef.current)
-        dirtyRef.current.value = false;
+      if (resp.data.summary.failed === 0) onDirtyChangeRef.current?.(false);
     } catch (err) {
       setApplyError(
         err instanceof Error ? err.message : "Failed to apply resource",

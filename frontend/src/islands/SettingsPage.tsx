@@ -55,7 +55,7 @@ export default function SettingsPage() {
   }, []);
 
   const dirty = useComputed(() => dirtyMonitoring.value || dirtyAlerting.value);
-  useDirtyGuard(dirty);
+  useDirtyGuard(dirty.value);
 
   async function fetchSettings() {
     try {

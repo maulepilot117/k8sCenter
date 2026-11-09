@@ -9,7 +9,6 @@ import type { EngineStatus } from "@/lib/policy-types.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 
 export interface PolicyWizardForm {
   templateId: string;
@@ -46,7 +45,7 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<PolicyWizardForm>(initialForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
 
   const [previewYaml, setPreviewYaml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -71,58 +70,52 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
       });
   }, []);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => {
-        const f = { ...prev, [field]: value };
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => {
+      const f = { ...prev, [field]: value };
 
-        if (field === "templateId") {
-          const tmpl = getTemplate(value as string);
-          if (tmpl) {
-            f.name = f.name || tmpl.id;
-            f.targetKinds = tmpl.targetKinds;
-            f.description = tmpl.description;
-            const defaults: Record<string, unknown> = {};
-            for (const pf of tmpl.paramFields) {
-              defaults[pf.key] = pf.defaultValue ?? "";
-            }
-            f.params = defaults;
-            if (f.engine === "kyverno") {
-              f.action = tmpl.defaultKyvernoAction;
-            } else if (f.engine === "gatekeeper") {
-              f.action = tmpl.defaultGatekeeperAction;
-            }
+      if (field === "templateId") {
+        const tmpl = getTemplate(value as string);
+        if (tmpl) {
+          f.name = f.name || tmpl.id;
+          f.targetKinds = tmpl.targetKinds;
+          f.description = tmpl.description;
+          const defaults: Record<string, unknown> = {};
+          for (const pf of tmpl.paramFields) {
+            defaults[pf.key] = pf.defaultValue ?? "";
+          }
+          f.params = defaults;
+          if (f.engine === "kyverno") {
+            f.action = tmpl.defaultKyvernoAction;
+          } else if (f.engine === "gatekeeper") {
+            f.action = tmpl.defaultGatekeeperAction;
           }
         }
+      }
 
-        if (field === "engine") {
-          const tmpl = getTemplate(f.templateId);
-          if (tmpl) {
-            if (value === "kyverno") {
-              f.action = tmpl.defaultKyvernoAction;
-            } else if (value === "gatekeeper") {
-              f.action = tmpl.defaultGatekeeperAction;
-            }
+      if (field === "engine") {
+        const tmpl = getTemplate(f.templateId);
+        if (tmpl) {
+          if (value === "kyverno") {
+            f.action = tmpl.defaultKyvernoAction;
+          } else if (value === "gatekeeper") {
+            f.action = tmpl.defaultGatekeeperAction;
           }
         }
+      }
 
-        return f;
-      });
-    },
-    [dirty],
-  );
+      return f;
+    });
+  }, []);
 
-  const updateParam = useCallback(
-    (key: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({
-        ...prev,
-        params: { ...prev.params, [key]: value },
-      }));
-    },
-    [dirty],
-  );
+  const updateParam = useCallback((key: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({
+      ...prev,
+      params: { ...prev.params, [key]: value },
+    }));
+  }, []);
 
   const validateStep = (step: number): boolean => {
     const f = form;
@@ -318,7 +311,7 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
               loading={previewLoading}
               error={previewError}
               detailBasePath="/security/policies"
-              dirty={dirty}
+              onDirtyChange={setDirty}
             />
           )}
         </>

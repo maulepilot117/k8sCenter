@@ -12,7 +12,6 @@ import {
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -123,7 +122,7 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<CronJobFormState>(initialState);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
 
   const namespaces = useNamespaces();
   const namespaceList = useSignalValue(namespaces);
@@ -136,24 +135,18 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({ ...prev, [field]: value }));
-    },
-    [dirty],
-  );
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
-  const updateContainerField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({
-        ...prev,
-        container: { ...prev.container, [field]: value },
-      }));
-    },
-    [dirty],
-  );
+  const updateContainerField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({
+      ...prev,
+      container: { ...prev.container, [field]: value },
+    }));
+  }, []);
 
   const validateStep0 = (): boolean => {
     const f = formRef.current;
@@ -530,7 +523,7 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading}
           error={previewError}
           detailBasePath="/workloads/cronjobs"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

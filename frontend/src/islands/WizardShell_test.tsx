@@ -1,7 +1,6 @@
 /** @jsxImportSource preact */
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { type Signal, signal } from "@preact/signals";
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import { setAccessToken } from "@/lib/api.ts";
@@ -67,7 +66,7 @@ function mount(opts: {
   onNext: () => void;
   yaml?: string;
   maskValues?: (yaml: string) => string;
-  dirty?: Signal<boolean>;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   setAccessToken("t");
   host = document.createElement("div");
@@ -91,7 +90,7 @@ function mount(opts: {
           error={null}
           detailBasePath="/config/configmaps"
           maskValues={opts.maskValues}
-          dirty={opts.dirty}
+          onDirtyChange={opts.onDirtyChange}
         />
       </WizardShell>,
       host as HTMLElement,
@@ -118,13 +117,14 @@ test("the review step's footer button is Apply, not Close", () => {
 
 test("a clean apply clears the unsaved-changes flag and links to the resource", async () => {
   stubApply(0);
-  const dirty = signal(true);
-  const root = mount({ onNext: () => {}, dirty });
+  const dirtyChanges: boolean[] = [];
+  const onDirtyChange = (d: boolean) => dirtyChanges.push(d);
+  const root = mount({ onNext: () => {}, onDirtyChange });
 
   await act(async () => buttons(root, "Apply")[0].click());
   await flush();
 
-  expect(dirty.value).toBe(false);
+  expect(dirtyChanges).toEqual([false]);
   expect(root.textContent).toContain("Applied successfully");
   const link = [...root.querySelectorAll("a")].find(
     (a) => a.textContent?.trim() === "View resource",
@@ -134,14 +134,15 @@ test("a clean apply clears the unsaved-changes flag and links to the resource", 
 
 test("an apply with failures keeps the guard and offers Done", async () => {
   stubApply(1);
-  const dirty = signal(true);
+  const dirtyChanges: boolean[] = [];
+  const onDirtyChange = (d: boolean) => dirtyChanges.push(d);
   let next = 0;
-  const root = mount({ onNext: () => next++, dirty });
+  const root = mount({ onNext: () => next++, onDirtyChange });
 
   await act(async () => buttons(root, "Apply")[0].click());
   await flush();
 
-  expect(dirty.value).toBe(true);
+  expect(dirtyChanges).toEqual([]);
   expect(root.textContent).toContain("Apply completed with errors");
   const done = buttons(root, "Done");
   expect(done).toHaveLength(1);

@@ -105,7 +105,7 @@ export default function NamespaceLimitsWizard({
   const [form, setForm] = useState<FormState>(initialState);
   // The step components subscribe to these two signals, so they stay signals.
   const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
 
   const namespaces = useNamespaces();
 
@@ -118,32 +118,32 @@ export default function NamespaceLimitsWizard({
 
   const updateField = useCallback(
     <K extends keyof FormState>(field: K, value: FormState[K]) => {
-      dirty.value = true;
+      setDirty(true);
       setForm((prev) => ({ ...prev, [field]: value }));
     },
-    [dirty],
+    [],
   );
 
   const updateQuota = useCallback(
     <K extends keyof QuotaConfig>(field: K, value: QuotaConfig[K]) => {
-      dirty.value = true;
+      setDirty(true);
       setForm((prev) => ({
         ...prev,
         quota: { ...prev.quota, [field]: value },
       }));
     },
-    [dirty],
+    [],
   );
 
   const updateLimits = useCallback(
     <K extends keyof LimitConfig>(field: K, value: LimitConfig[K]) => {
-      dirty.value = true;
+      setDirty(true);
       setForm((prev) => ({
         ...prev,
         limits: { ...prev.limits, [field]: value },
       }));
     },
-    [dirty],
+    [],
   );
 
   const updateResourcePair = useCallback(
@@ -152,7 +152,7 @@ export default function NamespaceLimitsWizard({
       resourceKey: "cpu" | "memory",
       value: string,
     ) => {
-      dirty.value = true;
+      setDirty(true);
       setForm((prev) => {
         const currentPair = prev.limits[configKey] as ResourcePair | undefined;
         const newPair = { ...(currentPair ?? { cpu: "", memory: "" }) };
@@ -163,27 +163,24 @@ export default function NamespaceLimitsWizard({
         };
       });
     },
-    [dirty],
+    [],
   );
 
-  const applyPreset = useCallback(
-    (preset: PresetKey) => {
-      dirty.value = true;
-      const p = PRESETS[preset];
-      setForm((prev) => ({
-        ...prev,
-        preset,
-        quota: { ...p.quota },
-        limits: {
-          containerDefault: { ...p.limits.containerDefault },
-          containerDefaultRequest: { ...p.limits.containerDefaultRequest },
-          containerMax: { ...p.limits.containerMax },
-          containerMin: { ...p.limits.containerMin },
-        },
-      }));
-    },
-    [dirty],
-  );
+  const applyPreset = useCallback((preset: PresetKey) => {
+    setDirty(true);
+    const p = PRESETS[preset];
+    setForm((prev) => ({
+      ...prev,
+      preset,
+      quota: { ...p.quota },
+      limits: {
+        containerDefault: { ...p.limits.containerDefault },
+        containerDefaultRequest: { ...p.limits.containerDefaultRequest },
+        containerMax: { ...p.limits.containerMax },
+        containerMin: { ...p.limits.containerMin },
+      },
+    }));
+  }, []);
 
   const validateStep = (step: number): boolean => {
     const f = form;
@@ -359,7 +356,7 @@ export default function NamespaceLimitsWizard({
           loading={previewLoading}
           error={previewError}
           detailBasePath="/config/namespace-limits"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

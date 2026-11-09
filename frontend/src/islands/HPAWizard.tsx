@@ -7,7 +7,6 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -73,7 +72,7 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<HPAFormState>(initialState);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
   const metricKeys = useRowKeys(form.metrics.length);
 
   const namespaces = useNamespaces();
@@ -86,28 +85,25 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({ ...prev, [field]: value }));
-    },
-    [dirty],
-  );
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
   const updateMetric = useCallback(
     (index: number, field: keyof HPAMetricState, val: unknown) => {
-      dirty.value = true;
+      setDirty(true);
       setForm((prev) => {
         const metrics = [...prev.metrics];
         metrics[index] = { ...metrics[index], [field]: val };
         return { ...prev, metrics };
       });
     },
-    [dirty],
+    [],
   );
 
   const addMetric = useCallback(() => {
-    dirty.value = true;
+    setDirty(true);
     setForm((prev) => ({
       ...prev,
       metrics: [
@@ -120,11 +116,11 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
         },
       ],
     }));
-  }, [dirty]);
+  }, []);
 
   const removeMetric = useCallback(
     (index: number) => {
-      dirty.value = true;
+      setDirty(true);
       metricKeys.removeAt(index);
       setForm((prev) => {
         const metrics = prev.metrics.filter((_, i) => i !== index);
@@ -144,7 +140,7 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
         };
       });
     },
-    [dirty, metricKeys],
+    [metricKeys],
   );
 
   const validateStep = (): boolean => {
@@ -515,7 +511,7 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading}
           error={previewError}
           detailBasePath="/scaling/hpas"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

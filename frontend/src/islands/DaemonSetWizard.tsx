@@ -16,7 +16,6 @@ import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -72,7 +71,7 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<DaemonSetFormState>(initialState);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
 
   const namespaces = useNamespaces();
   const namespaceList = useSignalValue(namespaces);
@@ -86,20 +85,17 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({ ...prev, [field]: value }));
-    },
-    [dirty],
-  );
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
   const updateNodeSelector = (
     index: number,
     field: "key" | "value",
     val: string,
   ) => {
-    dirty.value = true;
+    setDirty(true);
     setForm((prev) => {
       const nodeSelector = [...prev.nodeSelector];
       nodeSelector[index] = { ...nodeSelector[index], [field]: val };
@@ -108,7 +104,7 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
   };
 
   const addNodeSelector = () => {
-    dirty.value = true;
+    setDirty(true);
     setForm((prev) => ({
       ...prev,
       nodeSelector: [...prev.nodeSelector, { key: "", value: "" }],
@@ -116,7 +112,7 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
   };
 
   const removeNodeSelector = (index: number) => {
-    dirty.value = true;
+    setDirty(true);
     nodeSelectorKeys.removeAt(index);
     setForm((prev) => ({
       ...prev,
@@ -390,7 +386,7 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading}
           error={previewError}
           detailBasePath="/workloads/daemonsets"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

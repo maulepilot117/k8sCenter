@@ -54,7 +54,6 @@ import PodTerminal from "@/src/islands/PodTerminal.tsx";
 import RelatedPods from "@/src/islands/RelatedPods.tsx";
 import RoleBindingsList from "@/src/islands/RoleBindingsList.tsx";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
@@ -353,13 +352,8 @@ export default function ResourceDetail({
     [resource, showManagedFields],
   );
 
-  // Dirty state navigation guard. The guard reads a signal when the page is
-  // left, so it is kept in step with the edit state after each render.
-  const yamlDirty = useSignal(false);
-  useEffect(() => {
-    yamlDirty.value = yamlEditing && yamlEditContent !== yamlContent;
-  }, [yamlDirty, yamlEditing, yamlEditContent, yamlContent]);
-  useDirtyGuard(yamlDirty);
+  // Leaving the page with an unsaved YAML edit asks for confirmation.
+  useDirtyGuard(yamlEditing && yamlEditContent !== yamlContent);
 
   // Periodic tick to refresh age displays (every 30s)
   const [, setTick] = useState(0);

@@ -4,7 +4,6 @@ import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
 interface UserFormState {
@@ -41,7 +40,7 @@ export default function UserWizard({ onClose }: { onClose?: () => void }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [created, setCreated] = useState(false);
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
   const usernameRef = useRef<HTMLInputElement>(null);
   const formRef = useLatest(form);
   // A second click must be refused before the next render shows "submitting".
@@ -53,13 +52,10 @@ export default function UserWizard({ onClose }: { onClose?: () => void }) {
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({ ...prev, [field]: value }));
-    },
-    [dirty],
-  );
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
   const validateStep = (step: number): boolean => {
     const f = form;
@@ -141,7 +137,7 @@ export default function UserWizard({ onClose }: { onClose?: () => void }) {
     try {
       await apiPost("/v1/users", payload);
       // The user exists now: leaving the page loses nothing.
-      dirty.value = false;
+      setDirty(false);
       setCreated(true);
     } catch (err) {
       if (err instanceof Error) {

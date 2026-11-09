@@ -8,7 +8,6 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -62,7 +61,7 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
     return initialState(urlParams?.get("backup") || undefined);
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
   const formRef = useLatest(form);
 
   const namespaces = useNamespaces();
@@ -101,13 +100,10 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => ({ ...prev, [field]: value }));
-    },
-    [dirty],
-  );
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
   const validate = useCallback((): boolean => {
     const f = formRef.current;
@@ -308,7 +304,7 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
           loading={previewLoading}
           error={previewError}
           detailBasePath="/backup/restores"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

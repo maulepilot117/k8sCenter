@@ -105,7 +105,7 @@ export default function CiliumPolicyEditor({
   const dirty = useComputed(() =>
     Boolean(name.value || rules.value.length > 1),
   );
-  useDirtyGuard(dirty);
+  useDirtyGuard(dirty.value);
 
   if (!IS_BROWSER) {
     // Must carry EDITOR_PAGE_CLASS, identical to the hydrated root below.

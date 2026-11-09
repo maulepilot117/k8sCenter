@@ -23,7 +23,6 @@ import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
@@ -112,7 +111,7 @@ export default function SecretStoreWizard({
     initialForm(scope),
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
   const namespaces = useNamespaces();
   const namespaceList = useSignalValue(namespaces);
 
@@ -130,7 +129,7 @@ export default function SecretStoreWizard({
     field: K,
     value: SecretStoreWizardForm[K],
   ) {
-    dirty.value = true;
+    setDirty(true);
     // Switching provider clears the spec slate cleanly so a stale value from
     // a prior provider can't leak into the new spec (L7.5 touched-flag
     // pattern applied at the provider level).
@@ -492,7 +491,7 @@ export default function SecretStoreWizard({
           loading={previewLoading}
           error={previewError}
           detailBasePath={detailBasePath}
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

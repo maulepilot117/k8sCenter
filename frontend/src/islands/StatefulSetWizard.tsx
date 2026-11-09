@@ -25,7 +25,6 @@ import type {
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -98,7 +97,7 @@ export default function StatefulSetWizard({
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<StatefulSetFormState>(initialState);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
 
   const namespaces = useNamespaces();
   const namespaceList = useSignalValue(namespaces);
@@ -114,28 +113,25 @@ export default function StatefulSetWizard({
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => {
-        const f = { ...prev, [field]: value };
-        // Auto-sync serviceName with name when it is empty or still the
-        // default derived from the previous name
-        if (field === "name") {
-          const newName = value as string;
-          if (
-            !f.serviceName ||
-            f.serviceName === prev.name ||
-            f.serviceName === `${prev.name}-headless`
-          ) {
-            f.serviceName = newName ? `${newName}-headless` : "";
-          }
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => {
+      const f = { ...prev, [field]: value };
+      // Auto-sync serviceName with name when it is empty or still the
+      // default derived from the previous name
+      if (field === "name") {
+        const newName = value as string;
+        if (
+          !f.serviceName ||
+          f.serviceName === prev.name ||
+          f.serviceName === `${prev.name}-headless`
+        ) {
+          f.serviceName = newName ? `${newName}-headless` : "";
         }
-        return f;
-      });
-    },
-    [dirty],
-  );
+      }
+      return f;
+    });
+  }, []);
 
   const validateStep = (step: number): boolean => {
     const f = form;
@@ -602,7 +598,7 @@ export default function StatefulSetWizard({
           loading={previewLoading}
           error={previewError}
           detailBasePath="/workloads/statefulsets"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

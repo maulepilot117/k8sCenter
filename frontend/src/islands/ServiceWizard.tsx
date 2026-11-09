@@ -15,7 +15,6 @@ import {
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface ServiceFormState {
@@ -80,7 +79,7 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
   const namespaces = useNamespaces();
   const namespaceList = useSignalValue(namespaces);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [dirty, setDirty] = useState(false);
 
   const [previewYaml, setPreviewYaml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -89,36 +88,33 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback(
-    (field: string, value: unknown) => {
-      dirty.value = true;
-      setForm((prev) => {
-        const f = { ...prev, [field]: value };
-        // Auto-sync app label/selector with name
-        if (field === "name") {
-          const nameVal = value as string;
-          const labelIdx = f.labels.findIndex(
-            (l: { key: string }) => l.key === "app",
-          );
-          if (labelIdx >= 0) {
-            const updated = [...f.labels];
-            updated[labelIdx] = { ...updated[labelIdx], value: nameVal };
-            f.labels = updated;
-          }
-          const selIdx = f.selector.findIndex(
-            (s: { key: string }) => s.key === "app",
-          );
-          if (selIdx >= 0) {
-            const updated = [...f.selector];
-            updated[selIdx] = { ...updated[selIdx], value: nameVal };
-            f.selector = updated;
-          }
+  const updateField = useCallback((field: string, value: unknown) => {
+    setDirty(true);
+    setForm((prev) => {
+      const f = { ...prev, [field]: value };
+      // Auto-sync app label/selector with name
+      if (field === "name") {
+        const nameVal = value as string;
+        const labelIdx = f.labels.findIndex(
+          (l: { key: string }) => l.key === "app",
+        );
+        if (labelIdx >= 0) {
+          const updated = [...f.labels];
+          updated[labelIdx] = { ...updated[labelIdx], value: nameVal };
+          f.labels = updated;
         }
-        return f;
-      });
-    },
-    [dirty],
-  );
+        const selIdx = f.selector.findIndex(
+          (s: { key: string }) => s.key === "app",
+        );
+        if (selIdx >= 0) {
+          const updated = [...f.selector];
+          updated[selIdx] = { ...updated[selIdx], value: nameVal };
+          f.selector = updated;
+        }
+      }
+      return f;
+    });
+  }, []);
 
   const validateStep = (step: number): boolean => {
     const f = form;
@@ -301,7 +297,7 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading}
           error={previewError}
           detailBasePath="/networking/services"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>
