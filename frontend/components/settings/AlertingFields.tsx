@@ -1,54 +1,56 @@
 /** @jsxImportSource react */
-import { type Signal, signal } from "@preact/signals-core";
 import Field from "@/components/ui/form/Field.tsx";
 import TextField from "@/components/ui/form/TextField.tsx";
 import Toggle from "@/components/ui/form/Toggle.tsx";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface AlertingFieldsProps {
-  alertEnabled: Signal<boolean>;
-  smtpHost: Signal<string>;
-  smtpPort: Signal<number>;
-  smtpUser: Signal<string>;
-  smtpPass: Signal<string>;
-  smtpFrom: Signal<string>;
-  alertRate?: Signal<number>;
-  alertRecipients?: Signal<string>;
+  alertEnabled: boolean;
+  onAlertEnabledChange: (v: boolean) => void;
+  smtpHost: string;
+  onSmtpHostChange: (v: string) => void;
+  smtpPort: number;
+  onSmtpPortChange: (v: number) => void;
+  smtpUser: string;
+  onSmtpUserChange: (v: string) => void;
+  smtpPass: string;
+  onSmtpPassChange: (v: string) => void;
+  smtpFrom: string;
+  onSmtpFromChange: (v: string) => void;
+  /** The rate limit field shows only when both of its props are passed. */
+  alertRate?: number;
+  onAlertRateChange?: (v: number) => void;
+  /** The recipients field shows only when both of its props are passed. */
+  alertRecipients?: string;
+  onAlertRecipientsChange?: (v: string) => void;
   onDirty?: () => void;
 }
 
-// Stand-ins so the hooks below run unconditionally when an optional signal is
-// absent; the matching field is not rendered in that case.
-const NO_NUMBER = signal(0);
-const NO_TEXT = signal("");
-
 export function AlertingFields({
   alertEnabled,
+  onAlertEnabledChange,
   smtpHost,
+  onSmtpHostChange,
   smtpPort,
+  onSmtpPortChange,
   smtpUser,
+  onSmtpUserChange,
   smtpPass,
+  onSmtpPassChange,
   smtpFrom,
+  onSmtpFromChange,
   alertRate,
+  onAlertRateChange,
   alertRecipients,
+  onAlertRecipientsChange,
   onDirty,
 }: AlertingFieldsProps) {
-  const enabled = useSignalValue(alertEnabled);
-  const host = useSignalValue(smtpHost);
-  const port = useSignalValue(smtpPort);
-  const user = useSignalValue(smtpUser);
-  const pass = useSignalValue(smtpPass);
-  const from = useSignalValue(smtpFrom);
-  const rate = useSignalValue(alertRate ?? NO_NUMBER);
-  const recipients = useSignalValue(alertRecipients ?? NO_TEXT);
-
   return (
     <>
       <div className="mb-4 flex items-center gap-3">
         <Toggle
-          checked={enabled}
+          checked={alertEnabled}
           onChange={(v) => {
-            alertEnabled.value = v;
+            onAlertEnabledChange(v);
             onDirty?.();
           }}
         />
@@ -64,9 +66,9 @@ export function AlertingFields({
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="SMTP Host">
           <TextField
-            value={host}
+            value={smtpHost}
             onInput={(v) => {
-              smtpHost.value = v;
+              onSmtpHostChange(v);
               onDirty?.();
             }}
             placeholder="smtp.example.com"
@@ -74,18 +76,18 @@ export function AlertingFields({
         </Field>
         <Field label="SMTP Port">
           <TextField
-            value={String(port)}
+            value={String(smtpPort)}
             onInput={(v) => {
-              smtpPort.value = parseInt(v, 10) || 587;
+              onSmtpPortChange(parseInt(v, 10) || 587);
               onDirty?.();
             }}
           />
         </Field>
         <Field label="SMTP Username">
           <TextField
-            value={user}
+            value={smtpUser}
             onInput={(v) => {
-              smtpUser.value = v;
+              onSmtpUserChange(v);
               onDirty?.();
             }}
           />
@@ -93,42 +95,42 @@ export function AlertingFields({
         <Field label="SMTP Password">
           <TextField
             type="password"
-            value={pass}
+            value={smtpPass}
             onInput={(v) => {
-              smtpPass.value = v;
+              onSmtpPassChange(v);
               onDirty?.();
             }}
-            placeholder={pass === "****" ? "****" : ""}
+            placeholder={smtpPass === "****" ? "****" : ""}
           />
         </Field>
         <Field label="From Address">
           <TextField
-            value={from}
+            value={smtpFrom}
             onInput={(v) => {
-              smtpFrom.value = v;
+              onSmtpFromChange(v);
               onDirty?.();
             }}
             placeholder="alerts@example.com"
           />
         </Field>
-        {alertRate && (
+        {alertRate !== undefined && onAlertRateChange && (
           <Field label="Rate Limit (per hour)">
             <TextField
-              value={String(rate)}
+              value={String(alertRate)}
               onInput={(v) => {
-                alertRate.value = parseInt(v, 10) || 5;
+                onAlertRateChange(parseInt(v, 10) || 5);
                 onDirty?.();
               }}
             />
           </Field>
         )}
-        {alertRecipients && (
+        {alertRecipients !== undefined && onAlertRecipientsChange && (
           <div className="sm:col-span-2">
             <Field label="Recipients" hint="Comma-separated email addresses">
               <TextField
-                value={recipients}
+                value={alertRecipients}
                 onInput={(v) => {
-                  alertRecipients.value = v;
+                  onAlertRecipientsChange(v);
                   onDirty?.();
                 }}
                 placeholder="admin@example.com, ops@example.com"

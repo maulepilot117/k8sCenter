@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
 import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -9,6 +9,7 @@ import { apiGet, apiPut } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface Settings {
   monitoringPrometheusUrl?: string | null;
@@ -26,102 +27,102 @@ interface Settings {
 }
 
 export default function SettingsPage() {
-  const settings = useSignal<Settings>({});
-  const loading = useSignal(true);
-  const error = useSignal("");
+  const isClient = useIsClient();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   // Per-section dirty tracking
-  const dirtyMonitoring = useSignal(false);
-  const dirtyAlerting = useSignal(false);
-  const savingSection = useSignal<string | null>(null);
+  const [dirtyMonitoring, setDirtyMonitoring] = useState(false);
+  const [dirtyAlerting, setDirtyAlerting] = useState(false);
+  const [savingSection, setSavingSection] = useState<string | null>(null);
 
   // Local form state
-  const promUrl = useSignal("");
-  const grafUrl = useSignal("");
-  const grafToken = useSignal("");
-  const monNs = useSignal("");
-  const alertEnabled = useSignal(false);
-  const smtpHost = useSignal("");
-  const smtpPort = useSignal(587);
-  const smtpUser = useSignal("");
-  const smtpPass = useSignal("");
-  const smtpFrom = useSignal("");
-  const alertRate = useSignal(5);
-  const alertRecipients = useSignal("");
+  const [promUrl, setPromUrl] = useState("");
+  const [grafUrl, setGrafUrl] = useState("");
+  const [grafToken, setGrafToken] = useState("");
+  const [monNs, setMonNs] = useState("");
+  const [alertEnabled, setAlertEnabled] = useState(false);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState(587);
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPass, setSmtpPass] = useState("");
+  const [smtpFrom, setSmtpFrom] = useState("");
+  const [alertRate, setAlertRate] = useState(5);
+  const [alertRecipients, setAlertRecipients] = useState("");
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `fetchSettings` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchSettings();
   }, []);
 
-  useDirtyGuard(dirtyMonitoring.value || dirtyAlerting.value);
+  useDirtyGuard(dirtyMonitoring || dirtyAlerting);
 
   async function fetchSettings() {
     try {
       const res = await apiGet<Settings>("/v1/settings");
       const s = res.data;
-      settings.value = s;
       // Populate form fields
-      promUrl.value = s.monitoringPrometheusUrl ?? "";
-      grafUrl.value = s.monitoringGrafanaUrl ?? "";
-      grafToken.value = s.monitoringGrafanaToken ?? "";
-      monNs.value = s.monitoringNamespace ?? "";
-      alertEnabled.value = s.alertingEnabled ?? false;
-      smtpHost.value = s.alertingSmtpHost ?? "";
-      smtpPort.value = s.alertingSmtpPort ?? 587;
-      smtpUser.value = s.alertingSmtpUsername ?? "";
-      smtpPass.value = s.alertingSmtpPassword ?? "";
-      smtpFrom.value = s.alertingSmtpFrom ?? "";
-      alertRate.value = s.alertingRateLimit ?? 5;
-      alertRecipients.value = (s.alertingRecipients ?? []).join(",");
-      loading.value = false;
+      setPromUrl(s.monitoringPrometheusUrl ?? "");
+      setGrafUrl(s.monitoringGrafanaUrl ?? "");
+      setGrafToken(s.monitoringGrafanaToken ?? "");
+      setMonNs(s.monitoringNamespace ?? "");
+      setAlertEnabled(s.alertingEnabled ?? false);
+      setSmtpHost(s.alertingSmtpHost ?? "");
+      setSmtpPort(s.alertingSmtpPort ?? 587);
+      setSmtpUser(s.alertingSmtpUsername ?? "");
+      setSmtpPass(s.alertingSmtpPassword ?? "");
+      setSmtpFrom(s.alertingSmtpFrom ?? "");
+      setAlertRate(s.alertingRateLimit ?? 5);
+      setAlertRecipients((s.alertingRecipients ?? []).join(","));
+      setLoading(false);
     } catch (err) {
-      error.value = err instanceof Error ? err.message : "Failed to load";
-      loading.value = false;
+      setError(err instanceof Error ? err.message : "Failed to load");
+      setLoading(false);
     }
   }
 
   async function saveMonitoring() {
-    savingSection.value = "monitoring";
+    setSavingSection("monitoring");
     try {
       await apiPut("/v1/settings", {
-        monitoringPrometheusUrl: promUrl.value || null,
-        monitoringGrafanaUrl: grafUrl.value || null,
-        monitoringGrafanaToken: grafToken.value || null,
-        monitoringNamespace: monNs.value || null,
+        monitoringPrometheusUrl: promUrl || null,
+        monitoringGrafanaUrl: grafUrl || null,
+        monitoringGrafanaToken: grafToken || null,
+        monitoringNamespace: monNs || null,
       });
-      dirtyMonitoring.value = false;
+      setDirtyMonitoring(false);
       showToast("Monitoring settings saved", "success");
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Save failed", "error");
     } finally {
-      savingSection.value = null;
+      setSavingSection(null);
     }
   }
 
   async function saveAlerting() {
-    savingSection.value = "alerting";
+    setSavingSection("alerting");
     try {
-      const recipients = alertRecipients.value
+      const recipients = alertRecipients
         .split(",")
         .map((r) => r.trim())
         .filter(Boolean);
       await apiPut("/v1/settings", {
-        alertingEnabled: alertEnabled.value,
-        alertingSmtpHost: smtpHost.value || null,
-        alertingSmtpPort: smtpPort.value,
-        alertingSmtpUsername: smtpUser.value || null,
-        alertingSmtpPassword: smtpPass.value || null,
-        alertingSmtpFrom: smtpFrom.value || null,
-        alertingRateLimit: alertRate.value,
+        alertingEnabled: alertEnabled,
+        alertingSmtpHost: smtpHost || null,
+        alertingSmtpPort: smtpPort,
+        alertingSmtpUsername: smtpUser || null,
+        alertingSmtpPassword: smtpPass || null,
+        alertingSmtpFrom: smtpFrom || null,
+        alertingRateLimit: alertRate,
         alertingRecipients: recipients.length > 0 ? recipients : null,
       });
-      dirtyAlerting.value = false;
+      setDirtyAlerting(false);
       showToast("Alerting settings saved", "success");
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Save failed", "error");
     } finally {
-      savingSection.value = null;
+      setSavingSection(null);
     }
   }
 
@@ -134,9 +135,9 @@ export default function SettingsPage() {
     }
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (loading.value) {
+  if (loading) {
     return (
       <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>
         Loading settings…
@@ -144,8 +145,8 @@ export default function SettingsPage() {
     );
   }
 
-  if (error.value) {
-    return <ErrorBanner message={error.value} />;
+  if (error) {
+    return <ErrorBanner message={error} />;
   }
 
   return (
@@ -158,10 +159,8 @@ export default function SettingsPage() {
             variant="primary"
             size="sm"
             onClick={saveMonitoring}
-            disabled={
-              !dirtyMonitoring.value || savingSection.value === "monitoring"
-            }
-            loading={savingSection.value === "monitoring"}
+            disabled={!dirtyMonitoring || savingSection === "monitoring"}
+            loading={savingSection === "monitoring"}
           >
             Save Monitoring
           </Button>
@@ -169,12 +168,14 @@ export default function SettingsPage() {
       >
         <MonitoringFields
           promUrl={promUrl}
+          onPromUrlChange={setPromUrl}
           grafUrl={grafUrl}
+          onGrafUrlChange={setGrafUrl}
           grafToken={grafToken}
+          onGrafTokenChange={setGrafToken}
           monNs={monNs}
-          onDirty={() => {
-            dirtyMonitoring.value = true;
-          }}
+          onMonNsChange={setMonNs}
+          onDirty={() => setDirtyMonitoring(true)}
         />
       </WidgetShell>
 
@@ -190,10 +191,8 @@ export default function SettingsPage() {
               variant="primary"
               size="sm"
               onClick={saveAlerting}
-              disabled={
-                !dirtyAlerting.value || savingSection.value === "alerting"
-              }
-              loading={savingSection.value === "alerting"}
+              disabled={!dirtyAlerting || savingSection === "alerting"}
+              loading={savingSection === "alerting"}
             >
               Save Alerting
             </Button>
@@ -202,16 +201,22 @@ export default function SettingsPage() {
       >
         <AlertingFields
           alertEnabled={alertEnabled}
+          onAlertEnabledChange={setAlertEnabled}
           smtpHost={smtpHost}
+          onSmtpHostChange={setSmtpHost}
           smtpPort={smtpPort}
+          onSmtpPortChange={setSmtpPort}
           smtpUser={smtpUser}
+          onSmtpUserChange={setSmtpUser}
           smtpPass={smtpPass}
+          onSmtpPassChange={setSmtpPass}
           smtpFrom={smtpFrom}
+          onSmtpFromChange={setSmtpFrom}
           alertRate={alertRate}
+          onAlertRateChange={setAlertRate}
           alertRecipients={alertRecipients}
-          onDirty={() => {
-            dirtyAlerting.value = true;
-          }}
+          onAlertRecipientsChange={setAlertRecipients}
+          onDirty={() => setDirtyAlerting(true)}
         />
       </WidgetShell>
     </div>

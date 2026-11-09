@@ -8,7 +8,6 @@ import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import StepRail from "@/components/wizard/StepRail.tsx";
 import { apiPut, setAccessToken } from "@/lib/api.ts";
 import { Logo } from "@/src/components/ui/Logo.tsx";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 const STEPS = [
@@ -33,24 +32,24 @@ export default function SetupWizard() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [setupToken, setSetupToken] = useState("");
 
-  // The monitoring and alerting field components take signals.
-  const promUrl = useSignal("");
-  const grafUrl = useSignal("");
-  const grafToken = useSignal("");
+  const [promUrl, setPromUrl] = useState("");
+  const [grafUrl, setGrafUrl] = useState("");
+  const [grafToken, setGrafToken] = useState("");
 
-  const smtpHost = useSignal("");
-  const smtpPort = useSignal(587);
-  const smtpFrom = useSignal("");
-  const smtpUser = useSignal("");
-  const smtpPass = useSignal("");
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState(587);
+  const [smtpFrom, setSmtpFrom] = useState("");
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPass, setSmtpPass] = useState("");
 
   // Track what was configured
   const [adminCreated, setAdminCreated] = useState(false);
   const [monitoringConfigured, setMonitoringConfigured] = useState(false);
   const [alertingConfigured, setAlertingConfigured] = useState(false);
 
-  // Alerting needs an enabled signal even though wizard doesn't show toggle
-  const alertEnabled = useSignal(true);
+  // The alerting fields need an enabled value even though the wizard doesn't
+  // show the toggle.
+  const [alertEnabled, setAlertEnabled] = useState(true);
 
   const createAdmin = async () => {
     if (submitting.current) return; // guard against double-click
@@ -123,7 +122,7 @@ export default function SetupWizard() {
   };
 
   const saveMonitoring = async () => {
-    if (!promUrl.value && !grafUrl.value) {
+    if (!promUrl && !grafUrl) {
       // Skip — nothing to save
       setStep(3);
       return;
@@ -134,9 +133,9 @@ export default function SetupWizard() {
 
     try {
       await apiPut("/v1/settings", {
-        monitoringPrometheusUrl: promUrl.value || null,
-        monitoringGrafanaUrl: grafUrl.value || null,
-        monitoringGrafanaToken: grafToken.value || null,
+        monitoringPrometheusUrl: promUrl || null,
+        monitoringGrafanaUrl: grafUrl || null,
+        monitoringGrafanaToken: grafToken || null,
       });
 
       setMonitoringConfigured(true);
@@ -149,7 +148,7 @@ export default function SetupWizard() {
   };
 
   const saveAlerting = async () => {
-    if (!smtpHost.value) {
+    if (!smtpHost) {
       setStep(4);
       return;
     }
@@ -160,11 +159,11 @@ export default function SetupWizard() {
     try {
       await apiPut("/v1/settings", {
         alertingEnabled: true,
-        alertingSmtpHost: smtpHost.value,
-        alertingSmtpPort: smtpPort.value,
-        alertingSmtpFrom: smtpFrom.value || null,
-        alertingSmtpUsername: smtpUser.value || null,
-        alertingSmtpPassword: smtpPass.value || null,
+        alertingSmtpHost: smtpHost,
+        alertingSmtpPort: smtpPort,
+        alertingSmtpFrom: smtpFrom || null,
+        alertingSmtpUsername: smtpUser || null,
+        alertingSmtpPassword: smtpPass || null,
       });
 
       setAlertingConfigured(true);
@@ -296,8 +295,11 @@ export default function SetupWizard() {
           </p>
           <MonitoringFields
             promUrl={promUrl}
+            onPromUrlChange={setPromUrl}
             grafUrl={grafUrl}
+            onGrafUrlChange={setGrafUrl}
             grafToken={grafToken}
+            onGrafTokenChange={setGrafToken}
           />
           <div className="flex justify-end gap-3 pt-2">
             <Button variant="ghost" onClick={() => setStep(3)}>
@@ -326,11 +328,17 @@ export default function SetupWizard() {
           </p>
           <AlertingFields
             alertEnabled={alertEnabled}
+            onAlertEnabledChange={setAlertEnabled}
             smtpHost={smtpHost}
+            onSmtpHostChange={setSmtpHost}
             smtpPort={smtpPort}
+            onSmtpPortChange={setSmtpPort}
             smtpUser={smtpUser}
+            onSmtpUserChange={setSmtpUser}
             smtpPass={smtpPass}
+            onSmtpPassChange={setSmtpPass}
             smtpFrom={smtpFrom}
+            onSmtpFromChange={setSmtpFrom}
           />
           <div className="flex justify-end gap-3 pt-2">
             <Button variant="ghost" onClick={() => setStep(4)}>

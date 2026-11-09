@@ -1,40 +1,38 @@
 /** @jsxImportSource react */
-import { type Signal, signal } from "@preact/signals-core";
 import Field from "@/components/ui/form/Field.tsx";
 import TextField from "@/components/ui/form/TextField.tsx";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface MonitoringFieldsProps {
-  promUrl: Signal<string>;
-  grafUrl: Signal<string>;
-  grafToken: Signal<string>;
-  monNs?: Signal<string>;
+  promUrl: string;
+  onPromUrlChange: (v: string) => void;
+  grafUrl: string;
+  onGrafUrlChange: (v: string) => void;
+  grafToken: string;
+  onGrafTokenChange: (v: string) => void;
+  /** The namespace field shows only when both of its props are passed. */
+  monNs?: string;
+  onMonNsChange?: (v: string) => void;
   onDirty?: () => void;
 }
 
-// Stand-in so the hook runs unconditionally when monNs is absent; the field is
-// not rendered in that case.
-const NO_TEXT = signal("");
-
 export function MonitoringFields({
   promUrl,
+  onPromUrlChange,
   grafUrl,
+  onGrafUrlChange,
   grafToken,
+  onGrafTokenChange,
   monNs,
+  onMonNsChange,
   onDirty,
 }: MonitoringFieldsProps) {
-  const prom = useSignalValue(promUrl);
-  const graf = useSignalValue(grafUrl);
-  const token = useSignalValue(grafToken);
-  const ns = useSignalValue(monNs ?? NO_TEXT);
-
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <Field label="Prometheus URL">
         <TextField
-          value={prom}
+          value={promUrl}
           onInput={(v) => {
-            promUrl.value = v;
+            onPromUrlChange(v);
             onDirty?.();
           }}
           placeholder="http://prometheus:9090"
@@ -42,9 +40,9 @@ export function MonitoringFields({
       </Field>
       <Field label="Grafana URL">
         <TextField
-          value={graf}
+          value={grafUrl}
           onInput={(v) => {
-            grafUrl.value = v;
+            onGrafUrlChange(v);
             onDirty?.();
           }}
           placeholder="http://grafana:3000"
@@ -53,20 +51,20 @@ export function MonitoringFields({
       <Field label="Grafana API Token">
         <TextField
           type="password"
-          value={token}
+          value={grafToken}
           onInput={(v) => {
-            grafToken.value = v;
+            onGrafTokenChange(v);
             onDirty?.();
           }}
-          placeholder={token === "****" ? "****" : "Enter token"}
+          placeholder={grafToken === "****" ? "****" : "Enter token"}
         />
       </Field>
-      {monNs && (
+      {monNs !== undefined && onMonNsChange && (
         <Field label="Monitoring Namespace">
           <TextField
-            value={ns}
+            value={monNs}
             onInput={(v) => {
-              monNs.value = v;
+              onMonNsChange(v);
               onDirty?.();
             }}
             placeholder="monitoring"
