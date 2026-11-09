@@ -127,12 +127,8 @@ export default function WidgetParamDialog({
   // A widget that declares no service key still calls this -- hooks cannot be
   // conditional -- and it costs nothing, because the hook issues no request
   // for an empty namespace and a parameterless widget never has one.
-  const serviceOptions = useSignalValue(
-    useNamespacedServices(
-      keys.includes(PARAM_KEY_SERVICE)
-        ? (values[PARAM_KEY_NAMESPACE] ?? "")
-        : "",
-    ),
+  const serviceOptions = useNamespacedServices(
+    keys.includes(PARAM_KEY_SERVICE) ? (values[PARAM_KEY_NAMESPACE] ?? "") : "",
   );
 
   // On the first field, not on Cancel: every field is something to fill in and

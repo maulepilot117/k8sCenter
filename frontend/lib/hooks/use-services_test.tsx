@@ -1,25 +1,26 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { useSignal } from "@preact/signals";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, beforeEach, expect, test } from "bun:test";
+import { useState } from "react";
 
 /**
  * useNamespacedServices feeds the widget parameter dialog's service picker,
  * which must offer exactly the chosen namespace's services once they load
  * (dashboard-catalog.spec.ts "service choices follow the namespace").
  *
- * The probe mirrors the dialog's shape: the namespace lives in a signal that
- * the select's change writes, and the options are read while rendering.
+ * The probe mirrors the dialog's shape: the namespace lives in state that the
+ * select's change writes, and the options are read while rendering.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
+// Bun's own fetch, captured before happy-dom replaces it.
+const realFetch = globalThis.fetch;
+
+const { act, render, setupDom } = await import("@/src/test-utils/render.tsx");
+setupDom({ browser: true });
 
 const { useNamespacedServices } = await import("./use-services.ts");
 const { setAccessToken } = await import("@/lib/api.ts");
 
 afterAll(() => {
-  GlobalRegistrator.unregister();
+  globalThis.fetch = realFetch;
 });
 
 type Reply = { status?: number; names: string[] | null };
@@ -27,7 +28,6 @@ let replies: Record<string, Reply> = {};
 /** Requests held back by the test; each resolves when its gate is called. */
 let gates: Record<string, () => void> = {};
 let requested: string[] = [];
-const realFetch = globalThis.fetch;
 
 beforeEach(() => {
   replies = {};
@@ -58,23 +58,16 @@ beforeEach(() => {
   }) as unknown as typeof globalThis.fetch;
 });
 
-afterEach(() => {
-  globalThis.fetch = realFetch;
-  render(null, document.body);
-});
-
 let choose: (ns: string) => void = () => {};
 
 function Picker() {
-  const namespace = useSignal("");
-  choose = (ns) => {
-    namespace.value = ns;
-  };
-  const services = useNamespacedServices(namespace.value);
+  const [namespace, setNamespace] = useState("");
+  choose = setNamespace;
+  const services = useNamespacedServices(namespace);
   return (
-    <select data-testid="service" disabled={services.value.length === 0}>
+    <select data-testid="service" disabled={services.length === 0}>
       <option value="">Choose a service...</option>
-      {services.value.map((name) => (
+      {services.map((name) => (
         <option key={name} value={name}>
           {name}
         </option>
@@ -104,7 +97,7 @@ function offered(): string[] {
 
 async function mount() {
   await act(async () => {
-    render(<Picker />, document.body);
+    render(<Picker />);
   });
 }
 
