@@ -1,8 +1,9 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { type KeyboardEvent, useState } from "react";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 import { apiGet } from "@/lib/api.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface QueryResult {
   resultType: string;
@@ -56,13 +57,13 @@ function formatSample(v: number | null): string {
 function RangeCell({ values }: { values: Array<[number, string]> }) {
   const s = summarizeSeries(values);
   return (
-    <div class="flex items-center gap-3">
-      <div class="w-48 shrink-0">
+    <div className="flex items-center gap-3">
+      <div className="w-48 shrink-0">
         <SparklineChart data={s.numbers} color="var(--accent)" height={28} />
       </div>
       <div>
-        <div class="text-text-primary">{formatSample(s.latest)}</div>
-        <div class="text-text-muted">
+        <div className="text-text-primary">{formatSample(s.latest)}</div>
+        <div className="text-text-muted">
           {s.min !== null
             ? `${formatSample(s.min)} – ${formatSample(s.max)} · `
             : ""}
@@ -96,32 +97,33 @@ function subtractDuration(d: string): Date {
 }
 
 export default function PromQLQuery() {
-  const query = useSignal("");
-  const queryType = useSignal<"instant" | "range">("instant");
-  const timeRange = useSignal("1h");
-  const result = useSignal<QueryResult | null>(null);
-  const loading = useSignal(false);
-  const error = useSignal<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [queryType, setQueryType] = useState<"instant" | "range">("instant");
+  const [timeRange, setTimeRange] = useState("1h");
+  const [result, setResult] = useState<QueryResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const isClient = useIsClient();
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   async function runQuery() {
-    const q = query.value.trim();
+    const q = query.trim();
     if (!q) return;
 
-    loading.value = true;
-    error.value = null;
-    result.value = null;
+    setLoading(true);
+    setError(null);
+    setResult(null);
 
     try {
-      if (queryType.value === "instant") {
+      if (queryType === "instant") {
         const res = await apiGet<QueryResult>(
           `/v1/monitoring/query?query=${encodeURIComponent(q)}`,
         );
-        result.value = res.data;
+        setResult(res.data);
       } else {
         const end = new Date();
-        const start = subtractDuration(timeRange.value);
+        const start = subtractDuration(timeRange);
         // Step: ~200 data points
         const stepMs = (end.getTime() - start.getTime()) / 200;
         const step = `${Math.max(Math.round(stepMs / 1000), 15)}s`;
@@ -135,57 +137,55 @@ export default function PromQLQuery() {
         const res = await apiGet<QueryResult>(
           `/v1/monitoring/query_range?${params}`,
         );
-        result.value = res.data;
+        setResult(res.data);
       }
     } catch (err) {
-      error.value = (err as Error).message ?? "Query failed";
+      setError((err as Error).message ?? "Query failed");
     } finally {
-      loading.value = false;
+      setLoading(false);
     }
   }
 
-  function handleKeyDown(e: KeyboardEvent) {
+  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       runQuery();
     }
   }
 
   return (
-    <div class="space-y-4">
+    <div className="space-y-4">
       {/* Query input */}
-      <div class="space-y-3">
+      <div className="space-y-3">
         <div>
-          <label class="block text-sm font-medium text-text-secondary mb-1">
+          <label className="block text-sm font-medium text-text-secondary mb-1">
             PromQL Expression
           </label>
           <textarea
-            value={query.value}
-            onInput={(e) =>
-              (query.value = (e.target as HTMLTextAreaElement).value)
-            }
+            value={query}
+            onChange={(e) => setQuery(e.currentTarget.value)}
             onKeyDown={handleKeyDown}
             placeholder='up{job="prometheus"}'
             rows={3}
-            class="w-full rounded-md border border-border-primary bg-surface px-3 py-2 font-mono text-sm text-text-primary placeholder:text-text-muted focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand text-text-primary"
+            className="w-full rounded-md border border-border-primary bg-surface px-3 py-2 font-mono text-sm text-text-primary placeholder:text-text-muted focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand text-text-primary"
           />
-          <p class="mt-1 text-xs text-text-muted">
+          <p className="mt-1 text-xs text-text-muted">
             Press Ctrl+Enter to run query
           </p>
         </div>
 
         {/* Query type and controls */}
-        <div class="flex flex-wrap items-center gap-3">
-          <div class="flex rounded-md border border-border-primary">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex rounded-md border border-border-primary">
             <button
               type="button"
-              onClick={() => (queryType.value = "instant")}
-              class={`px-3 py-1.5 text-sm ${
-                queryType.value === "instant"
+              onClick={() => setQueryType("instant")}
+              className={`px-3 py-1.5 text-sm ${
+                queryType === "instant"
                   ? "bg-brand"
                   : "text-text-secondary hover:bg-hover"
               }`}
               style={
-                queryType.value === "instant"
+                queryType === "instant"
                   ? { color: "var(--bg-base)" }
                   : undefined
               }
@@ -194,29 +194,25 @@ export default function PromQLQuery() {
             </button>
             <button
               type="button"
-              onClick={() => (queryType.value = "range")}
-              class={`px-3 py-1.5 text-sm border-l border-border-primary ${
-                queryType.value === "range"
+              onClick={() => setQueryType("range")}
+              className={`px-3 py-1.5 text-sm border-l border-border-primary ${
+                queryType === "range"
                   ? "bg-brand"
                   : "text-text-secondary hover:bg-hover"
               }`}
               style={
-                queryType.value === "range"
-                  ? { color: "var(--bg-base)" }
-                  : undefined
+                queryType === "range" ? { color: "var(--bg-base)" } : undefined
               }
             >
               Range
             </button>
           </div>
 
-          {queryType.value === "range" && (
+          {queryType === "range" && (
             <select
-              value={timeRange.value}
-              onChange={(e) =>
-                (timeRange.value = (e.target as HTMLSelectElement).value)
-              }
-              class="rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-secondary text-text-secondary"
+              value={timeRange}
+              onChange={(e) => setTimeRange(e.currentTarget.value)}
+              className="rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-secondary text-text-secondary"
             >
               {TIME_RANGES.map((r) => (
                 <option key={r.value} value={r.value}>
@@ -229,58 +225,61 @@ export default function PromQLQuery() {
           <button
             type="button"
             onClick={runQuery}
-            disabled={loading.value || !query.value.trim()}
-            class="rounded-md bg-brand px-4 py-1.5 text-sm font-medium hover:bg-brand/90 disabled:opacity-50"
+            disabled={loading || !query.trim()}
+            className="rounded-md bg-brand px-4 py-1.5 text-sm font-medium hover:bg-brand/90 disabled:opacity-50"
             style={{ color: "var(--bg-base)" }}
           >
-            {loading.value ? "Running..." : "Run Query"}
+            {loading ? "Running..." : "Run Query"}
           </button>
         </div>
       </div>
 
       {/* Error */}
-      {error.value && <ErrorBanner message={error.value} />}
+      {error && <ErrorBanner message={error} />}
 
       {/* Results */}
-      {result.value && (
-        <div class="space-y-2">
-          <div class="flex items-center gap-2 text-sm text-text-muted">
-            <span>Type: {result.value.resultType}</span>
+      {result && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-sm text-text-muted">
+            <span>Type: {result.resultType}</span>
             <span>|</span>
-            <span>{result.value.result.length} result(s)</span>
-            {result.value.warnings && result.value.warnings.length > 0 && (
-              <span class="text-warning">
-                | {result.value.warnings.length} warning(s)
+            <span>{result.result.length} result(s)</span>
+            {result.warnings && result.warnings.length > 0 && (
+              <span className="text-warning">
+                | {result.warnings.length} warning(s)
               </span>
             )}
           </div>
 
-          {result.value.warnings?.map((w, i) => (
+          {result.warnings?.map((w, i) => (
             <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: warnings are plain strings that can repeat, and the list is replaced whole on each query
               key={i}
-              class="rounded-md border border-warning bg-warning-dim px-3 py-2 text-sm text-warning"
+              className="rounded-md border border-warning bg-warning-dim px-3 py-2 text-sm text-warning"
             >
               {w}
             </div>
           ))}
 
-          {result.value.result.length === 0 ? (
-            <p class="py-8 text-center text-sm text-text-muted">No results</p>
+          {result.result.length === 0 ? (
+            <p className="py-8 text-center text-sm text-text-muted">
+              No results
+            </p>
           ) : (
-            <div class="overflow-x-auto">
-              <table class="w-full text-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
                 <thead>
-                  <tr class="border-b border-border-primary">
-                    <th class="px-3 py-2 text-left font-medium text-text-muted">
+                  <tr className="border-b border-border-primary">
+                    <th className="px-3 py-2 text-left font-medium text-text-muted">
                       Metric
                     </th>
-                    <th class="px-3 py-2 text-left font-medium text-text-muted">
+                    <th className="px-3 py-2 text-left font-medium text-text-muted">
                       Value
                     </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {result.value.result.map((r, i) => {
+                  {result.result.map((r, i) => {
                     const metricLabel = Object.entries(r.metric)
                       .map(([k, v]) => `${k}="${v}"`)
                       .join(",");
@@ -292,11 +291,15 @@ export default function PromQLQuery() {
                       "N/A"
                     );
                     return (
-                      <tr key={i} class="border-b border-border-subtle">
-                        <td class="px-3 py-2 font-mono text-xs text-text-secondary">
+                      <tr
+                        // biome-ignore lint/suspicious/noArrayIndexKey: series have no unique id, and the table is replaced whole on each query
+                        key={i}
+                        className="border-b border-border-subtle"
+                      >
+                        <td className="px-3 py-2 font-mono text-xs text-text-secondary">
                           {`{${metricLabel}}` || "{}"}
                         </td>
-                        <td class="px-3 py-2 font-mono text-xs text-text-primary">
+                        <td className="px-3 py-2 font-mono text-xs text-text-primary">
                           {value}
                         </td>
                       </tr>
