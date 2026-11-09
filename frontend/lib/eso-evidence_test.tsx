@@ -1,4 +1,4 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import { render } from "preact-render-to-string";
 import ESOEvidencePanel from "@/src/islands/ESOEvidencePanel.tsx";

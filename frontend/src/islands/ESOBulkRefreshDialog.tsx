@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 /**
  * ESO bulk-refresh dialog (Phase E Unit 15).
  *
@@ -15,8 +16,7 @@
  * conditionally, and the close handler (`onClose`) is the parent's signal.
  */
 
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ApiError, errorExtra } from "@/lib/api.ts";
 import { esoApi } from "@/lib/eso-api.ts";
@@ -26,6 +26,7 @@ import type {
   BulkScopeResponse,
 } from "@/lib/eso-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface Props {
   action: BulkRefreshAction;
@@ -48,12 +49,15 @@ export default function ESOBulkRefreshDialog({
   target,
   onClose,
 }: Props) {
-  const phase = useSignal<Phase>("scope-loading");
-  const errorMsg = useSignal<string | null>(null);
-  const scope = useSignal<BulkScopeResponse | null>(null);
-  const expanded = useSignal(false);
-  const jobId = useSignal<string | null>(null);
-  const job = useSignal<BulkRefreshJob | null>(null);
+  // The phase is also read by the submit guard, which a second click can reach
+  // before the render that follows the first.
+  const [phase, setPhase, phaseRef] = useStateRef<Phase>("scope-loading");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [scope, setScope] = useState<BulkScopeResponse | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob] = useState<BulkRefreshJob | null>(null);
+  const targetKey = JSON.stringify(target);
 
   // --- scope load ---------------------------------------------------------
   // #355 item 10: Esc closes the modal. Destructive bulk-write dialog
@@ -75,45 +79,49 @@ export default function ESOBulkRefreshDialog({
     if (!IS_BROWSER) return;
     let cancelled = false;
     (async () => {
-      phase.value = "scope-loading";
-      errorMsg.value = null;
+      setPhase("scope-loading");
+      setErrorMsg(null);
       try {
-        const res = await resolveScope(action, target);
+        const res = await resolveScope(
+          action,
+          JSON.parse(targetKey) as Props["target"],
+        );
         if (!cancelled) {
-          scope.value = res.data ?? null;
-          phase.value = "confirm";
+          setScope(res.data ?? null);
+          setPhase("confirm");
         }
       } catch (err) {
         if (!cancelled) {
-          errorMsg.value = (err as Error).message ?? "Failed to load scope";
-          phase.value = "error";
+          setErrorMsg((err as Error).message ?? "Failed to load scope");
+          setPhase("error");
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [action, JSON.stringify(target)]);
+  }, [action, targetKey]);
 
   // --- progress polling ---------------------------------------------------
   useEffect(() => {
     if (!IS_BROWSER) return;
-    if (phase.value !== "progress" || !jobId.value) return;
+    if (phase !== "progress" || !jobId) return;
     let cancelled = false;
     let timer: number | undefined;
 
     const poll = async () => {
       try {
-        const res = await esoApi.getBulkRefreshJob(jobId.value!);
+        const res = await esoApi.getBulkRefreshJob(jobId);
         if (cancelled) return;
-        job.value = res.data ?? null;
-        if (job.value?.completedAt) {
+        const next = res.data ?? null;
+        setJob(next);
+        if (next?.completedAt) {
           // Done — no further polls.
           return;
         }
       } catch (err) {
         if (cancelled) return;
-        errorMsg.value = (err as Error).message ?? "Failed to load job";
+        setErrorMsg((err as Error).message ?? "Failed to load job");
       }
       if (!cancelled) {
         timer = setTimeout(poll, 2000) as unknown as number;
@@ -125,33 +133,32 @@ export default function ESOBulkRefreshDialog({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [phase.value, jobId.value]);
+  }, [phase, jobId]);
 
   const submit = async () => {
     // #355 item 9: in-flight guard. Fast double-click would otherwise fire
     // two POSTs; the server's 409 active_job_exists is recovery, not a
     // safety net the UI should rely on.
-    if (!scope.value || phase.value !== "confirm") return;
-    phase.value = "submitting";
-    errorMsg.value = null;
-    const targetUIDs = scope.value.targets.map((t) => t.uid);
+    if (!scope || phaseRef.current !== "confirm") return;
+    setPhase("submitting");
+    setErrorMsg(null);
+    const targetUIDs = scope.targets.map((t) => t.uid);
     try {
       const res = await esoApi.bulkRefresh(action, target as never, targetUIDs);
-      jobId.value = res.data?.jobId ?? null;
-      phase.value = "progress";
+      setJobId(res.data?.jobId ?? null);
+      setPhase("progress");
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.reason === "scope_changed") {
           // Re-resolve the scope; show updated counts and re-prompt.
-          phase.value = "scope-loading";
+          setPhase("scope-loading");
           try {
             const res = await resolveScope(action, target);
-            scope.value = res.data ?? null;
-            phase.value = "confirm";
+            setScope(res.data ?? null);
+            setPhase("confirm");
           } catch (e) {
-            errorMsg.value =
-              (e as Error).message ?? "Failed to re-resolve scope";
-            phase.value = "error";
+            setErrorMsg((e as Error).message ?? "Failed to re-resolve scope");
+            setPhase("error");
           }
           return;
         }
@@ -160,14 +167,14 @@ export default function ESOBulkRefreshDialog({
           // from confusion when two tabs both hit Confirm.
           const existing = errorExtra(err, "jobId");
           if (existing) {
-            jobId.value = existing;
-            phase.value = "progress";
+            setJobId(existing);
+            setPhase("progress");
             return;
           }
         }
       }
-      errorMsg.value = (err as Error).message ?? "Failed to start refresh";
-      phase.value = "error";
+      setErrorMsg((err as Error).message ?? "Failed to start refresh");
+      setPhase("error");
     }
   };
 
@@ -175,98 +182,94 @@ export default function ESOBulkRefreshDialog({
     <div
       role="dialog"
       aria-modal="true"
-      class="fixed inset-0 z-50 flex items-center justify-center p-4 glass-scrim"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 glass-scrim"
     >
-      <div class="w-full max-w-xl glass-elevated rounded-2xl">
-        <div class="flex items-center justify-between border-b border-border-primary px-5 py-3">
-          <h2 class="text-base font-semibold text-text-primary">
+      <div className="w-full max-w-xl glass-elevated rounded-2xl">
+        <div className="flex items-center justify-between border-b border-border-primary px-5 py-3">
+          <h2 className="text-base font-semibold text-text-primary">
             Refresh ExternalSecrets
           </h2>
           <button
             type="button"
             onClick={onClose}
-            class="text-text-muted hover:text-text-primary"
+            className="text-text-muted hover:text-text-primary"
             aria-label="Close"
           >
             ×
           </button>
         </div>
 
-        <div class="px-5 py-4 min-h-[160px]">
-          {phase.value === "scope-loading" && (
-            <div class="flex items-center gap-3 text-text-muted">
+        <div className="px-5 py-4 min-h-[160px]">
+          {phase === "scope-loading" && (
+            <div className="flex items-center gap-3 text-text-muted">
               <Spinner className="text-brand" />
               <span>Resolving scope…</span>
             </div>
           )}
 
-          {phase.value === "error" && (
-            <p class="text-sm text-danger">{errorMsg.value}</p>
+          {phase === "error" && (
+            <p className="text-sm text-danger">{errorMsg}</p>
           )}
 
-          {phase.value === "confirm" && scope.value && (
+          {phase === "confirm" && scope && (
             <ConfirmBody
-              scope={scope.value}
-              expanded={expanded.value}
-              onToggleExpanded={() => (expanded.value = !expanded.value)}
+              scope={scope}
+              expanded={expanded}
+              onToggleExpanded={() => setExpanded(!expanded)}
             />
           )}
 
-          {phase.value === "submitting" && (
-            <div class="flex items-center gap-3 text-text-muted">
+          {phase === "submitting" && (
+            <div className="flex items-center gap-3 text-text-muted">
               <Spinner className="text-brand" />
               <span>Starting refresh…</span>
             </div>
           )}
 
-          {phase.value === "progress" && (
-            <ProgressBody job={job.value} jobId={jobId.value ?? undefined} />
+          {phase === "progress" && (
+            <ProgressBody job={job} jobId={jobId ?? undefined} />
           )}
         </div>
 
-        <div class="flex items-center justify-end gap-2 border-t border-border-primary px-5 py-3">
-          {phase.value === "confirm" &&
-            scope.value &&
-            scope.value.visibleCount > 0 && (
-              <>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  class="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={submit}
-                  disabled={phase.value !== "confirm"}
-                  class="px-3 py-1.5 text-sm rounded bg-brand hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                  style={{ color: "var(--bg-base)" }}
-                >
-                  Refresh {scope.value.visibleCount}
-                </button>
-              </>
-            )}
-
-          {phase.value === "confirm" &&
-            scope.value &&
-            scope.value.visibleCount === 0 && (
+        <div className="flex items-center justify-end gap-2 border-t border-border-primary px-5 py-3">
+          {phase === "confirm" && scope && scope.visibleCount > 0 && (
+            <>
               <button
                 type="button"
                 onClick={onClose}
-                class="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary"
+                className="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
               >
-                Close
+                Cancel
               </button>
-            )}
+              <button
+                type="button"
+                onClick={submit}
+                disabled={phase !== "confirm"}
+                className="px-3 py-1.5 text-sm rounded bg-brand hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ color: "var(--bg-base)" }}
+              >
+                Refresh {scope.visibleCount}
+              </button>
+            </>
+          )}
 
-          {(phase.value === "progress" || phase.value === "error") && (
+          {phase === "confirm" && scope && scope.visibleCount === 0 && (
             <button
               type="button"
               onClick={onClose}
-              class="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
+              className="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary"
             >
-              {phase.value === "progress" && job.value?.completedAt
+              Close
+            </button>
+          )}
+
+          {(phase === "progress" || phase === "error") && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
+            >
+              {phase === "progress" && job?.completedAt
                 ? "Close"
                 : "Run in background"}
             </button>
@@ -288,7 +291,7 @@ function ConfirmBody({
 }) {
   if (scope.visibleCount === 0) {
     return (
-      <p class="text-sm text-text-muted">
+      <p className="text-sm text-text-muted">
         No ExternalSecrets are in scope, or you don't have permission to refresh
         them.
       </p>
@@ -302,16 +305,18 @@ function ConfirmBody({
   const remaining = scope.byNamespace.length - NAMESPACE_PREVIEW_LIMIT;
 
   return (
-    <div class="space-y-3 text-sm">
-      <p class="text-text-primary">
-        <span class="font-semibold">{scope.visibleCount}</span> ExternalSecret
+    <div className="space-y-3 text-sm">
+      <p className="text-text-primary">
+        <span className="font-semibold">{scope.visibleCount}</span>{" "}
+        ExternalSecret
         {scope.visibleCount === 1 ? "" : "s"} across{" "}
-        <span class="font-semibold">{scope.byNamespace.length}</span> namespace
+        <span className="font-semibold">{scope.byNamespace.length}</span>{" "}
+        namespace
         {scope.byNamespace.length === 1 ? "" : "s"} will receive a force-sync.
       </p>
 
       {scope.restricted && (
-        <p class="text-xs text-text-muted bg-base border border-border-subtle rounded px-3 py-2">
+        <p className="text-xs text-text-muted bg-base border border-border-subtle rounded px-3 py-2">
           Showing only resources you can refresh.{" "}
           {scope.totalCount - scope.visibleCount} additional ExternalSecret
           {scope.totalCount - scope.visibleCount === 1 ? "" : "s"}{" "}
@@ -320,14 +325,14 @@ function ConfirmBody({
         </p>
       )}
 
-      <ul class="border border-border-primary rounded text-xs divide-y divide-border-primary">
+      <ul className="border border-border-primary rounded text-xs divide-y divide-border-primary">
         {visibleByNs.map((row) => (
           <li
             key={row.namespace}
-            class="flex items-center justify-between px-3 py-1.5"
+            className="flex items-center justify-between px-3 py-1.5"
           >
-            <span class="text-text-primary font-mono">{row.namespace}</span>
-            <span class="text-text-muted">{row.count}</span>
+            <span className="text-text-primary font-mono">{row.namespace}</span>
+            <span className="text-text-muted">{row.count}</span>
           </li>
         ))}
       </ul>
@@ -336,7 +341,7 @@ function ConfirmBody({
         <button
           type="button"
           onClick={onToggleExpanded}
-          class="text-xs text-text-muted hover:text-text-primary"
+          className="text-xs text-text-muted hover:text-text-primary"
         >
           Show {remaining} more namespace{remaining === 1 ? "" : "s"}
         </button>
@@ -354,7 +359,7 @@ function ProgressBody({
 }) {
   if (!job) {
     return (
-      <div class="flex items-center gap-3 text-text-muted">
+      <div className="flex items-center gap-3 text-text-muted">
         <Spinner className="text-brand" />
         <span>Tracking job {jobId ?? "…"}</span>
       </div>
@@ -367,51 +372,51 @@ function ProgressBody({
     job.targetCount > 0 ? Math.round((processed / job.targetCount) * 100) : 0;
 
   return (
-    <div class="space-y-3 text-sm">
-      <div class="flex items-center justify-between">
-        <p class="text-text-primary font-semibold">
+    <div className="space-y-3 text-sm">
+      <div className="flex items-center justify-between">
+        <p className="text-text-primary font-semibold">
           {done ? "Refresh complete" : "Refreshing…"}
         </p>
-        <p class="text-xs text-text-muted">
+        <p className="text-xs text-text-muted">
           {processed} / {job.targetCount}
         </p>
       </div>
 
-      <div class="w-full h-2 bg-base rounded overflow-hidden border border-border-subtle">
+      <div className="w-full h-2 bg-base rounded overflow-hidden border border-border-subtle">
         <div
-          class="h-full bg-brand transition-all duration-200"
+          className="h-full bg-brand transition-all duration-200"
           style={{ width: `${pct}%` }}
         />
       </div>
 
-      <dl class="grid grid-cols-3 gap-3 text-xs">
+      <dl className="grid grid-cols-3 gap-3 text-xs">
         <div>
-          <dt class="text-text-muted">Succeeded</dt>
-          <dd class="text-success font-semibold">{job.succeeded.length}</dd>
+          <dt className="text-text-muted">Succeeded</dt>
+          <dd className="text-success font-semibold">{job.succeeded.length}</dd>
         </div>
         <div>
-          <dt class="text-text-muted">Failed</dt>
-          <dd class="text-danger font-semibold">{job.failed.length}</dd>
+          <dt className="text-text-muted">Failed</dt>
+          <dd className="text-danger font-semibold">{job.failed.length}</dd>
         </div>
         <div>
-          <dt class="text-text-muted">Skipped</dt>
-          <dd class="text-warning font-semibold">{job.skipped.length}</dd>
+          <dt className="text-text-muted">Skipped</dt>
+          <dd className="text-warning font-semibold">{job.skipped.length}</dd>
         </div>
       </dl>
 
       {done && job.failed.length > 0 && (
-        <details class="text-xs">
-          <summary class="cursor-pointer text-text-muted hover:text-text-primary">
+        <details className="text-xs">
+          <summary className="cursor-pointer text-text-muted hover:text-text-primary">
             Show failed ({job.failed.length})
           </summary>
-          <ul class="mt-2 border border-border-primary rounded divide-y divide-border-primary">
+          <ul className="mt-2 border border-border-primary rounded divide-y divide-border-primary">
             {job.failed.map((f) => (
               <li
                 key={f.uid}
-                class="px-3 py-1.5 flex items-center justify-between font-mono"
+                className="px-3 py-1.5 flex items-center justify-between font-mono"
               >
-                <span class="text-text-primary truncate">{f.uid}</span>
-                <span class="text-danger">{f.reason}</span>
+                <span className="text-text-primary truncate">{f.uid}</span>
+                <span className="text-danger">{f.reason}</span>
               </li>
             ))}
           </ul>
@@ -419,18 +424,18 @@ function ProgressBody({
       )}
 
       {done && job.skipped.length > 0 && (
-        <details class="text-xs">
-          <summary class="cursor-pointer text-text-muted hover:text-text-primary">
+        <details className="text-xs">
+          <summary className="cursor-pointer text-text-muted hover:text-text-primary">
             Show skipped ({job.skipped.length})
           </summary>
-          <ul class="mt-2 border border-border-primary rounded divide-y divide-border-primary">
+          <ul className="mt-2 border border-border-primary rounded divide-y divide-border-primary">
             {job.skipped.map((s) => (
               <li
                 key={s.uid}
-                class="px-3 py-1.5 flex items-center justify-between font-mono"
+                className="px-3 py-1.5 flex items-center justify-between font-mono"
               >
-                <span class="text-text-primary truncate">{s.uid}</span>
-                <span class="text-warning">{s.reason}</span>
+                <span className="text-text-primary truncate">{s.uid}</span>
+                <span className="text-warning">{s.reason}</span>
               </li>
             ))}
           </ul>

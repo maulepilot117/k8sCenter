@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 /** External Secrets Operator dashboard — Liquid Glass re-skin (Phase 8).
  *
  * Surfaces sync health at a glance:
@@ -10,8 +11,7 @@
  * Tokens only — no hardcoded colors. All error states use var(--error).
  */
 
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useCallback, useEffect, useState } from "react";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -28,6 +28,8 @@ import type {
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const FAILURE_TABLE_LIMIT = 50;
 
@@ -69,7 +71,7 @@ function SyncHealthRing({ synced, total }: { synced: number; total: number }) {
 
   return (
     <div
-      class="relative inline-flex items-center justify-center"
+      className="relative inline-flex items-center justify-center"
       role="img"
       aria-label={`${synced} of ${total} synced`}
       style={{ width: `${size}px`, height: `${size}px` }}
@@ -81,7 +83,7 @@ function SyncHealthRing({ synced, total }: { synced: number; total: number }) {
           r={radius}
           fill="none"
           stroke="var(--bg-elevated)"
-          stroke-width={strokeWidth}
+          strokeWidth={strokeWidth}
         />
         <circle
           cx={center}
@@ -89,19 +91,19 @@ function SyncHealthRing({ synced, total }: { synced: number; total: number }) {
           r={radius}
           fill="none"
           stroke="var(--success)"
-          stroke-width={strokeWidth}
-          stroke-linecap="round"
-          stroke-dasharray={circumference}
-          stroke-dashoffset={offset}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
           transform={`rotate(-90 ${center} ${center})`}
           style={{
             transition: "stroke-dashoffset 1s cubic-bezier(0.16, 1, 0.3, 1)",
           }}
         />
       </svg>
-      <div class="absolute inset-0 flex flex-col items-center justify-center">
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span
-          class="font-bold text-text-primary tabular-nums"
+          className="font-bold text-text-primary tabular-nums"
           style={{
             fontSize: "32px",
             fontFamily: "var(--font-mono, monospace)",
@@ -110,7 +112,7 @@ function SyncHealthRing({ synced, total }: { synced: number; total: number }) {
           {synced} / {total}
         </span>
         <span
-          class="mt-1 text-xs uppercase tracking-wide"
+          className="mt-1 text-xs uppercase tracking-wide"
           style={{
             fontSize: "11px",
             fontWeight: 600,
@@ -151,7 +153,7 @@ function StatCard({ label, count, color, subText, href }: StatCardProps) {
         {label}
       </span>
       <span
-        class="mt-2 tabular-nums"
+        className="mt-2 tabular-nums"
         style={{
           color,
           fontSize: "28px",
@@ -163,7 +165,7 @@ function StatCard({ label, count, color, subText, href }: StatCardProps) {
         {count}
       </span>
       <p
-        class="mt-2 leading-snug"
+        className="mt-2 leading-snug"
         style={{ fontSize: "12px", color: "var(--text-muted)" }}
       >
         {subText}
@@ -172,7 +174,7 @@ function StatCard({ label, count, color, subText, href }: StatCardProps) {
   );
   if (href && count > 0) {
     return (
-      <a href={href} class="block hover:opacity-90 transition-opacity">
+      <a href={href} className="block hover:opacity-90 transition-opacity">
         {inner}
       </a>
     );
@@ -221,7 +223,7 @@ function ProviderCostCard({ stores }: { stores: SecretStore[] }) {
   return (
     <Card glass aria-label="Cost estimate">
       <h2
-        class="mb-3"
+        className="mb-3"
         style={{
           fontSize: "14px",
           fontWeight: 650,
@@ -236,9 +238,9 @@ function ProviderCostCard({ stores }: { stores: SecretStore[] }) {
           Kubernetes) carry no per-request charge.
         </p>
       ) : (
-        <ul class="space-y-2">
+        <ul className="space-y-2">
           {billingProviders.map(([key, n]) => (
-            <li key={key} class="flex items-center justify-between gap-3">
+            <li key={key} className="flex items-center justify-between gap-3">
               <span
                 style={{
                   fontSize: "12px",
@@ -256,7 +258,7 @@ function ProviderCostCard({ stores }: { stores: SecretStore[] }) {
         </ul>
       )}
       <p
-        class="mt-3 leading-snug"
+        className="mt-3 leading-snug"
         style={{ fontSize: "12px", color: "var(--text-muted)" }}
       >
         Per-store dollar estimates render on each store's detail page. Rates as
@@ -267,15 +269,17 @@ function ProviderCostCard({ stores }: { stores: SecretStore[] }) {
 }
 
 export default function ESODashboard() {
-  const status = useSignal<ESOStatus | null>(null);
-  const externalSecrets = useSignal<ExternalSecret[]>([]);
-  const stores = useSignal<SecretStore[]>([]);
-  const clusterStores = useSignal<SecretStore[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const refreshing = useSignal(false);
+  const isClient = useIsClient();
+  const ns = useSignalValue(selectedNamespace);
+  const [status, setStatus] = useState<ESOStatus | null>(null);
+  const [externalSecrets, setExternalSecrets] = useState<ExternalSecret[]>([]);
+  const [stores, setStores] = useState<SecretStore[]>([]);
+  const [clusterStores, setClusterStores] = useState<SecretStore[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       const [statusRes, esRes, storesRes, clusterStoresRes] = await Promise.all(
         [
@@ -285,35 +289,34 @@ export default function ESODashboard() {
           esoApi.listClusterStores(),
         ],
       );
-      status.value = statusRes.data;
-      externalSecrets.value = Array.isArray(esRes.data) ? esRes.data : [];
-      stores.value = Array.isArray(storesRes.data) ? storesRes.data : [];
-      clusterStores.value = Array.isArray(clusterStoresRes.data)
-        ? clusterStoresRes.data
-        : [];
-      error.value = null;
+      setStatus(statusRes.data);
+      setExternalSecrets(Array.isArray(esRes.data) ? esRes.data : []);
+      setStores(Array.isArray(storesRes.data) ? storesRes.data : []);
+      setClusterStores(
+        Array.isArray(clusterStoresRes.data) ? clusterStoresRes.data : [],
+      );
+      setError(null);
     } catch {
-      error.value = "Failed to load ESO dashboard data";
+      setError("Failed to load ESO dashboard data");
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
-  }, []);
+  }, [fetchData]);
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const ns = selectedNamespace.value;
-  const allExternalSecrets = externalSecrets.value;
+  const allExternalSecrets = externalSecrets;
   const items = filterByNamespace(allExternalSecrets, ns);
   const total = items.length;
   const counts = {
@@ -326,8 +329,8 @@ export default function ESODashboard() {
   } satisfies Record<Status, number>;
   for (const it of items) counts[it.status]++;
 
-  const filteredStores = filterByNamespace(stores.value, ns);
-  const allStores = [...filteredStores, ...clusterStores.value];
+  const filteredStores = filterByNamespace(stores, ns);
+  const allStores = [...filteredStores, ...clusterStores];
   const providerCounts = aggregateProviders(allStores);
 
   const broken = items
@@ -342,12 +345,12 @@ export default function ESODashboard() {
   const brokenDisplayed = broken.slice(0, FAILURE_TABLE_LIMIT);
   const brokenOverflow = broken.length - brokenDisplayed.length;
 
-  const detected = status.value?.detected === true;
+  const detected = status?.detected === true;
 
   return (
-    <div class="p-6">
+    <div className="p-6">
       {/* Page header */}
-      <div class="flex items-center justify-between mb-1">
+      <div className="flex items-center justify-between mb-1">
         <h1
           style={{
             fontSize: "24px",
@@ -358,44 +361,47 @@ export default function ESODashboard() {
         >
           External Secrets
         </h1>
-        {!loading.value && (
+        {!loading && (
           <Button
             type="button"
             variant="ghost"
             onClick={handleRefresh}
-            disabled={refreshing.value}
+            disabled={refreshing}
           >
-            {refreshing.value ? "Refreshing…" : "Refresh"}
+            {refreshing ? "Refreshing…" : "Refresh"}
           </Button>
         )}
       </div>
-      <p class="mb-6" style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+      <p
+        className="mb-6"
+        style={{ fontSize: "13px", color: "var(--text-muted)" }}
+      >
         Sync health across ExternalSecret resources, source stores by provider,
         and currently broken syncs.
       </p>
 
-      {loading.value && (
-        <div class="flex justify-center py-12">
+      {loading && (
+        <div className="flex justify-center py-12">
           <Spinner className="text-brand" />
         </div>
       )}
 
-      {error.value && (
-        <p style={{ fontSize: "13px", color: "var(--error)" }} class="py-4">
-          {error.value}
+      {error && (
+        <p style={{ fontSize: "13px", color: "var(--error)" }} className="py-4">
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && !detected && <ESONotDetected />}
+      {!loading && !error && !detected && <ESONotDetected />}
 
-      {!loading.value && !error.value && detected && (
+      {!loading && !error && detected && (
         <>
           {/* Hero — sync health ring in a glass card */}
           <Card glass className="mb-6 flex flex-col items-center">
             <SyncHealthRing synced={counts.Synced} total={total} />
             {total === 0 ? (
               <p
-                class="mt-3"
+                className="mt-3"
                 style={{ fontSize: "12px", color: "var(--text-muted)" }}
               >
                 {ns !== "all" && ns
@@ -404,7 +410,7 @@ export default function ESODashboard() {
               </p>
             ) : ns !== "all" && ns ? (
               <p
-                class="mt-1"
+                className="mt-1"
                 style={{ fontSize: "12px", color: "var(--text-muted)" }}
               >
                 {total} of {allExternalSecrets.length} total (namespace: {ns})
@@ -413,7 +419,7 @@ export default function ESODashboard() {
           </Card>
 
           {/* Secondary stat cards row */}
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <StatCard
               label="Sync Failed"
               count={counts.SyncFailed}
@@ -442,10 +448,10 @@ export default function ESODashboard() {
           </div>
 
           {/* Tertiary row — providers + cost stub */}
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
             <Card glass aria-label="Stores by provider">
               <h2
-                class="mb-3"
+                className="mb-3"
                 style={{
                   fontSize: "14px",
                   fontWeight: 650,
@@ -459,11 +465,11 @@ export default function ESODashboard() {
                   No SecretStores or ClusterSecretStores visible.
                 </p>
               ) : (
-                <ul class="space-y-2">
+                <ul className="space-y-2">
                   {providerCounts.map(([provider, n]) => (
                     <li
                       key={provider}
-                      class="flex items-center justify-between gap-3"
+                      className="flex items-center justify-between gap-3"
                     >
                       <ProviderBadge provider={provider} />
                       <span
@@ -485,7 +491,7 @@ export default function ESODashboard() {
           </div>
 
           {/* Failure table — solid data surface */}
-          <div class="mb-3">
+          <div className="mb-3">
             <h2
               style={{
                 fontSize: "17px",
@@ -496,7 +502,7 @@ export default function ESODashboard() {
               Broken ExternalSecrets right now
             </h2>
             <p
-              class="mt-1"
+              className="mt-1"
               style={{ fontSize: "13px", color: "var(--text-muted)" }}
             >
               ExternalSecrets currently in SyncFailed, Stale, Drifted, or
@@ -506,7 +512,7 @@ export default function ESODashboard() {
 
           {broken.length === 0 ? (
             <div
-              class="text-center py-8 rounded-2xl"
+              className="text-center py-8 rounded-2xl"
               style={{
                 background: "var(--bg-surface)",
                 border: "1px solid var(--border-subtle)",
@@ -518,20 +524,20 @@ export default function ESODashboard() {
             </div>
           ) : (
             <div
-              class="overflow-x-auto rounded-lg"
+              className="overflow-x-auto rounded-lg"
               style={{
                 background: "var(--bg-surface)",
                 border: "1px solid var(--border-subtle)",
               }}
             >
-              <table class="w-full text-sm">
+              <table className="w-full text-sm">
                 <thead>
                   <tr
                     style={{ borderBottom: "1px solid var(--border-subtle)" }}
                   >
                     <th
                       scope="col"
-                      class="px-3 py-2 text-left"
+                      className="px-3 py-2 text-left"
                       style={{
                         fontSize: "11px",
                         fontWeight: 600,
@@ -544,7 +550,7 @@ export default function ESODashboard() {
                     </th>
                     <th
                       scope="col"
-                      class="px-3 py-2 text-left"
+                      className="px-3 py-2 text-left"
                       style={{
                         fontSize: "11px",
                         fontWeight: 600,
@@ -557,7 +563,7 @@ export default function ESODashboard() {
                     </th>
                     <th
                       scope="col"
-                      class="px-3 py-2 text-left"
+                      className="px-3 py-2 text-left"
                       style={{
                         fontSize: "11px",
                         fontWeight: 600,
@@ -570,7 +576,7 @@ export default function ESODashboard() {
                     </th>
                     <th
                       scope="col"
-                      class="px-3 py-2 text-left"
+                      className="px-3 py-2 text-left"
                       style={{
                         fontSize: "11px",
                         fontWeight: 600,
@@ -583,7 +589,7 @@ export default function ESODashboard() {
                     </th>
                     <th
                       scope="col"
-                      class="px-3 py-2 text-left"
+                      className="px-3 py-2 text-left"
                       style={{
                         fontSize: "11px",
                         fontWeight: 600,
@@ -596,7 +602,7 @@ export default function ESODashboard() {
                     </th>
                     <th
                       scope="col"
-                      class="px-3 py-2 text-left"
+                      className="px-3 py-2 text-left"
                       style={{
                         fontSize: "11px",
                         fontWeight: 600,
@@ -621,10 +627,10 @@ export default function ESODashboard() {
                         style={{
                           borderTop: "1px solid var(--border-subtle)",
                         }}
-                        class="hover:bg-hover/30"
+                        className="hover:bg-hover/30"
                       >
                         <td
-                          class="px-3 py-2"
+                          className="px-3 py-2"
                           style={{
                             fontSize: "13px",
                             color: "var(--text-muted)",
@@ -632,10 +638,10 @@ export default function ESODashboard() {
                         >
                           {es.namespace}
                         </td>
-                        <td class="px-3 py-2">
+                        <td className="px-3 py-2">
                           <a
                             href={href}
-                            class="inline-flex items-center gap-2 hover:underline"
+                            className="inline-flex items-center gap-2 hover:underline"
                             style={{ color: "var(--accent)" }}
                           >
                             <StatusDot status={esoStatusToDot(es.status)} />
@@ -650,11 +656,11 @@ export default function ESODashboard() {
                             </span>
                           </a>
                         </td>
-                        <td class="px-3 py-2">
+                        <td className="px-3 py-2">
                           <StatusBadge status={es.status} />
                         </td>
                         <td
-                          class="px-3 py-2"
+                          className="px-3 py-2"
                           style={{
                             fontSize: "12px",
                             color: "var(--text-muted)",
@@ -663,7 +669,7 @@ export default function ESODashboard() {
                           {es.readyReason ?? "—"}
                         </td>
                         <td
-                          class="px-3 py-2 tabular-nums"
+                          className="px-3 py-2 tabular-nums"
                           style={{
                             fontSize: "12px",
                             color: "var(--text-muted)",
@@ -672,7 +678,7 @@ export default function ESODashboard() {
                           {es.lastSyncTime ? timeAgo(es.lastSyncTime) : "—"}
                         </td>
                         <td
-                          class="px-3 py-2"
+                          className="px-3 py-2"
                           style={{
                             fontSize: "12px",
                             color: "var(--text-muted)",
@@ -688,7 +694,7 @@ export default function ESODashboard() {
               </table>
               {brokenOverflow > 0 && (
                 <div
-                  class="px-3 py-2 text-center"
+                  className="px-3 py-2 text-center"
                   style={{
                     borderTop: "1px solid var(--border-subtle)",
                     background: "var(--bg-surface)",
