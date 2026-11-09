@@ -1,6 +1,7 @@
+/** @jsxImportSource react */
 import { MetricTile } from "@/components/ui/MetricTile.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type {
   DashboardSummary,
   DashboardTrends,
@@ -14,8 +15,8 @@ import { lastDelta } from "@/lib/format.ts";
  * the pre-registry tile: a hard zero would read as a real count.
  */
 function PodsTile() {
-  const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
-  const t = dashboardData.state<DashboardTrends>("dashboard-trends").data;
+  const s = useSourceState<DashboardSummary>("dashboard-summary").data;
+  const t = useSourceState<DashboardTrends>("dashboard-trends").data;
   const podCount = s?.pods.total ?? 0;
 
   return (

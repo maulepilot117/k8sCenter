@@ -1,6 +1,13 @@
-import { useComputed, useSignal } from "@preact/signals";
-import type { CSSProperties } from "preact";
-import { useEffect, useMemo, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { computed } from "@preact/signals-core";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import EditToolbar from "@/components/dashboard/EditToolbar.tsx";
 import LayoutCopyDialog from "@/components/dashboard/LayoutCopyDialog.tsx";
@@ -56,12 +63,15 @@ import type {
   WidgetDef,
 } from "@/lib/dashboard/types.ts";
 import { FAMILY_STATUS_KEYS } from "@/lib/dashboard/types.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import { sourcesOf } from "@/lib/dashboard/widget-state.ts";
 import type { ClusterInfoData } from "@/lib/dashboard/wire-types.ts";
 import { useDashboardFocus } from "@/lib/hooks/use-dashboard-focus.ts";
 import { preferenceReason } from "@/lib/preferences.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /**
  * What Save's title says once a write has been refused.
@@ -76,9 +86,24 @@ const SAVE_BLOCKED_REASON =
 const TIME_RANGES = ["15m", "1h", "6h", "24h"] as const;
 type TimeRange = (typeof TIME_RANGES)[number];
 
-// Shared by the SSR placeholder and the hydrated root. Preact hydration keeps
-// the server-rendered root's props, so the two must not diverge.
+// Shared by the SSR placeholder and the hydrated root. Hydration keeps the
+// server-rendered root's props, so the two must not diverge.
 const ROOT_STYLE: CSSProperties = { minHeight: "400px" };
+
+/**
+ * The eight family statuses, as one value the palette can be handed.
+ *
+ * Computed rather than rebuilt inline on every render: `WidgetPalette`
+ * memoizes its catalog rows on this, and a fresh object per render would
+ * re-run a bounded grid scan per entry on every keystroke in its search box.
+ * A computed changes identity only when one of the eight states actually
+ * does.
+ */
+const familyStatuses = computed<FamilyStatuses>(() =>
+  Object.fromEntries(
+    FAMILY_STATUS_KEYS.map((key) => [key, dashboardData.signalFor(key).value]),
+  ),
+);
 
 /**
  * Every source this layout's widgets read, plus the two the header reads for
@@ -215,7 +240,7 @@ function asRendered(config: DashboardLayoutConfig): DashboardLayoutConfig {
 }
 
 export default function DashboardV2() {
-  const timeRange = useSignal<TimeRange>("1h");
+  const [timeRange, setTimeRange] = useState<TimeRange>("1h");
   /**
    * The open edit session, or null when not editing.
    *
@@ -223,12 +248,14 @@ export default function DashboardV2() {
    * session holds the baseline and the revision alongside the working copy so
    * a Save cannot write a stale revision — see edit-session.ts.
    */
-  const session = useSignal<EditSession | null>(null);
-  const saving = useSignal(false);
+  const [session, setSession, sessionRef] = useStateRef<EditSession | null>(
+    null,
+  );
+  const [saving, setSaving, savingRef] = useStateRef(false);
   /** The catalog palette. Only meaningful while a session is open. */
-  const paletteOpen = useSignal(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   /** The copy dialog. Only meaningful while a session is open. */
-  const copyOpen = useSignal(false);
+  const [copyOpen, setCopyOpen] = useState(false);
   /**
    * The widget whose parameters are being collected, or null.
    *
@@ -241,12 +268,12 @@ export default function DashboardV2() {
    * collects have to reach the open edit session, and both of those are
    * components that do not have one.
    */
-  const paramTarget = useSignal<{
+  const [paramTarget, setParamTarget, paramTargetRef] = useStateRef<{
     def: WidgetDef;
     editing?: LayoutItem;
   } | null>(null);
   /** The Cancel confirmation, shown only when there is work to lose. */
-  const confirmDiscard = useSignal(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   /**
    * The Reset confirmation.
    *
@@ -258,7 +285,7 @@ export default function DashboardV2() {
    * for as long as the session lasts, and the whole point of the button is
    * that the user is about to arrange something new on top of it.
    */
-  const confirmReset = useSignal(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   /**
    * What the last gesture inside this session had to drop, in words.
    *
@@ -267,9 +294,9 @@ export default function DashboardV2() {
    * it when they do the next thing is the point: a warning about a copy is
    * stale the moment the layout is replaced again.
    */
-  const editWarnings = useSignal<string[]>([]);
+  const [editWarnings, setEditWarnings] = useState<string[]>([]);
   /** The save conflict, which is a choice rather than a message. */
-  const conflict = useSignal(false);
+  const [conflict, setConflict] = useState(false);
   /**
    * Set once a save has been refused, and cleared only by a completed load.
    *
@@ -284,7 +311,7 @@ export default function DashboardV2() {
    * while the refusal underneath it stood, which is the same broken Save
    * button with a longer path to it.
    */
-  const saveBlocked = useSignal(false);
+  const [saveBlocked, setSaveBlocked] = useState(false);
   /**
    * A replacement layout is being read and the grid has not adopted it yet.
    *
@@ -296,7 +323,7 @@ export default function DashboardV2() {
    * `adoptLoadedLayout` re-mounts the grid over it. Same destroyed-work case the
    * first-load gate exists to prevent, so it gets the same gate.
    */
-  const reloading = useSignal(false);
+  const [reloading, setReloading] = useState(false);
 
   /**
    * What the grid mounts from, and the key that re-mounts it.
@@ -314,12 +341,14 @@ export default function DashboardV2() {
    * same default object straight back, and a guard comparing the two would
    * leave the discarded edits on screen.
    */
-  const gridSource = useSignal<DashboardLayoutConfig>(layout.peek());
-  const gridEpoch = useSignal(0);
-  function mountGrid(config: DashboardLayoutConfig) {
-    gridSource.value = config;
-    gridEpoch.value += 1;
-  }
+  const [gridSource, setGridSource] = useState<DashboardLayoutConfig>(() =>
+    layout.peek(),
+  );
+  const [gridEpoch, setGridEpoch] = useState(0);
+  const mountGrid = useCallback((config: DashboardLayoutConfig) => {
+    setGridSource(config);
+    setGridEpoch((epoch) => epoch + 1);
+  }, []);
 
   /**
    * The load generation the grid is already mounted on.
@@ -331,7 +360,7 @@ export default function DashboardV2() {
    */
   const mountedGeneration = useRef(layoutGeneration.peek());
 
-  const editing = session.value !== null;
+  const editing = session !== null;
 
   /**
    * Where the keyboard goes when this editor changes shape.
@@ -344,21 +373,11 @@ export default function DashboardV2() {
    * ("return to Edit when this closes") instead of setting a flag and
    * reasoning about which effect will notice it.
    *
-   * It is handed edit mode and the grid epoch because those are the two
-   * renders focus has to ride: the toolbar swaps its buttons on the first, and
-   * the grid replaces every cell on the second.
+   * It is handed edit mode because that is the render focus has to ride: the
+   * toolbar swaps its buttons on it.
    */
-  const focus = useDashboardFocus(editing, gridEpoch.value);
+  const focus = useDashboardFocus(editing);
 
-  /**
-   * The eight family statuses, as one value the palette can be handed.
-   *
-   * Computed rather than rebuilt inline on every render: `WidgetPalette`
-   * memoizes its catalog rows on this, and a fresh object per render would
-   * re-run a bounded grid scan per entry on every keystroke in its search box.
-   * A computed changes identity only when one of the eight states actually
-   * does.
-   */
   // Not a hook: `useAuth` hands back the module-level signals lib/auth.ts
   // already maintains, so this reads the session the shell loaded rather than
   // requesting anything.
@@ -380,19 +399,13 @@ export default function DashboardV2() {
    * adds one of the two anyway gets the permission card from the route's own
    * 403 (R2).
    */
-  const viewerIsAdmin = useComputed<boolean | null>(() => {
-    const u = user.value;
-    return u === null ? null : (u.roles ?? []).includes("admin");
-  });
+  const authUser = useSignalValue(user);
+  const viewerIsAdmin =
+    authUser === null ? null : (authUser.roles ?? []).includes("admin");
+  const familyStatusValues = useSignalValue(familyStatuses);
 
-  const familyStatuses = useComputed<FamilyStatuses>(() =>
-    Object.fromEntries(
-      FAMILY_STATUS_KEYS.map((key) => [
-        key,
-        dashboardData.signalFor(key).value,
-      ]),
-    ),
-  );
+  const layoutValue = useSignalValue(layout);
+  const generation = useSignalValue(layoutGeneration);
 
   // The layout on screen decides which sources are fetched, so this re-runs
   // when the load replaces the default with the user's arrangement.
@@ -418,10 +431,9 @@ export default function DashboardV2() {
   // would never be fetched for the new range, and that card alone would go on
   // showing the old one.
   useEffect(() => {
-    if (!IS_BROWSER) return;
-    const config = session.value?.working ?? layout.value;
+    const config = session?.working ?? layoutValue;
     const keys = sourcesFor(config);
-    dashboardData.ensure(keys, timeRange.value);
+    dashboardData.ensure(keys, timeRange);
     // And forget everything else. This is the only place that can truthfully
     // say what the WHOLE set is -- `ensure` is told what a caller wants, not
     // what nobody wants any more -- and it matters only now that a key can
@@ -437,39 +449,16 @@ export default function DashboardV2() {
     // layout otherwise, plus the header's two sources and all eight family
     // statuses unconditionally.
     dashboardData.retain(keys);
-  }, [timeRange.value, layout.value, session.value]);
+  }, [timeRange, layoutValue, session]);
 
   // Mount only. A cluster switch reloads the page (ClusterSwitcher.tsx:239),
   // which is what re-reads the layout for the new cluster — layouts are
   // per-user, per-cluster, per-scope, so one that leaked across a switch would
   // be the wrong dashboard rather than a stale one.
   useEffect(() => {
-    if (!IS_BROWSER) return;
     const ac = new AbortController();
     loadLayout("overview", ac.signal);
     return () => ac.abort();
-  }, []);
-
-  // A completed load is a new starting point for the grid.
-  //
-  // It cannot land on top of an open session: editing is withheld until the
-  // first load settles (`editDisabled` below), and there is no second load —
-  // a cluster switch reloads the page. The day a reload affordance ships, this
-  // has to decide what happens to a session it would discard.
-  useEffect(() => {
-    if (!IS_BROWSER || layoutGeneration.value === mountedGeneration.current) {
-      return;
-    }
-    adoptLoadedLayout();
-  }, [layoutGeneration.value]);
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const stop = dashboardData.startRefresh();
-    return () => {
-      stop();
-      dashboardData.abort();
-    };
   }, []);
 
   /**
@@ -480,11 +469,30 @@ export default function DashboardV2() {
    * not re-mount over it, and lift the save block, since a completed read is
    * exactly what the store needs before it can claim a revision again.
    */
-  function adoptLoadedLayout() {
+  const adoptLoadedLayout = useCallback(() => {
     mountedGeneration.current = layoutGeneration.peek();
-    saveBlocked.value = false;
+    setSaveBlocked(false);
     mountGrid(layout.peek());
-  }
+  }, [mountGrid]);
+
+  // A completed load is a new starting point for the grid.
+  //
+  // It cannot land on top of an open session: editing is withheld until the
+  // first load settles (`editDisabled` below), and there is no second load —
+  // a cluster switch reloads the page. The day a reload affordance ships, this
+  // has to decide what happens to a session it would discard.
+  useEffect(() => {
+    if (generation === mountedGeneration.current) return;
+    adoptLoadedLayout();
+  }, [generation, adoptLoadedLayout]);
+
+  useEffect(() => {
+    const stop = dashboardData.startRefresh();
+    return () => {
+      stop();
+      dashboardData.abort();
+    };
+  }, []);
 
   /** Opens a session over the layout on screen, at the revision it loaded at. */
   function startEditing() {
@@ -493,11 +501,11 @@ export default function DashboardV2() {
     // reappears on its own the next time the user presses Edit is a dialog
     // nobody asked for. Warnings go with them -- they describe a gesture in
     // the session that just ended.
-    paletteOpen.value = false;
-    copyOpen.value = false;
-    paramTarget.value = null;
-    editWarnings.value = [];
-    session.value = beginEdit(asRendered(layout.value), layoutRevision.value);
+    setPaletteOpen(false);
+    setCopyOpen(false);
+    setParamTarget(null);
+    setEditWarnings([]);
+    setSession(beginEdit(asRendered(layout.value), layoutRevision.value));
     // Read here rather than on mount, so the request is only made by someone
     // who might use it -- and early enough in the gesture that the answer is
     // there before the user has finished reading the toolbar. Not awaited:
@@ -530,16 +538,16 @@ export default function DashboardV2() {
    * user would have no context for.
    */
   function addWidget(def: WidgetDef) {
-    const s = session.value;
-    if (s === null || saving.value) return;
+    const s = sessionRef.current;
+    if (s === null || savingRef.current) return;
     // A widget that needs values is not placed yet. The palette closes, the
     // parameter dialog opens over the same session, and the placement happens
     // on confirm -- so cancelling leaves the layout untouched rather than
     // leaving a half-configured card on it (KTD3). Every other widget places
     // immediately, exactly as before.
     if (def.params !== undefined) {
-      paletteOpen.value = false;
-      paramTarget.value = { def };
+      setPaletteOpen(false);
+      setParamTarget({ def });
       return;
     }
     placeWidget(def, {});
@@ -553,8 +561,8 @@ export default function DashboardV2() {
    * where the values came from.
    */
   function placeWidget(def: WidgetDef, params: Record<string, string>) {
-    const s = session.value;
-    if (s === null || saving.value) return;
+    const s = sessionRef.current;
+    if (s === null || savingRef.current) return;
     const placed = placeNewWidget(
       s.working.items,
       def,
@@ -571,9 +579,9 @@ export default function DashboardV2() {
       ...s.working,
       items: [...s.working.items, placed],
     });
-    session.value = applyChange(s, next.items);
-    paletteOpen.value = false;
-    paramTarget.value = null;
+    setSession(applyChange(s, next.items));
+    setPaletteOpen(false);
+    setParamTarget(null);
     focus.focusOnInsert(placed.instanceId);
     mountGrid(next);
   }
@@ -590,9 +598,9 @@ export default function DashboardV2() {
    * against the new namespace's cache entry.
    */
   function confirmParams(values: Record<string, string>) {
-    const target = paramTarget.value;
-    const s = session.value;
-    if (target === null || s === null || saving.value) return;
+    const target = paramTargetRef.current;
+    const s = sessionRef.current;
+    if (target === null || s === null || savingRef.current) return;
 
     if (target.editing === undefined) {
       placeWidget(target.def, values);
@@ -617,8 +625,8 @@ export default function DashboardV2() {
           : i,
       ),
     });
-    session.value = applyChange(s, next.items);
-    paramTarget.value = null;
+    setSession(applyChange(s, next.items));
+    setParamTarget(null);
     // The cell is being re-mounted, so this is armed rather than immediate --
     // the same door an insertion goes through, and the dialog the user was
     // standing in has gone.
@@ -635,8 +643,8 @@ export default function DashboardV2() {
    * it is closed and there is no row to go back to.
    */
   function cancelParams() {
-    const target = paramTarget.value;
-    paramTarget.value = null;
+    const target = paramTargetRef.current;
+    setParamTarget(null);
     if (target?.editing !== undefined) {
       focus.focusPlacement(target.editing.instanceId);
       return;
@@ -646,8 +654,8 @@ export default function DashboardV2() {
 
   /** Opens the parameter dialog over a placed widget, pre-filled. */
   function reparameterize(item: LayoutItem) {
-    const s = session.value;
-    if (s === null || saving.value) return;
+    const s = sessionRef.current;
+    if (s === null || savingRef.current) return;
     const def = getWidget(item.id);
     // Unreachable through the control -- the grid renders it only for a
     // widget whose definition declares parameters, which it looked up to
@@ -655,20 +663,20 @@ export default function DashboardV2() {
     // stored id, and doing nothing is the honest response to an id this build
     // has no widget for.
     if (def === undefined || def.params === undefined) return;
-    paletteOpen.value = false;
-    copyOpen.value = false;
-    paramTarget.value = { def, editing: item };
+    setPaletteOpen(false);
+    setCopyOpen(false);
+    setParamTarget({ def, editing: item });
   }
 
   /** Closes the palette and leaves the keyboard on the button that opened it. */
   function closePalette() {
-    paletteOpen.value = false;
+    setPaletteOpen(false);
     focus.focusAddButton();
   }
 
   /** Closes the copy dialog and leaves the keyboard on its opener. */
   function closeCopyDialog() {
-    copyOpen.value = false;
+    setCopyOpen(false);
     focus.focusCopyButton();
   }
 
@@ -688,9 +696,9 @@ export default function DashboardV2() {
    * there would be nothing to write.
    */
   function resetLayout() {
-    const s = session.value;
-    if (s === null || saving.value) return;
-    confirmReset.value = false;
+    const s = sessionRef.current;
+    if (s === null || savingRef.current) return;
+    setConfirmReset(false);
     // `asRendered` for the same reason `startEditing` and `addWidget` run it:
     // it is what the grid does on mount, so anything else recorded here would
     // differ from what is on screen by a compaction pass. The scope's own
@@ -699,8 +707,8 @@ export default function DashboardV2() {
       ...s.working,
       items: defaultLayoutFor(s.working.scope).items,
     });
-    session.value = applyChange(s, next.items);
-    editWarnings.value = [];
+    setSession(applyChange(s, next.items));
+    setEditWarnings([]);
     // The dialog the user was standing in has gone and the session is still
     // open, so nothing else on the way out restores the keyboard.
     focus.focusResetButton();
@@ -726,12 +734,12 @@ export default function DashboardV2() {
    * copy that lost them.
    */
   function copyFrom(entry: CopyableLayout) {
-    const s = session.value;
-    if (s === null || saving.value) return;
+    const s = sessionRef.current;
+    if (s === null || savingRef.current) return;
     const next = asRendered({ ...s.working, items: entry.config.items });
-    session.value = applyChange(s, next.items);
-    editWarnings.value = entry.warnings;
-    copyOpen.value = false;
+    setSession(applyChange(s, next.items));
+    setEditWarnings(entry.warnings);
+    setCopyOpen(false);
     focus.focusCopyButton();
     mountGrid(next);
   }
@@ -743,9 +751,9 @@ export default function DashboardV2() {
    * out too, and a session already closed must not be reopened by it.
    */
   function handleChange(items: LayoutItem[]) {
-    const s = session.value;
+    const s = sessionRef.current;
     if (s === null) return;
-    session.value = applyChange(s, items);
+    setSession(applyChange(s, items));
   }
 
   /**
@@ -757,13 +765,13 @@ export default function DashboardV2() {
    * idea of what the grid should be showing afterwards.
    */
   function closeEditing() {
-    const s = session.value;
+    const s = sessionRef.current;
     if (s === null) return;
-    confirmDiscard.value = false;
-    confirmReset.value = false;
-    paramTarget.value = null;
-    editWarnings.value = [];
-    session.value = null;
+    setConfirmDiscard(false);
+    setConfirmReset(false);
+    setParamTarget(null);
+    setEditWarnings([]);
+    setSession(null);
     focus.armReturnToEdit();
     mountGrid(discard(s));
   }
@@ -775,18 +783,18 @@ export default function DashboardV2() {
    * a dashboard is easy to click away from.
    */
   function requestExit() {
-    const s = session.value;
-    if (s === null || saving.value) return;
+    const s = sessionRef.current;
+    if (s === null || savingRef.current) return;
     if (!isDirty(s)) {
       closeEditing();
       return;
     }
-    confirmDiscard.value = true;
+    setConfirmDiscard(true);
   }
 
   async function save() {
-    const s = session.value;
-    if (s === null || saving.value || !isDirty(s)) return;
+    const s = sessionRef.current;
+    if (s === null || savingRef.current || !isDirty(s)) return;
     const { config, revision } = commit(s);
 
     // The session pinned a revision when it opened; the store's is the one the
@@ -796,46 +804,46 @@ export default function DashboardV2() {
     // the whole point of the session carrying a revision is that nothing else
     // gets to choose it.
     if (revision !== layoutRevision.value) {
-      saveBlocked.value = true;
-      conflict.value = true;
+      setSaveBlocked(true);
+      setConflict(true);
       return;
     }
 
-    saving.value = true;
+    setSaving(true);
     try {
       await saveLayout("overview", config);
       // The store now holds exactly what the grid is showing, and deliberately
       // does not bump the generation, so the grid is not re-mounted: it is
       // already displaying the saved arrangement.
-      session.value = null;
-      paramTarget.value = null;
+      setSession(null);
+      setParamTarget(null);
       // What the arrangement dropped on its way here is now what was saved,
       // and the user has been told once already. Keeping it would leave a
       // warning about a copy standing over a dashboard that is now stored.
-      editWarnings.value = [];
+      setEditWarnings([]);
       focus.armReturnToEdit();
       showToast("Dashboard layout saved", "success");
     } catch (err) {
       // Not a message but a choice, so it goes to the dialog rather than a
       // toast. The session stays open either way: the user's arrangement is
       // the only copy of this work that exists.
-      saveBlocked.value = true;
+      setSaveBlocked(true);
       if (preferenceReason(err) === "revision_conflict") {
-        conflict.value = true;
+        setConflict(true);
         return;
       }
       showToast(saveErrorCopy(err), "error");
     } finally {
-      saving.value = false;
+      setSaving(false);
     }
   }
 
   /** Takes the stored layout and drops this session's edits with it. */
   async function reloadStoredLayout() {
-    conflict.value = false;
-    session.value = null;
-    paramTarget.value = null;
-    editWarnings.value = [];
+    setConflict(false);
+    setSession(null);
+    setParamTarget(null);
+    setEditWarnings([]);
     focus.armReturnToEdit();
     // No local restore: this is the one exit where the baseline is known to be
     // out of date, so what goes on screen has to come from the server.
@@ -849,21 +857,25 @@ export default function DashboardV2() {
     // Edit is withheld across the whole await: the session is already closed,
     // so without this the user could reopen one, arrange it, and have it
     // re-mounted away the moment the response lands.
-    reloading.value = true;
+    setReloading(true);
     try {
       await loadLayout("overview");
       adoptLoadedLayout();
     } finally {
-      reloading.value = false;
+      setReloading(false);
     }
   }
 
-  if (!IS_BROWSER) {
-    return <div style={ROOT_STYLE} />;
-  }
+  const isClient = useIsClient();
+  const info = useSourceState<ClusterInfoData>("cluster-info");
+  const summary = useSourceState<CoveredSummary>("dashboard-summary");
+  const unavailable = useSignalValue(layoutUnavailable);
+  const withheld = useSignalValue(layoutWithheld);
+  const layoutLoadedValue = useSignalValue(layoutLoaded);
+  const loadWarnings = useSignalValue(layoutWarnings);
+  const selected = useSignalValue(selectedCluster);
+  const records = useSignalValue(copyableLayoutRecords);
 
-  const info = dashboardData.state<ClusterInfoData>("cluster-info");
-  const summary = dashboardData.state<CoveredSummary>("dashboard-summary");
   // Wait for both to settle, so the subtitle never shows "0 nodes" for the
   // moment between one response and the other.
   const headerReady = [info, summary].every(
@@ -891,14 +903,13 @@ export default function DashboardV2() {
 
   // A load that failed leaves `layout` on the default. Saying so matters: an
   // unexplained default dashboard reads as "my arrangement was deleted".
-  const unavailable = layoutUnavailable.value;
   const storageDown = unavailable !== undefined;
   const unavailableMessage = storageDown ? unavailableCopy(unavailable) : null;
-  const withheldCount = layoutWithheld.value.length;
+  const withheldCount = withheld.length;
   // The stored layout has not arrived yet. Adopting it re-mounts the grid,
   // which throws away whatever the grid's private working copy holds -- so
   // until it lands there must be nothing in that copy worth keeping.
-  const layoutPending = !layoutLoaded.value;
+  const layoutPending = !layoutLoadedValue;
   // Withdrawn in two states, for two different reasons.
   //
   // Storage down: arranging a dashboard that cannot be stored is work the user
@@ -918,7 +929,7 @@ export default function DashboardV2() {
   //
   // Reloading is the same case as a pending first load, and is tracked
   // separately because `layoutLoaded` never returns to false once set.
-  const editDisabled = storageDown || layoutPending || reloading.value;
+  const editDisabled = storageDown || layoutPending || reloading;
 
   // What the copy affordance has to offer.
   //
@@ -935,17 +946,16 @@ export default function DashboardV2() {
   // produce the same list, because moving a widget cannot change which of
   // another cluster's layouts may be copied. Same reason the palette memoizes
   // its catalog on `placed` rather than on the session.
-  const copyScope = session.value?.working.scope;
-  const copyColumns = session.value?.working.columns;
-  const cluster = selectedCluster.value;
-  const records = copyableLayoutRecords.value;
+  const copyScope = session?.working.scope;
+  const copyColumns = session?.working.columns;
   const copyOptions = useMemo(
     () =>
       copyScope === undefined || copyColumns === undefined
         ? []
-        : copyableLayouts(records, copyScope, cluster, copyColumns),
-    [records, copyScope, cluster, copyColumns],
+        : copyableLayouts(records, copyScope, selected, copyColumns),
+    [records, copyScope, selected, copyColumns],
   );
+  const copyOptionCount = copyOptions.length;
 
   // The copy dialog's render gate includes "there is something to offer", so
   // the list emptying takes the dialog off screen. That is the right outcome
@@ -963,10 +973,14 @@ export default function DashboardV2() {
   // render and its ref is already null. "Add widget" is mounted for the whole
   // session, which is why `closePalette` leans on it too.
   useEffect(() => {
-    if (!IS_BROWSER || !copyOpen.value || copyOptions.length > 0) return;
-    copyOpen.value = false;
+    if (!copyOpen || copyOptionCount > 0) return;
+    setCopyOpen(false);
     focus.focusAddButton();
-  }, [copyOptions.length, copyOpen.value]);
+  }, [copyOptionCount, copyOpen, focus]);
+
+  if (!isClient) {
+    return <div style={ROOT_STYLE} />;
+  }
 
   return (
     <div style={ROOT_STYLE}>
@@ -1030,16 +1044,14 @@ export default function DashboardV2() {
         >
           <EditToolbar
             editing={editing}
-            dirty={session.value !== null && isDirty(session.value)}
-            saving={saving.value}
-            saveBlockedReason={
-              saveBlocked.value ? SAVE_BLOCKED_REASON : undefined
-            }
+            dirty={session !== null && isDirty(session)}
+            saving={saving}
+            saveBlockedReason={saveBlocked ? SAVE_BLOCKED_REASON : undefined}
             disabled={editDisabled}
             disabledReason={
               storageDown
                 ? (unavailableMessage ?? undefined)
-                : layoutPending || reloading.value
+                : layoutPending || reloading
                   ? "Loading your saved layout..."
                   : undefined
             }
@@ -1048,18 +1060,18 @@ export default function DashboardV2() {
             addButtonRef={focus.addButton}
             copyButtonRef={focus.copyButton}
             resetButtonRef={focus.resetButton}
-            paletteOpen={paletteOpen.value}
+            paletteOpen={paletteOpen}
             copyAvailable={copyOptions.length > 0}
-            copyOpen={copyOpen.value}
+            copyOpen={copyOpen}
             onEdit={startEditing}
             onAddWidget={() => {
-              paletteOpen.value = true;
+              setPaletteOpen(true);
             }}
             onCopyFromCluster={() => {
-              copyOpen.value = true;
+              setCopyOpen(true);
             }}
             onReset={() => {
-              confirmReset.value = true;
+              setConfirmReset(true);
             }}
             onCancel={requestExit}
             onSave={save}
@@ -1080,7 +1092,7 @@ export default function DashboardV2() {
                 key={r}
                 type="button"
                 onClick={() => {
-                  timeRange.value = r;
+                  setTimeRange(r);
                 }}
                 style={{
                   padding: "5px 12px",
@@ -1089,12 +1101,9 @@ export default function DashboardV2() {
                   cursor: "pointer",
                   fontSize: "12px",
                   fontWeight: 500,
-                  background:
-                    timeRange.value === r ? "var(--accent)" : "transparent",
+                  background: timeRange === r ? "var(--accent)" : "transparent",
                   color:
-                    timeRange.value === r
-                      ? "var(--bg-base)"
-                      : "var(--text-muted)",
+                    timeRange === r ? "var(--bg-base)" : "var(--text-muted)",
                   transition: "background 0.15s, color 0.15s",
                 }}
               >
@@ -1111,10 +1120,10 @@ export default function DashboardV2() {
         </Alert>
       )}
 
-      {layoutWarnings.value.length > 0 && (
+      {loadWarnings.length > 0 && (
         <Alert variant="warning" className="mb-4">
           <ul style={{ margin: 0, paddingLeft: "18px" }}>
-            {layoutWarnings.value.map((w) => (
+            {loadWarnings.map((w) => (
               <li key={w}>{w}</li>
             ))}
           </ul>
@@ -1126,10 +1135,10 @@ export default function DashboardV2() {
           last load: the two can be true at once and say different things, and
           merging them would make a warning about a layout the user took read
           as one about the layout they already had. */}
-      {editWarnings.value.length > 0 && (
+      {editWarnings.length > 0 && (
         <Alert variant="warning" className="mb-4">
           <ul style={{ margin: 0, paddingLeft: "18px" }}>
-            {editWarnings.value.map((w) => (
+            {editWarnings.map((w) => (
               <li key={w}>{w}</li>
             ))}
           </ul>
@@ -1155,8 +1164,8 @@ export default function DashboardV2() {
       )}
 
       <DashboardGrid
-        key={`layout-${gridEpoch.value}`}
-        initial={gridSource.value}
+        key={`layout-${gridEpoch}`}
+        initial={gridSource}
         // Frozen while the write is in flight, not merely while editing.
         //
         // `commit` snapshots the payload before the await, so a drag or a
@@ -1167,10 +1176,10 @@ export default function DashboardV2() {
         // the next reload. Cancel and Save are already held for the same
         // reason; the grid is the third control that had to be.
         //
-        // The grid's own `[editable, narrow.value]` effect ends any pointer
+        // The grid's own `[editable, narrow]` effect ends any pointer
         // session in flight with a restore, so the screen lands on exactly what
         // was written rather than on a half-finished gesture.
-        editable={editing && !saving.value}
+        editable={editing && !saving}
         onChange={handleChange}
         // The grid reports where a removal left a gap; the focus hook decides
         // what to do about it, including the case the grid cannot answer --
@@ -1199,13 +1208,13 @@ export default function DashboardV2() {
         held inside the dialog -- so this is the invariant made structural
         rather than a case anyone has to keep arguing about.
       */}
-      {paletteOpen.value && session.value !== null && !saving.value && (
+      {paletteOpen && session !== null && !saving && (
         <WidgetPalette
-          scope={session.value.working.scope}
-          placed={session.value.working.items}
-          columns={session.value.working.columns}
-          familyStatuses={familyStatuses.value}
-          viewerIsAdmin={viewerIsAdmin.value}
+          scope={session.working.scope}
+          placed={session.working.items}
+          columns={session.working.columns}
+          familyStatuses={familyStatusValues}
+          viewerIsAdmin={viewerIsAdmin}
           onAdd={addWidget}
           onClose={closePalette}
         />
@@ -1216,34 +1225,29 @@ export default function DashboardV2() {
           carries, plus the one that is this dialog's own: a background read
           that came back empty must take the dialog with it rather than leave
           an empty list on screen. */}
-      {copyOpen.value &&
-        session.value !== null &&
-        !saving.value &&
-        copyOptions.length > 0 && (
-          <LayoutCopyDialog
-            layouts={copyOptions}
-            onCopy={copyFrom}
-            onClose={closeCopyDialog}
-          />
-        )}
+      {copyOpen && session !== null && !saving && copyOptions.length > 0 && (
+        <LayoutCopyDialog
+          layouts={copyOptions}
+          onCopy={copyFrom}
+          onClose={closeCopyDialog}
+        />
+      )}
 
       {/* The same three gates the palette carries -- its own flag, an open
           session, and no save in flight -- for the same reasons. A dialog
           collecting values for a layout that is being written, or for a
           session that has closed underneath it, would confirm into nothing. */}
-      {paramTarget.value !== null &&
-        session.value !== null &&
-        !saving.value && (
-          <WidgetParamDialog
-            def={paramTarget.value.def}
-            placed={session.value.working.items}
-            editing={paramTarget.value.editing}
-            onConfirm={confirmParams}
-            onCancel={cancelParams}
-          />
-        )}
+      {paramTarget !== null && session !== null && !saving && (
+        <WidgetParamDialog
+          def={paramTarget.def}
+          placed={session.working.items}
+          editing={paramTarget.editing}
+          onConfirm={confirmParams}
+          onCancel={cancelParams}
+        />
+      )}
 
-      {confirmReset.value && (
+      {confirmReset && (
         <ConfirmDialog
           title="Reset dashboard layout"
           message="This replaces the arrangement on screen with the dashboard as it ships. Nothing is written until you press Save, and Cancel still puts back the layout you last saved."
@@ -1251,13 +1255,13 @@ export default function DashboardV2() {
           danger
           onConfirm={resetLayout}
           onCancel={() => {
-            confirmReset.value = false;
+            setConfirmReset(false);
             focus.focusResetButton();
           }}
         />
       )}
 
-      {confirmDiscard.value && (
+      {confirmDiscard && (
         <ConfirmDialog
           title="Discard unsaved changes?"
           message="This dashboard goes back to the arrangement you last saved. There is no undo."
@@ -1265,12 +1269,12 @@ export default function DashboardV2() {
           danger
           onConfirm={closeEditing}
           onCancel={() => {
-            confirmDiscard.value = false;
+            setConfirmDiscard(false);
           }}
         />
       )}
 
-      {conflict.value && (
+      {conflict && (
         <ConfirmDialog
           title="This dashboard changed somewhere else"
           message="Your layout was saved from another tab or device after you started editing. Loading it discards the changes you made here; keeping them lets you carry on, but this dashboard cannot be saved until you load the newer one."
@@ -1281,7 +1285,7 @@ export default function DashboardV2() {
           // Escape and the scrim land here too, which is the safe default: the
           // arrangement on screen is the only copy of this session's work.
           onCancel={() => {
-            conflict.value = false;
+            setConflict(false);
           }}
         />
       )}

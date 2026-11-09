@@ -1,7 +1,8 @@
+/** @jsxImportSource react */
 import { MetricTile } from "@/components/ui/MetricTile.tsx";
 import { withheldReason } from "@/lib/dashboard/coverage.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type {
   DashboardSummary,
   DashboardTrends,
@@ -16,8 +17,8 @@ import { lastDelta } from "@/lib/format.ts";
  * (spec D-9) and why the old tile grid was a bare div.
  */
 function CpuTile() {
-  const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
-  const t = dashboardData.state<DashboardTrends>("dashboard-trends").data;
+  const s = useSourceState<DashboardSummary>("dashboard-summary").data;
+  const t = useSourceState<DashboardTrends>("dashboard-trends").data;
   // A local cluster without Prometheus reports no usage at all; the backend's
   // placeholder percentage of 0 must not read as an idle cluster.
   const withheld = withheldReason(s, "cpu");

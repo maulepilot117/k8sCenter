@@ -1,6 +1,6 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { selectedCluster } from "@/lib/cluster.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The per-cluster filter, the other-cluster accounting and the href
 // resolution live in lib/, under test (D-10, KTD8).
 import type { PinnedRow } from "@/lib/dashboard/platform.ts";
@@ -9,6 +9,8 @@ import {
   pinnedResourcesView,
 } from "@/lib/dashboard/platform.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /** How many pins the card lists. The count beside them covers every pin on
  * this cluster. */
@@ -34,11 +36,9 @@ const ROW_LIMIT = 6;
  * silently would say "you have no pinned resources" to someone holding twenty.
  */
 function PinnedResources() {
-  const view = pinnedResourcesView(
-    dashboardData.state("preference-pins").data,
-    selectedCluster.value,
-    ROW_LIMIT,
-  );
+  const pins = useSourceState("preference-pins").data;
+  const cluster = useSignalValue(selectedCluster);
+  const view = pinnedResourcesView(pins, cluster, ROW_LIMIT);
 
   return (
     <WidgetShell
@@ -47,7 +47,7 @@ function PinnedResources() {
         view.readable && view.total > 0 ? (
           <span
             data-testid="pinned-resources-summary"
-            class="text-xs text-text-muted"
+            className="text-xs text-text-muted"
           >
             {view.total} pinned
           </span>
@@ -57,7 +57,7 @@ function PinnedResources() {
       {!view.readable ? (
         <p
           data-testid="pinned-resources-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The preferences endpoint returned a result this card cannot read.
         </p>
@@ -67,21 +67,24 @@ function PinnedResources() {
         // own detail page.
         <div
           data-testid="pinned-resources-none"
-          class="flex flex-col items-center gap-1.5 py-4 text-center"
+          className="flex flex-col items-center gap-1.5 py-4 text-center"
         >
-          <p class="text-xs text-text-muted">
+          <p className="text-xs text-text-muted">
             Nothing is pinned on this cluster.
           </p>
           <a
             href={PREFERENCES_START_HREF}
-            class="text-xs text-accent no-underline"
+            className="text-xs text-accent no-underline"
           >
             Open a resource and pin it →
           </a>
         </div>
       ) : (
         <>
-          <ul class="flex flex-col gap-1.5" data-testid="pinned-resources-list">
+          <ul
+            className="flex flex-col gap-1.5"
+            data-testid="pinned-resources-list"
+          >
             {view.rows.map((row) => (
               <PinnedItem key={row.id} row={row} />
             ))}
@@ -90,7 +93,7 @@ function PinnedResources() {
           {view.total > view.rows.length && (
             <p
               data-testid="pinned-resources-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing {view.rows.length} of {view.total}.
             </p>
@@ -101,7 +104,7 @@ function PinnedResources() {
       {view.otherClusters > 0 && (
         <p
           data-testid="pinned-resources-other-clusters"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.otherClusters} more{" "}
           {view.otherClusters === 1 ? "pin is" : "pins are"} held on other
@@ -112,7 +115,7 @@ function PinnedResources() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="pinned-resources-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} record
           {view.unreadableRows === 1 ? "" : "s"} named no object this card could
@@ -134,12 +137,12 @@ function PinnedItem({ row }: { row: PinnedRow }) {
   const label = (
     <>
       <span
-        class="min-w-0 truncate text-xs text-text-secondary"
+        className="min-w-0 truncate text-xs text-text-secondary"
         title={row.name}
       >
         {row.name}
       </span>
-      <span class="shrink-0 font-mono text-[10px] text-text-muted">
+      <span className="shrink-0 font-mono text-[10px] text-text-muted">
         {row.kind === "" ? "unknown kind" : row.kind}
         {row.namespace === "" ? "" : ` · ${row.namespace}`}
       </span>
@@ -147,13 +150,13 @@ function PinnedItem({ row }: { row: PinnedRow }) {
   );
 
   return (
-    <li class="flex items-center justify-between gap-2">
+    <li className="flex items-center justify-between gap-2">
       {row.href === null ? (
         label
       ) : (
         <a
           href={row.href}
-          class="flex min-w-0 flex-1 items-center justify-between gap-2 no-underline"
+          className="flex min-w-0 flex-1 items-center justify-between gap-2 no-underline"
         >
           {label}
         </a>

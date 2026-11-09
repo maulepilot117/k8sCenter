@@ -1,6 +1,6 @@
-import { useState } from "preact/hooks";
+/** @jsxImportSource react */
+import { useState } from "react";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 // The vector parsing, the ranking and the unit arithmetic live in lib/, under
 // test, because none of them is a field read (D-10, KTD8). The slug names live
@@ -15,6 +15,7 @@ import {
   formatConsumerValue,
   rankConsumers,
 } from "@/lib/dashboard/top-consumers.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /** How many rows the card lists. The slug's `topk` already caps the query at
  * ten server-side; this is the display cap, and the smaller of the two wins. */
@@ -47,7 +48,7 @@ const ROW_LIMIT = 8;
  */
 function TopConsumers() {
   const [metric, setMetric] = useState<ConsumerMetric>("cpu");
-  const state = dashboardData.state(CONSUMER_SOURCE[metric]);
+  const state = useSourceState(CONSUMER_SOURCE[metric]);
   const view = rankConsumers(state.data, ROW_LIMIT);
   const max = view.rows.length > 0 ? view.rows[0].value : 0;
 
@@ -56,7 +57,7 @@ function TopConsumers() {
       title="Top Consumers"
       action={
         <div
-          class="flex items-center gap-1"
+          className="flex items-center gap-1"
           role="group"
           aria-label="Metric shown"
           data-testid="top-consumers-toggle"
@@ -67,7 +68,7 @@ function TopConsumers() {
               type="button"
               aria-pressed={m === metric}
               onClick={() => setMetric(m)}
-              class="rounded-md px-2 py-0.5 text-[11px] font-semibold no-underline"
+              className="rounded-md px-2 py-0.5 text-[11px] font-semibold no-underline"
               style={{
                 background: m === metric ? "var(--bg-hover)" : "transparent",
                 color:
@@ -89,7 +90,7 @@ function TopConsumers() {
         // in flight, or may have failed on its own.
         <p
           data-testid="top-consumers-pending"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           {state.error === null
             ? "Loading memory usage…"
@@ -101,48 +102,48 @@ function TopConsumers() {
         // cluster where nothing is using anything.
         <p
           data-testid="top-consumers-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           Prometheus returned a result this card cannot read.
         </p>
       ) : view.rows.length === 0 ? (
         <p
           data-testid="top-consumers-empty"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           Prometheus reported no pod {CONSUMER_LABEL[metric].toLowerCase()}{" "}
           usage.
         </p>
       ) : (
-        <ul class="flex flex-col gap-1.5" data-testid="top-consumers-list">
+        <ul className="flex flex-col gap-1.5" data-testid="top-consumers-list">
           {view.rows.map((row) => (
             <li
               key={`${row.namespace}/${row.pod}`}
-              class="flex items-center gap-2 text-xs"
+              className="flex items-center gap-2 text-xs"
             >
               <a
                 href={consumerHref(row)}
                 title={`${row.namespace}/${row.pod}`}
-                class="min-w-0 flex-1 truncate text-text-secondary no-underline hover:text-accent"
+                className="min-w-0 flex-1 truncate text-text-secondary no-underline hover:text-accent"
               >
                 {row.pod}
-                <span class="ml-1.5 text-[10px] text-text-muted">
+                <span className="ml-1.5 text-[10px] text-text-muted">
                   {row.namespace}
                 </span>
               </a>
               <span
                 aria-hidden="true"
-                class="hidden h-1.5 w-16 shrink-0 overflow-hidden rounded-sm bg-hover sm:block"
+                className="hidden h-1.5 w-16 shrink-0 overflow-hidden rounded-sm bg-hover sm:block"
               >
                 <span
-                  class="block h-full rounded-sm"
+                  className="block h-full rounded-sm"
                   style={{
                     width: `${max > 0 ? Math.round((row.value / max) * 100) : 0}%`,
                     background: "var(--accent)",
                   }}
                 />
               </span>
-              <span class="w-16 shrink-0 text-right font-mono font-semibold text-text-primary">
+              <span className="w-16 shrink-0 text-right font-mono font-semibold text-text-primary">
                 {formatConsumerValue(metric, row.value)}
               </span>
             </li>
@@ -153,7 +154,7 @@ function TopConsumers() {
       {view.dropped > 0 && (
         <p
           data-testid="top-consumers-dropped"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.dropped} series carried no readable value and{" "}
           {view.dropped === 1 ? "was" : "were"} left out.
@@ -163,7 +164,7 @@ function TopConsumers() {
       {view.warnings.length > 0 && (
         <p
           data-testid="top-consumers-warnings"
-          class="mt-2 text-[11px] leading-snug"
+          className="mt-2 text-[11px] leading-snug"
           style={{ color: "var(--warning)" }}
           title={view.warnings.join("\n")}
         >
@@ -171,13 +172,13 @@ function TopConsumers() {
         </p>
       )}
 
-      <p class="mt-2 text-[11px] text-text-muted">
+      <p className="mt-2 text-[11px] text-text-muted">
         {CONSUMER_LABEL[metric]} {CONSUMER_UNIT[metric]}, cluster-wide.
       </p>
 
       <a
         href="/workloads/pods"
-        class="mt-2 block text-xs text-accent no-underline"
+        className="mt-2 block text-xs text-accent no-underline"
       >
         View all pods →
       </a>

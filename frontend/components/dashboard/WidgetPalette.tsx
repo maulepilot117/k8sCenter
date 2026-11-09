@@ -1,5 +1,11 @@
-import { useSignal } from "@preact/signals";
-import { useLayoutEffect, useMemo, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type KeyboardEvent,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 // The disabled-reason decision lives in lib/, not here, because this repo has
 // no component test harness (D-10): logic that needs a unit test has to sit
@@ -19,6 +25,8 @@ import type {
 import { WIDGET_FAMILIES } from "@/lib/dashboard/types.ts";
 import type { Searchable } from "@/lib/fuzzy-search.ts";
 import { fuzzySearch } from "@/lib/fuzzy-search.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /**
  * The catalog of widgets that can be added to the dashboard being edited.
@@ -75,6 +83,23 @@ interface Entry extends Searchable {
   disabledReason: string | null;
 }
 
+/**
+ * The first entry that can actually be added, or -1 when none can.
+ *
+ * The selection skips the entries that are already on the dashboard, here
+ * and in `move` below, so Enter always does something. Landing on one of
+ * them instead would make the palette open on a highlighted row that ignores
+ * the key the row is highlighted for; the reason those entries carry is on
+ * screen for everyone reading the list either way.
+ *
+ * -1 rather than 0 for a catalog with nothing left to add -- the shipped
+ * default layout, which holds every widget -- because highlighting the first
+ * row there would promise an Enter that does nothing.
+ */
+function firstAddable(items: readonly Entry[]): number {
+  return items.findIndex((e) => e.disabledReason === null);
+}
+
 interface WidgetPaletteProps {
   /** Which dashboard is being edited; only widgets declaring it are offered. */
   scope: DashboardScope;
@@ -128,9 +153,11 @@ export default function WidgetPalette({
   onAdd,
   onClose,
 }: WidgetPaletteProps) {
-  const query = useSignal("");
+  const [query, setQuery] = useState("");
   /** Index into the flattened list below; -1 while nothing is selectable. */
-  const selectedIndex = useSignal(-1);
+  // Two arrow presses can land before the next render, so the key handler
+  // reads the selection through the ref the setter writes at once.
+  const [selectedIndex, setSelectedIndex, selectedIndexRef] = useStateRef(-1);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Depends only on the scope, the placed items, the column count and the
@@ -168,7 +195,7 @@ export default function WidgetPalette({
   // What the query shows, grouped for display in the families' declared order,
   // and flattened again for the keyboard: the index the arrows move through has
   // to be the order the eye reads, not the order the scorer returned.
-  const matches = fuzzySearch(entries, query.value, NO_LIMIT);
+  const matches = fuzzySearch(entries, query, NO_LIMIT);
   const groups = WIDGET_FAMILIES.map((family) => ({
     family,
     items: matches.filter((e) => e.def.family === family),
@@ -177,24 +204,12 @@ export default function WidgetPalette({
   // Position in the flattened order, by entry, so a row does not rescan the
   // list to find out which index it is.
   const positions = new Map(flat.map((e, i) => [e, i]));
-  const selected = flat[selectedIndex.value];
-
-  /**
-   * The first entry that can actually be added, or -1 when none can.
-   *
-   * The selection skips the entries that are already on the dashboard, here
-   * and in `move` below, so Enter always does something. Landing on one of
-   * them instead would make the palette open on a highlighted row that ignores
-   * the key the row is highlighted for; the reason those entries carry is on
-   * screen for everyone reading the list either way.
-   *
-   * -1 rather than 0 for a catalog with nothing left to add -- the shipped
-   * default layout, which holds every widget -- because highlighting the first
-   * row there would promise an Enter that does nothing.
-   */
-  function firstAddable(items: readonly Entry[]): number {
-    return items.findIndex((e) => e.disabledReason === null);
-  }
+  const selected = flat[selectedIndex];
+  const flatRef = useLatest(flat);
+  // Which visible rows can be added, as a string so an effect can depend on it.
+  const addableKey = flat
+    .map((e) => (e.disabledReason === null ? "1" : "0"))
+    .join("");
 
   // Focus moves into the dialog on open and back to the opener on close; the
   // caller owns the return leg, because the button it goes back to is its own.
@@ -218,9 +233,11 @@ export default function WidgetPalette({
   // this the single place that decides where the selection starts -- the input
   // handler used to re-derive the filtered list itself to answer the same
   // question one render early.
+  const selectionQuery = useRef(query);
   useLayoutEffect(() => {
-    selectedIndex.value = firstAddable(flat);
-  }, [query.value]);
+    selectionQuery.current = query;
+    setSelectedIndex(firstAddable(flatRef.current));
+  }, [query]);
 
   // The selection also has to follow a row that stops being addable underneath
   // it. `entries` recomputes when a discovery status or the admin signal
@@ -235,11 +252,13 @@ export default function WidgetPalette({
   // that ignores input without saying why is worse than one that refuses out
   // loud, which is what moving the selection restores.
   useLayoutEffect(() => {
-    selectedIndex.value = selectionAfterEntriesChange(
-      flat.map((e) => e.disabledReason === null),
-      selectedIndex.value,
+    setSelectedIndex(
+      selectionAfterEntriesChange(
+        Array.from(addableKey, (c) => c === "1"),
+        selectedIndexRef.current,
+      ),
     );
-  }, [entries]);
+  }, [addableKey]);
 
   function choose(entry: Entry | undefined) {
     if (entry === undefined || entry.disabledReason !== null) return;
@@ -250,18 +269,18 @@ export default function WidgetPalette({
    * stays put rather than stopping on one when there is nothing further. */
   function move(delta: number) {
     for (
-      let i = selectedIndex.value + delta;
+      let i = selectedIndexRef.current + delta;
       i >= 0 && i < flat.length;
       i += delta
     ) {
       if (flat[i].disabledReason === null) {
-        selectedIndex.value = i;
+        setSelectedIndex(i);
         return;
       }
     }
   }
 
-  function handleInputKeyDown(e: KeyboardEvent) {
+  function handleInputKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
@@ -293,25 +312,25 @@ export default function WidgetPalette({
       closeTestId="close-palette"
       onClose={onClose}
     >
-      <div class="border-b border-border-subtle px-4 py-2">
+      <div className="border-b border-border-subtle px-4 py-2">
         <input
           ref={inputRef}
           type="text"
           data-testid="widget-search"
           placeholder="Search widgets..."
-          value={query.value}
+          value={query}
           role="combobox"
           aria-expanded="true"
           aria-haspopup="listbox"
           aria-controls="widget-palette-results"
           aria-activedescendant={selected?.id}
           aria-label="Search widgets"
-          onInput={(e) => {
+          onChange={(e) => {
             // The selection follows from the query; the effect above owns it.
-            query.value = (e.target as HTMLInputElement).value;
+            setQuery(e.currentTarget.value);
           }}
           onKeyDown={handleInputKeyDown}
-          class="w-full bg-transparent py-1 text-sm text-text-primary outline-none placeholder:text-text-muted"
+          className="w-full bg-transparent py-1 text-sm text-text-primary outline-none placeholder:text-text-muted"
         />
       </div>
 
@@ -319,10 +338,10 @@ export default function WidgetPalette({
         id="widget-palette-results"
         role="listbox"
         aria-label="Widgets"
-        class="flex-1 overflow-y-auto py-2"
+        className="flex-1 overflow-y-auto py-2"
       >
         {flat.length === 0 && (
-          <p class="px-4 py-6 text-center text-xs text-text-muted">
+          <p className="px-4 py-6 text-center text-xs text-text-muted">
             No widget matches that search.
           </p>
         )}
@@ -338,13 +357,13 @@ export default function WidgetPalette({
               // it as a listbox child would announce a row that cannot be
               // selected.
               aria-hidden="true"
-              class="px-4 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted"
+              className="px-4 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted"
             >
               {FAMILY_LABELS[group.family]}
             </div>
             {group.items.map((entry) => {
               const index = positions.get(entry) ?? -1;
-              const isSelected = index === selectedIndex.value;
+              const isSelected = index === selectedIndex;
               const blocked = entry.disabledReason !== null;
               return (
                 <button
@@ -380,7 +399,7 @@ export default function WidgetPalette({
                   // that can be added -- the same invariant the arrows keep,
                   // and the reason Enter can be relied on after a hover.
                   onMouseEnter={() => {
-                    if (!blocked) selectedIndex.value = index;
+                    if (!blocked) setSelectedIndex(index);
                   }}
                   // The selected row carries a bar and brighter text as well
                   // as the tint: `--accent-dim` is a 12% wash and on the
@@ -395,7 +414,7 @@ export default function WidgetPalette({
                   // row -- "selected" styling on something that refuses both
                   // Enter and a click tells the user the opposite of the
                   // truth. Unaddable outranks selected.
-                  class={`flex w-full items-center gap-3 border-l-2 px-4 py-2 text-left text-sm ${
+                  className={`flex w-full items-center gap-3 border-l-2 px-4 py-2 text-left text-sm ${
                     blocked
                       ? "cursor-not-allowed border-transparent text-text-muted"
                       : isSelected
@@ -403,7 +422,7 @@ export default function WidgetPalette({
                         : "cursor-pointer border-transparent text-text-secondary"
                   }`}
                 >
-                  <span class="flex-1 truncate">{entry.def.title}</span>
+                  <span className="flex-1 truncate">{entry.def.title}</span>
                   {/* Not a disabled reason: this row CAN be added, it just
                       asks a question first. So it is rendered on its own
                       rather than through `disabledReason`, which is read by
@@ -414,13 +433,13 @@ export default function WidgetPalette({
                   {!blocked && entry.def.params !== undefined && (
                     <span
                       data-testid="widget-option-needs-values"
-                      class="shrink-0 text-[11px] text-text-muted"
+                      className="shrink-0 text-[11px] text-text-muted"
                     >
                       Asks for {Object.keys(entry.def.params).join(", ")}
                     </span>
                   )}
                   {blocked && (
-                    <span class="shrink-0 rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted">
+                    <span className="shrink-0 rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted">
                       {entry.disabledReason}
                     </span>
                   )}

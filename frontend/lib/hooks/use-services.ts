@@ -1,10 +1,12 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "react";
 import { apiGet } from "@/lib/api.ts";
 import { hasDom } from "@/src/lib/has-dom.ts";
 
 /** The route caps a page here anyway; asking for more silently gets this. */
 const PAGE_LIMIT = 500;
+
+/** One empty list, so clearing an already-empty list is not a change. */
+const NONE: string[] = [];
 
 /**
  * Service names in one namespace, for a dropdown.
@@ -26,15 +28,15 @@ const PAGE_LIMIT = 500;
  * dispatches on the resource adapter's short `Kind()`, and `services` is both
  * the adapter kind and the API resource name.
  */
-export function useNamespacedServices(namespace: string) {
-  const services = useSignal<string[]>([]);
+export function useNamespacedServices(namespace: string): string[] {
+  const [services, setServices] = useState<string[]>(NONE);
 
   useEffect(() => {
     if (!hasDom()) return;
     // Cleared synchronously rather than left showing the previous namespace's
     // services while the new list is in flight: a dropdown that briefly offers
     // values from somewhere else is one a fast user can pick from.
-    services.value = [];
+    setServices(NONE);
     if (namespace === "") return;
 
     const controller = new AbortController();
@@ -50,13 +52,15 @@ export function useNamespacedServices(namespace: string) {
     )
       .then((resp) => {
         if (!live || !Array.isArray(resp.data)) return;
-        services.value = resp.data
-          .map((svc) => svc?.metadata?.name ?? "")
-          .filter((name) => name !== "")
-          .sort();
+        setServices(
+          resp.data
+            .map((svc) => svc?.metadata?.name ?? "")
+            .filter((name) => name !== "")
+            .sort(),
+        );
       })
       .catch(() => {
-        if (live) services.value = [];
+        if (live) setServices(NONE);
       });
 
     return () => {

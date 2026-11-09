@@ -1,14 +1,15 @@
+/** @jsxImportSource react */
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { phaseTone } from "@/components/velero/velero-utils.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The outcome ranking, the worst-first roll-up and the unreadable-row
 // accounting live in lib/, under test, because none of them is a field read
 // (D-10, KTD8). Do not inline them.
 import type { BackupRow } from "@/lib/dashboard/expiry.ts";
 import { BACKUPS_PAGE_HREF, backupsView } from "@/lib/dashboard/expiry.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import { age } from "@/lib/format.ts";
 
 /** How many backups the card lists. The counts above them cover every backup
@@ -45,7 +46,7 @@ const WORST_COLORS: Record<string, string> = {
  */
 function VeleroBackups() {
   const view = backupsView(
-    dashboardData.state("velero-backups-list").data,
+    useSourceState("velero-backups-list").data,
     ROW_LIMIT,
   );
   const attention =
@@ -58,7 +59,7 @@ function VeleroBackups() {
         view.readable && view.worst !== null ? (
           <span
             data-testid="velero-backups-summary"
-            class="text-xs"
+            className="text-xs"
             style={{ color: WORST_COLORS[view.worst] ?? "var(--text-muted)" }}
           >
             {view.total} backup{view.total === 1 ? "" : "s"}
@@ -71,7 +72,7 @@ function VeleroBackups() {
         // empty list here would read as a cluster with nothing failing.
         <p
           data-testid="velero-backups-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The backups endpoint returned a result this card cannot read.
         </p>
@@ -82,14 +83,14 @@ function VeleroBackups() {
         // card exists to surface.
         <p
           data-testid="velero-backups-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           Velero is installed but no backup you can see has been taken.
         </p>
       ) : (
         <>
           <div
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
             data-testid="velero-backups-counts"
           >
             <SeverityCount
@@ -117,7 +118,7 @@ function VeleroBackups() {
           {attention === 0 ? (
             <p
               data-testid="velero-backups-clear"
-              class="py-2 text-center text-xs text-text-muted"
+              className="py-2 text-center text-xs text-text-muted"
             >
               Every backup you can see completed
               {view.lastCompleted === ""
@@ -125,7 +126,10 @@ function VeleroBackups() {
                 : `; the most recent started ${age(view.lastCompleted)} ago.`}
             </p>
           ) : (
-            <ul class="flex flex-col gap-2" data-testid="velero-backups-list">
+            <ul
+              className="flex flex-col gap-2"
+              data-testid="velero-backups-list"
+            >
               {view.rows.map((row) => (
                 <BackupItem key={`${row.namespace}/${row.name}`} row={row} />
               ))}
@@ -135,7 +139,7 @@ function VeleroBackups() {
           {attention > view.rows.length && (
             <p
               data-testid="velero-backups-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing the {view.rows.length} worst of {attention} that did not
               complete.
@@ -147,7 +151,7 @@ function VeleroBackups() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="velero-backups-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no backup this card
@@ -158,7 +162,7 @@ function VeleroBackups() {
 
       <a
         href={BACKUPS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all backups →
       </a>
@@ -176,22 +180,22 @@ function VeleroBackups() {
  */
 function BackupItem({ row }: { row: BackupRow }) {
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <span
-          class="min-w-0 truncate text-xs text-text-secondary"
+          className="min-w-0 truncate text-xs text-text-secondary"
           title={`${row.namespace}/${row.name}`}
         >
           {row.name}
         </span>
-        <span class="shrink-0">
+        <span className="shrink-0">
           <StatusBadge
             label={row.phase === "" ? "unknown" : row.phase}
             tone={phaseTone(row.phase)}
           />
         </span>
       </span>
-      <span class="truncate text-[10px] text-text-muted">
+      <span className="truncate text-[10px] text-text-muted">
         {row.startTime === "" ? "not started" : `${age(row.startTime)} ago`}
         {row.errors > 0
           ? ` · ${row.errors} error${row.errors === 1 ? "" : "s"}`

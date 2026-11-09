@@ -1,10 +1,10 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
 import type {
   CSSProperties,
-  TargetedKeyboardEvent,
-  TargetedPointerEvent,
-} from "preact";
-import { useLayoutEffect, useRef } from "preact/hooks";
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import type { Cell } from "@/lib/dashboard/grid.ts";
@@ -31,7 +31,8 @@ import {
   DASHBOARD_GRID_GAP,
   DASHBOARD_ROW_HEIGHT,
 } from "@/lib/dashboard/types.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /**
  * Below this grid width the layout renders as one column. It is the grid's own
@@ -156,9 +157,9 @@ interface GridItemProps {
   dragging: boolean;
   /** True while this item is the one being resized. */
   resizing: boolean;
-  onDragStart: (event: TargetedPointerEvent<HTMLElement>) => void;
-  onResizeStart: (event: TargetedPointerEvent<HTMLElement>) => void;
-  onKeyDown: (event: TargetedKeyboardEvent<HTMLElement>) => void;
+  onDragStart: (event: ReactPointerEvent<HTMLElement>) => void;
+  onResizeStart: (event: ReactPointerEvent<HTMLElement>) => void;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
   /** Takes this widget off the working copy. */
   onRemove: () => void;
   /**
@@ -233,7 +234,7 @@ function GridItem({
       aria-roledescription={arrangeable ? "dashboard widget" : undefined}
       aria-label={arrangeable ? describePlacement(item, def) : undefined}
       onKeyDown={arrangeable ? onKeyDown : undefined}
-      class={ITEM_FOCUS_RING}
+      className={ITEM_FOCUS_RING}
       style={{
         ...style,
         minWidth: 0,
@@ -307,7 +308,7 @@ function GridItem({
             e.stopPropagation();
             onReparameterize();
           }}
-          class={REMOVE_BUTTON_CLASS}
+          className={REMOVE_BUTTON_CLASS}
           style={{
             position: "absolute",
             // One target's width plus the 4px gutter, so the two sit side by
@@ -333,9 +334,9 @@ function GridItem({
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
             aria-hidden="true"
           >
             <circle cx="12" cy="12" r="3" />
@@ -389,7 +390,7 @@ function GridItem({
             e.stopPropagation();
             onRemove();
           }}
-          class={REMOVE_BUTTON_CLASS}
+          className={REMOVE_BUTTON_CLASS}
           style={{
             position: "absolute",
             right: "4px",
@@ -474,7 +475,7 @@ function GridItem({
         style={{ height: "100%", minWidth: 0, minHeight: 0 }}
       >
         <CellFillContext.Provider value={true}>
-          <WidgetHost def={def} params={item.params ?? {}} />
+          <WidgetHost def={def} params={item.params} />
         </CellFillContext.Provider>
       </div>
     </div>
@@ -558,7 +559,7 @@ export default function DashboardGrid({
   onReparameterize,
 }: DashboardGridProps) {
   // Resolved once, on the way in, so the working copy is exactly what the grid
-  // renders. The pointer sessions below read this signal while the DOM is laid
+  // renders. The pointer sessions below read the working copy while the DOM is laid
   // out from `resolveRenderable` of it, and the two have to share a coordinate
   // frame: that helper drops items whose widget id this build does not have and
   // re-compacts the survivors, so an unresolved copy would put every item below
@@ -567,16 +568,24 @@ export default function DashboardGrid({
   // display half of the unknown-id contract (telling the user belongs to the
   // editor). Today's only caller passes the default layout, where this is a
   // no-op; P3's stored layouts are what make it matter.
-  const items = useSignal<LayoutItem[]>(
+  // The pointer sessions and key handlers read the working copy, the mode and
+  // the session in the same tick as the write that precedes them, and a window
+  // listener registered at pointerdown runs long after the render that created
+  // it, so each is also readable from a ref its setter writes at once.
+  const [initialItems] = useState(() =>
     resolveRenderable(initial.items, getWidget).map((r) => r.item),
   );
-  const narrow = useSignal(false);
-  const session = useSignal<{ kind: SessionKind; instanceId: string } | null>(
-    null,
-  );
+  const [items, setItemsState, itemsRef] =
+    useStateRef<LayoutItem[]>(initialItems);
+  const [narrow, setNarrow, narrowRef] = useStateRef(false);
+  const [session, setSessionNow, sessionRef] = useStateRef<{
+    kind: SessionKind;
+    instanceId: string;
+  } | null>(null);
   /** What the live region is saying. Keyboard changes only: a pointer user is
    * watching the thing they just moved. */
-  const announcement = useSignal("");
+  const [announcement, setAnnouncement] = useState("");
+  const onChangeRef = useLatest(onChange);
   const gridRef = useRef<HTMLDivElement | null>(null);
   /** Ends the session in flight, if there is one. Set for the grid's life. */
   const endSession = useRef<((restore: boolean) => void) | null>(null);
@@ -607,15 +616,15 @@ export default function DashboardGrid({
     // Only a focused cell drags the scroll along with it. An unchanged array
     // renders nothing, so an offset held for it would be put back on some
     // later, unrelated render.
-    if (next !== items.value && grid?.contains(document.activeElement)) {
+    if (next !== itemsRef.current && grid?.contains(document.activeElement)) {
       const held: Array<[Element, number, number]> = [];
       for (let el = grid.parentElement; el; el = el.parentElement) {
         held.push([el, el.scrollTop, el.scrollLeft]);
       }
       heldScroll.current = held;
     }
-    items.value = next;
-    onChange?.(next);
+    setItemsState(next);
+    onChangeRef.current?.(next);
   }
 
   // No dependencies: this has to run after whichever render carried the held
@@ -633,14 +642,15 @@ export default function DashboardGrid({
   // Layout effect, so the first paint already uses the right mode rather than
   // flashing twelve squeezed columns on a narrow screen.
   useLayoutEffect(() => {
-    if (!IS_BROWSER) return;
     const el = gridRef.current;
     if (!el) return;
     const measure = () => {
       // Which threshold applies depends on which mode is showing, so the
       // width has to move a scrollbar's worth to change the answer.
-      narrow.value =
-        el.clientWidth < (narrow.value ? WIDE_GRID_WIDTH : NARROW_GRID_WIDTH);
+      const next =
+        el.clientWidth <
+        (narrowRef.current ? WIDE_GRID_WIDTH : NARROW_GRID_WIDTH);
+      setNarrow(next);
     };
     const ro = new ResizeObserver(measure);
     ro.observe(el);
@@ -660,8 +670,8 @@ export default function DashboardGrid({
   // pre-session layout for the next Escape to apply. The user did not drop it,
   // so the layout goes back.
   useLayoutEffect(() => {
-    if (!editable || narrow.value) endSession.current?.(true);
-  }, [editable, narrow.value]);
+    if (!editable || narrow) endSession.current?.(true);
+  }, [editable, narrow]);
 
   /**
    * Runs one pointer session -- a drag or a resize -- from pointerdown to
@@ -674,7 +684,7 @@ export default function DashboardGrid({
    * pointerdown and the cell the pointer started in, and returns the handler
    * that turns every later cell into a call on the geometry engine.
    *
-   * The session lives in this closure rather than in signals: nothing renders
+   * The session lives in this closure rather than in state: nothing renders
    * from the grab origin, and a mid-session re-render must not be able to lose
    * it. Every position and size comes back through `moveItem` or `resizeItem`,
    * so the engine's rules -- the item under the pointer wins, others are
@@ -684,12 +694,12 @@ export default function DashboardGrid({
   function startSession(
     kind: SessionKind,
     instanceId: string,
-    event: TargetedPointerEvent<HTMLElement>,
+    event: ReactPointerEvent<HTMLElement>,
     begin: (start: LayoutItem, origin: Cell) => (cell: Cell) => void,
   ) {
     const el = gridRef.current;
     const handle = event.currentTarget;
-    const start = items.value.find((i) => i.instanceId === instanceId);
+    const start = itemsRef.current.find((i) => i.instanceId === instanceId);
     // Not editable, one-column mode (where x and w carry no meaning), a
     // secondary button, an item that is no longer there, or a session already
     // in flight: not a session. Two concurrent ones -- two fingers on two
@@ -697,11 +707,11 @@ export default function DashboardGrid({
     // one was cancelled would restore over the other's work.
     if (
       !editable ||
-      narrow.value ||
+      narrowRef.current ||
       event.button !== 0 ||
       !el ||
       !start ||
-      session.value !== null
+      sessionRef.current !== null
     ) {
       return;
     }
@@ -720,9 +730,9 @@ export default function DashboardGrid({
     } catch {
       // Nothing to do: the session runs uncaptured.
     }
-    session.value = { kind, instanceId };
+    setSessionNow({ kind, instanceId });
 
-    const before = items.value;
+    const before = itemsRef.current;
     // Measured per call, not once: the page can scroll under a captured
     // pointer, which moves the grid's top without any resize.
     const cellAt = (ev: { clientX: number; clientY: number }) =>
@@ -746,7 +756,7 @@ export default function DashboardGrid({
       controller.abort();
       endSession.current = null;
       if (restore) setItems(before);
-      session.value = null;
+      setSessionNow(null);
       if (handle.hasPointerCapture(event.pointerId)) {
         handle.releasePointerCapture(event.pointerId);
       }
@@ -826,8 +836,8 @@ export default function DashboardGrid({
    * on one widget's remove button while a touch drag runs on another is not.
    */
   function removeItem(instanceId: string, def: WidgetDef) {
-    if (session.value !== null) return;
-    const before = items.value;
+    if (sessionRef.current !== null) return;
+    const before = itemsRef.current;
     const index = before.findIndex((i) => i.instanceId === instanceId);
     if (index === -1) return;
     // Before the layout write, and up to the caller rather than handled here:
@@ -842,13 +852,13 @@ export default function DashboardGrid({
     // announces its own placement, which tells the user where they now are but
     // never that something went. The two read together as "removed X" then
     // "you are on Y".
-    announcement.value = `Removed ${def.title}`;
+    setAnnouncement(`Removed ${def.title}`);
   }
 
   /** Moves a widget: the pointer's travel in cells applied to where it began. */
   function startDrag(
     instanceId: string,
-    event: TargetedPointerEvent<HTMLElement>,
+    event: ReactPointerEvent<HTMLElement>,
   ) {
     startSession("drag", instanceId, event, (start, origin) => {
       let last = origin;
@@ -859,7 +869,7 @@ export default function DashboardGrid({
         if (cell.x === last.x && cell.y === last.y) return;
         last = cell;
         const to = dragTarget(start, origin, cell);
-        setItems(moveItem(items.value, instanceId, to.x, to.y));
+        setItems(moveItem(itemsRef.current, instanceId, to.x, to.y));
       };
     });
   }
@@ -868,7 +878,7 @@ export default function DashboardGrid({
   function startResize(
     instanceId: string,
     def: WidgetDef,
-    event: TargetedPointerEvent<HTMLElement>,
+    event: ReactPointerEvent<HTMLElement>,
   ) {
     startSession("resize", instanceId, event, (_start, origin) => {
       let last = origin;
@@ -884,7 +894,7 @@ export default function DashboardGrid({
         // a constant here: a widget is the only thing that knows how small it
         // still renders.
         setItems(
-          resizeItemToCell(items.value, instanceId, cell, {
+          resizeItemToCell(itemsRef.current, instanceId, cell, {
             minW: def.minW,
             minH: def.minH,
           }),
@@ -905,7 +915,7 @@ export default function DashboardGrid({
   function handleItemKey(
     item: LayoutItem,
     def: WidgetDef,
-    event: TargetedKeyboardEvent<HTMLElement>,
+    event: ReactKeyboardEvent<HTMLElement>,
   ) {
     // Ctrl, Alt and Meta with an arrow belong to the browser and the window
     // manager -- back, forward, workspace switching. Shift is ours. Checked
@@ -925,7 +935,7 @@ export default function DashboardGrid({
     // handler from blurring the widget that still has focus. Neither call
     // stops propagation, so the session's own window listener still sees the
     // Escape it cancels on.
-    if (session.value !== null) {
+    if (sessionRef.current !== null) {
       if (KEY_STEPS[event.key] || event.key === "Escape") {
         event.preventDefault();
       }
@@ -946,19 +956,21 @@ export default function DashboardGrid({
 
     setItems(
       event.shiftKey
-        ? resizeItemBy(items.value, item.instanceId, step.dx, step.dy, {
+        ? resizeItemBy(itemsRef.current, item.instanceId, step.dx, step.dy, {
             minW: def.minW,
             minH: def.minH,
           })
-        : stepItem(items.value, item.instanceId, step.dx, step.dy),
+        : stepItem(itemsRef.current, item.instanceId, step.dx, step.dy),
     );
 
     // Read back rather than predicted: the engine clamps, and a step that hit
     // the grid edge or a declared minimum must not be announced as one that
     // landed. An unchanged position produces the same string as last time,
     // which a live region correctly says nothing about.
-    const moved = items.value.find((i) => i.instanceId === item.instanceId);
-    announcement.value = moved ? describePlacement(moved, def) : "";
+    const moved = itemsRef.current.find(
+      (i) => i.instanceId === item.instanceId,
+    );
+    setAnnouncement(moved ? describePlacement(moved, def) : "");
   }
 
   // Pairs each item with its definition and returns them in reading order --
@@ -969,10 +981,10 @@ export default function DashboardGrid({
   // The skip-and-recompact this also does has already happened, on the way into
   // `items` above, so here it is idempotent and the layout the sessions read is
   // the layout on screen.
-  const ordered = resolveRenderable(items.value, getWidget);
-  const active = session.value;
+  const ordered = resolveRenderable(items, getWidget);
+  const active = session;
 
-  const style: CSSProperties = narrow.value
+  const style: CSSProperties = narrow
     ? {
         display: "grid",
         gridTemplateColumns: "minmax(0, 1fr)",
@@ -993,7 +1005,7 @@ export default function DashboardGrid({
       <div
         ref={gridRef}
         data-testid="dashboard-grid"
-        data-grid-mode={narrow.value ? "narrow" : "wide"}
+        data-grid-mode={narrow ? "narrow" : "wide"}
         data-grid-editable={editable ? "true" : "false"}
         style={style}
       >
@@ -1002,13 +1014,13 @@ export default function DashboardGrid({
             key={item.instanceId}
             item={item}
             def={def}
-            narrow={narrow.value}
+            narrow={narrow}
             // One column has no columns to move between and no width to size,
             // and its order is the layout's own reading order rather than
             // anything a user placed -- so there is nothing to arrange there
             // by pointer or by key. Editing is a wide-grid surface; P3's
             // stored layout is what a narrow screen renders.
-            arrangeable={editable && !narrow.value}
+            arrangeable={editable && !narrow}
             // Not narrowed the way `arrangeable` is. Removing a widget is not
             // a spatial gesture, so the reason one column cannot be arranged
             // is not a reason it cannot be edited -- and gating both on the
@@ -1059,7 +1071,7 @@ export default function DashboardGrid({
           whiteSpace: "nowrap",
         }}
       >
-        {announcement.value}
+        {announcement}
       </div>
     </>
   );

@@ -1,7 +1,8 @@
+/** @jsxImportSource react */
 import { ResourceAreaChart } from "@/components/charts/ResourceAreaChart.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { DashboardTrends } from "@/lib/dashboard/wire-types.ts";
 
 /**
@@ -44,7 +45,7 @@ function LegendKey({ color, label }: { color: string; label: string }) {
  * is gone -- placement belongs to the grid, not the widget.
  */
 function ResourceUtilization() {
-  const t = dashboardData.state<DashboardTrends>("dashboard-trends").data;
+  const t = useSourceState<DashboardTrends>("dashboard-trends").data;
 
   return (
     <WidgetShell

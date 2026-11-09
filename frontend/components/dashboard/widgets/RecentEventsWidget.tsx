@@ -1,7 +1,8 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { asEventList, formatEventLabel } from "@/lib/dashboard/event-format.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import { age } from "@/lib/format.ts";
 import type { K8sEvent } from "@/lib/k8s-types.ts";
 
@@ -15,9 +16,7 @@ function RecentEvents() {
   // returning no body leaves `data` undefined rather than null, and the host's
   // gate only rejects null. Both it and formatEventLabel are unit-tested in
   // lib/dashboard/event-format_test.ts.
-  const events = asEventList(
-    dashboardData.state<K8sEvent[]>("recent-events").data,
-  );
+  const events = asEventList(useSourceState<K8sEvent[]>("recent-events").data);
 
   return (
     <WidgetShell
@@ -56,7 +55,7 @@ function RecentEvents() {
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="1.5"
+            strokeWidth="1.5"
             style={{ opacity: 0.4 }}
           >
             <circle cx="12" cy="12" r="10" />

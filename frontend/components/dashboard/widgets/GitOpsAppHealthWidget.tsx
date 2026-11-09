@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import {
   HealthStatusBadge,
   SyncStatusBadge,
@@ -5,7 +6,6 @@ import {
 } from "@/components/ui/GitOpsBadges.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 // The fold from two independent status fields to one bucket per application,
 // the severity ordering behind it and the per-tool tallies live in lib/, under
@@ -15,6 +15,7 @@ import {
   GITOPS_APPLICATIONS_PAGE_HREF,
   gitopsAppHealthView,
 } from "@/lib/dashboard/sync-state.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { HealthStatus, SyncStatus } from "@/lib/gitops-types.ts";
 
 /** How many applications the card lists. The counts above them cover every one
@@ -48,7 +49,7 @@ const ROW_LIMIT = 5;
  */
 function GitOpsAppHealth() {
   const view = gitopsAppHealthView(
-    dashboardData.state("gitops-applications").data,
+    useSourceState("gitops-applications").data,
     ROW_LIMIT,
   );
 
@@ -59,7 +60,7 @@ function GitOpsAppHealth() {
         view.readable && view.total > 0 ? (
           <span
             data-testid="gitops-app-health-summary"
-            class="text-xs"
+            className="text-xs"
             style={{
               color:
                 view.counts.degraded > 0
@@ -79,7 +80,7 @@ function GitOpsAppHealth() {
         // read. An empty list here would read as a fleet with nothing wrong.
         <p
           data-testid="gitops-app-health-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The GitOps endpoint returned a result this card cannot read.
         </p>
@@ -88,14 +89,14 @@ function GitOpsAppHealth() {
         // nothing you can see. Distinct from both "no GitOps" and "all synced".
         <p
           data-testid="gitops-app-health-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           GitOps is installed but no application you can see is managed yet.
         </p>
       ) : (
         <>
           <div
-            class="mb-2 flex flex-wrap gap-1.5"
+            className="mb-2 flex flex-wrap gap-1.5"
             data-testid="gitops-app-health-counts"
           >
             <SeverityCount
@@ -135,13 +136,13 @@ function GitOpsAppHealth() {
               exactly the one where "3 out of sync" is not actionable without
               knowing which tool to open. */}
           <div
-            class="mb-3 flex flex-wrap items-center gap-2"
+            className="mb-3 flex flex-wrap items-center gap-2"
             data-testid="gitops-app-health-tools"
           >
             {view.tools.map((t) => (
-              <span key={t.tool} class="flex items-center gap-1">
+              <span key={t.tool} className="flex items-center gap-1">
                 <ToolBadge tool={t.tool} />
-                <span class="text-[11px] text-text-muted">{t.total}</span>
+                <span className="text-[11px] text-text-muted">{t.total}</span>
               </span>
             ))}
           </div>
@@ -149,13 +150,13 @@ function GitOpsAppHealth() {
           {view.attention === 0 ? (
             <p
               data-testid="gitops-app-health-clear"
-              class="py-2 text-center text-xs text-text-muted"
+              className="py-2 text-center text-xs text-text-muted"
             >
               Every application you can see is synced and healthy.
             </p>
           ) : (
             <ul
-              class="flex flex-col gap-2"
+              className="flex flex-col gap-2"
               data-testid="gitops-app-health-list"
             >
               {view.rows.map((row) => (
@@ -167,7 +168,7 @@ function GitOpsAppHealth() {
           {view.attention > view.rows.length && (
             <p
               data-testid="gitops-app-health-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing the {view.rows.length} worst of {view.attention} needing
               attention.
@@ -179,7 +180,7 @@ function GitOpsAppHealth() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="gitops-app-health-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no application this
@@ -190,7 +191,7 @@ function GitOpsAppHealth() {
 
       <a
         href={GITOPS_APPLICATIONS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all applications →
       </a>
@@ -209,23 +210,23 @@ function GitOpsAppHealth() {
  */
 function ApplicationItem({ row }: { row: AppHealthRow }) {
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <a
           href={row.href}
           title={`${row.namespace}/${row.name}`}
-          class="min-w-0 truncate text-xs text-text-secondary no-underline hover:text-accent"
+          className="min-w-0 truncate text-xs text-text-secondary no-underline hover:text-accent"
         >
           {row.name}
         </a>
-        <span class="flex shrink-0 items-center gap-1">
+        <span className="flex shrink-0 items-center gap-1">
           {row.bucket === "degraded" && (
             <HealthStatusBadge status={row.healthStatus as HealthStatus} />
           )}
           <SyncStatusBadge status={row.syncStatus as SyncStatus} />
         </span>
       </span>
-      <span class="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
+      <span className="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
         <ToolBadge tool={row.tool} />
         {row.namespace}
         {row.message === "" ? "" : ` · ${row.message}`}

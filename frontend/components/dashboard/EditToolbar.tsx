@@ -1,4 +1,5 @@
-import type { Ref } from "preact";
+/** @jsxImportSource react */
+import type { Ref } from "react";
 
 /**
  * The dashboard's edit controls: one button to enter edit mode, the ways to
@@ -153,7 +154,7 @@ export default function EditToolbar({
         disabled={disabled}
         title={disabledReason}
         onClick={onEdit}
-        class={BUTTON_SECONDARY}
+        className={BUTTON_SECONDARY}
       >
         Edit layout
       </button>
@@ -173,7 +174,7 @@ export default function EditToolbar({
       // Wraps for the same reason the row that holds it does: five buttons is
       // more than a narrow dashboard header has room for on one line, and a
       // group that cannot wrap pushes whatever sits beside it off the page.
-      class="flex flex-wrap items-center justify-end gap-2"
+      className="flex flex-wrap items-center justify-end gap-2"
     >
       <button
         ref={addButtonRef}
@@ -188,7 +189,7 @@ export default function EditToolbar({
         aria-haspopup="dialog"
         aria-expanded={paletteOpen}
         onClick={onAddWidget}
-        class={BUTTON_SECONDARY}
+        className={BUTTON_SECONDARY}
       >
         Add widget
       </button>
@@ -204,7 +205,7 @@ export default function EditToolbar({
           aria-haspopup="dialog"
           aria-expanded={copyOpen}
           onClick={onCopyFromCluster}
-          class={BUTTON_SECONDARY}
+          className={BUTTON_SECONDARY}
         >
           Copy from cluster
         </button>
@@ -219,7 +220,7 @@ export default function EditToolbar({
         // wants undone is exactly the case where nothing has been touched yet.
         disabled={saving}
         onClick={onReset}
-        class={BUTTON_SECONDARY}
+        className={BUTTON_SECONDARY}
       >
         Reset
       </button>
@@ -231,7 +232,7 @@ export default function EditToolbar({
         // would restore the layout underneath a write that still lands.
         disabled={saving}
         onClick={onCancel}
-        class={BUTTON_SECONDARY}
+        className={BUTTON_SECONDARY}
       >
         Cancel
       </button>
@@ -250,7 +251,7 @@ export default function EditToolbar({
               : undefined
         }
         onClick={onSave}
-        class={`${BUTTON_BASE} cursor-pointer border border-transparent bg-accent`}
+        className={`${BUTTON_BASE} cursor-pointer border border-transparent bg-accent`}
         // The one inline declaration left, and the same exception
         // ConfirmDialog.tsx already makes for this exact colour: the theme
         // token is `--color-base`, whose utility would be `text-base` -- which

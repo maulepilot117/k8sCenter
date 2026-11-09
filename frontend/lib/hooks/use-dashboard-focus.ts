@@ -1,6 +1,10 @@
-import { useSignal } from "@preact/signals";
-import type { RefObject } from "preact";
-import { useLayoutEffect, useRef } from "preact/hooks";
+import {
+  type RefObject,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 /**
@@ -148,16 +152,11 @@ export interface DashboardFocus {
 /**
  * Owns the dashboard editor's focus choreography.
  *
- * `editing` and `gridEpoch` are the two things the effects key on, and both
- * belong to the island: edit mode is the island's session, and the epoch is
- * the counter that re-mounts its grid. They are passed in rather than derived
- * so this hook stays the mover of focus and not a second owner of the editor's
- * state.
+ * `editing` is the one thing the effects key on that the island owns: edit
+ * mode is the island's session. It is passed in rather than derived so this
+ * hook stays the mover of focus and not a second owner of the editor's state.
  */
-export function useDashboardFocus(
-  editing: boolean,
-  gridEpoch: number,
-): DashboardFocus {
+export function useDashboardFocus(editing: boolean): DashboardFocus {
   const editButton = useRef<HTMLButtonElement | null>(null);
   const cancelButton = useRef<HTMLButtonElement | null>(null);
   const addButton = useRef<HTMLButtonElement | null>(null);
@@ -176,8 +175,14 @@ export function useDashboardFocus(
    * that asked for it. The insertion effect picks this up on the render that
    * does have it and moves focus there -- which is also what scrolls it into
    * view, and what makes the grid announce where it landed.
+   *
+   * State, and a fresh object per insertion, so the effect runs once per
+   * insertion even for the same widget, and in the same batched render as the
+   * re-mount the caller makes in the same gesture.
    */
-  const insertPending = useRef<string | null>(null);
+  const [insertion, setInsertion] = useState<{ instanceId: string } | null>(
+    null,
+  );
   /**
    * The reading-order position a removal just vacated, until the render
    * without that widget has happened.
@@ -186,30 +191,21 @@ export function useDashboardFocus(
    * and the browser's answer to that is the body -- the top of the page. Where
    * focus should go instead is not knowable until the layout has re-compacted,
    * so the position is recorded here and spent by the effect below.
-   */
-  const removalPending = useRef<number | null>(null);
-  /**
-   * Counts removals, and exists only to be that effect's dependency.
    *
-   * The effect cannot key on the layout: that changes on every cell a drag
-   * crosses, so a pre-paint effect for a once-per-removal job would be
-   * scheduled and run on every frame of every gesture. Nor can it key on
-   * `removalPending` itself -- removing the first widget and then the widget
-   * that took its place records index 0 twice, and a dependency that did not
-   * change is an effect that does not run.
-   *
-   * A signal rather than a ref for the same reason `focusOnInsert` leans on
-   * `gridEpoch`: an effect needs a value that differs between renders, and a
-   * ref never does.
+   * State rather than a ref, and a fresh object per removal: the effect cannot
+   * key on the layout, which changes on every cell a drag crosses, so a
+   * pre-paint effect for a once-per-removal job would be scheduled and run on
+   * every frame of every gesture. Removing the first widget and then the
+   * widget that took its place records index 0 twice, and an index alone would
+   * be a dependency that did not change -- an effect that does not run.
    */
-  const removals = useSignal(0);
+  const [removal, setRemoval] = useState<{ vacated: number } | null>(null);
 
   // After the render that changed edit mode, not during the key press that
   // asked for it. Focusing first leaves the browser about to run its own focus
   // fix-up on the widget it is removing from the tab order, and that lands on
   // the document rather than on the button we just moved to.
   useLayoutEffect(() => {
-    if (!IS_BROWSER) return;
     if (editing) {
       if (!toolbarPending.current) return;
       toolbarPending.current = false;
@@ -233,10 +229,8 @@ export function useDashboardFocus(
   // focus falls back to the Add widget button in that mode; the explicit
   // scroll below still carries the visibility half of the promise either way.
   useLayoutEffect(() => {
-    if (!IS_BROWSER) return;
-    const instanceId = insertPending.current;
-    if (instanceId === null) return;
-    insertPending.current = null;
+    if (insertion === null) return;
+    const { instanceId } = insertion;
     const el = document.querySelector<HTMLElement>(
       `[data-instance-id="${instanceId}"]`,
     );
@@ -297,7 +291,7 @@ export function useDashboardFocus(
     return () => {
       cancelled = true;
     };
-  }, [gridEpoch]);
+  }, [insertion]);
 
   // Puts the keyboard back after a removal took it off the grid.
   //
@@ -308,18 +302,16 @@ export function useDashboardFocus(
   // the half it does not own -- which is exactly the empty-grid case below.
   //
   // Running it from the island rather than from the grid also fixes the
-  // ordering for free. Preact flushes a child's layout effects before its
-  // parent's, so by the time this runs the grid has already patched in the
+  // ordering for free. A child's layout effects run before its parent's,
+  // so by the time this runs the grid has already patched in the
   // re-compacted cells; the version inside the grid had to reason about that
   // sequencing itself.
   //
   // A layout effect, so focus lands before the browser paints and the page
   // never shows a frame with nothing focused.
   useLayoutEffect(() => {
-    if (!IS_BROWSER) return;
-    const vacated = removalPending.current;
-    if (vacated === null) return;
-    removalPending.current = null;
+    if (removal === null) return;
+    const { vacated } = removal;
     const cells = document.querySelectorAll<HTMLElement>("[data-instance-id]");
     if (cells.length === 0) {
       // Nothing left to focus, so the keyboard goes to the toolbar. "Add
@@ -336,7 +328,7 @@ export function useDashboardFocus(
     // Position, not identity: what the user wants next is whatever moved up
     // into the gap. The last cell when the widget that went was the last one.
     (cells[vacated] ?? cells[cells.length - 1]).focus();
-  }, [removals.value]);
+  }, [removal]);
 
   // A keyboard move can reorder the same grid cell in the DOM, which blurs
   // it even though the widget still exists. Capture before the child patch;
@@ -360,47 +352,49 @@ export function useDashboardFocus(
     }
   });
 
-  return {
-    editButton,
-    cancelButton,
-    addButton,
-    copyButton,
-    resetButton,
-    armToolbarFocus() {
-      toolbarPending.current = true;
-    },
-    armReturnToEdit() {
-      returnPending.current = true;
-    },
-    focusOnInsert(instanceId: string) {
-      insertPending.current = instanceId;
-    },
-    focusAfterRemoval(vacatedIndex: number) {
-      removalPending.current = vacatedIndex;
-      // Before the caller's layout write, so both land in one render: Preact
-      // batches signal writes made in the same turn, and the effect that
-      // spends this counter then runs against the DOM the new layout made.
-      removals.value += 1;
-    },
-    focusAddButton() {
-      addButton.current?.focus();
-    },
-    focusCopyButton() {
-      copyButton.current?.focus();
-    },
-    focusPlacement(instanceId: string) {
-      const el = document.querySelector<HTMLElement>(
-        `[data-instance-id="${instanceId}"]`,
-      );
-      el?.focus();
-      // Below the narrow breakpoint a cell is not a tab stop at all, and the
-      // widget may also simply be gone -- removed from another gesture while
-      // the dialog was open. Same fallback `focusOnInsert` uses, for the same
-      // reason: "Add widget" is mounted for the whole session.
-      if (document.activeElement !== el) addButton.current?.focus();
-    },
-    focusResetButton() {
-      resetButton.current?.focus();
-    },
-  };
+  // Stable for the component's lifetime: every method reads a ref or sets
+  // state, so the island can hand them to long-lived children and list the
+  // object as a dependency without re-firing an effect.
+  return useMemo<DashboardFocus>(
+    () => ({
+      editButton,
+      cancelButton,
+      addButton,
+      copyButton,
+      resetButton,
+      armToolbarFocus() {
+        toolbarPending.current = true;
+      },
+      armReturnToEdit() {
+        returnPending.current = true;
+      },
+      focusOnInsert(instanceId: string) {
+        setInsertion({ instanceId });
+      },
+      focusAfterRemoval(vacatedIndex: number) {
+        setRemoval({ vacated: vacatedIndex });
+      },
+      focusAddButton() {
+        addButton.current?.focus();
+      },
+      focusCopyButton() {
+        copyButton.current?.focus();
+      },
+      focusPlacement(instanceId: string) {
+        const el = document.querySelector<HTMLElement>(
+          `[data-instance-id="${instanceId}"]`,
+        );
+        el?.focus();
+        // Below the narrow breakpoint a cell is not a tab stop at all, and the
+        // widget may also simply be gone -- removed from another gesture while
+        // the dialog was open. Same fallback `focusOnInsert` uses, for the same
+        // reason: "Add widget" is mounted for the whole session.
+        if (document.activeElement !== el) addButton.current?.focus();
+      },
+      focusResetButton() {
+        resetButton.current?.focus();
+      },
+    }),
+    [],
+  );
 }

@@ -1,4 +1,5 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 import { useModalDialogKeys } from "@/lib/hooks/use-modal-dialog-keys.ts";
 
 /**
@@ -44,7 +45,7 @@ export interface ModalDialogShellProps {
    */
   onClose: () => void;
   /** The dialog's body, below the header. */
-  children: ComponentChildren;
+  children: ReactNode;
 }
 
 export default function ModalDialogShell({
@@ -61,7 +62,7 @@ export default function ModalDialogShell({
     // The scrim's click is the pointer-only way out; every keyboard path out
     // is handled by the key handler on the panel below.
     <div
-      class="glass-scrim fixed inset-0 z-50 flex items-start justify-center px-4 pt-[min(15vh,96px)]"
+      className="glass-scrim fixed inset-0 z-50 flex items-start justify-center px-4 pt-[min(15vh,96px)]"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -72,18 +73,18 @@ export default function ModalDialogShell({
         aria-modal="true"
         aria-labelledby={titleId}
         data-testid={testId}
-        class="glass-elevated flex max-h-[70vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl"
+        className="glass-elevated flex max-h-[70vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl"
         onKeyDown={onKeyDown}
       >
-        <div class="flex items-center justify-between gap-3 border-b border-border-subtle px-4 py-3">
-          <h2 id={titleId} class="text-sm font-semibold text-text-primary">
+        <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-4 py-3">
+          <h2 id={titleId} className="text-sm font-semibold text-text-primary">
             {title}
           </h2>
           <button
             type="button"
             data-testid={closeTestId}
             onClick={onClose}
-            class="rounded-lg px-2 py-1 text-xs font-medium text-text-muted hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+            className="rounded-lg px-2 py-1 text-xs font-medium text-text-muted hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             Close
           </button>

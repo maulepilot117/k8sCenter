@@ -1,7 +1,8 @@
+/** @jsxImportSource react */
 import { MetricTile } from "@/components/ui/MetricTile.tsx";
 import { withheldReason } from "@/lib/dashboard/coverage.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type {
   DashboardSummary,
   DashboardTrends,
@@ -13,8 +14,8 @@ import { lastDelta } from "@/lib/format.ts";
  * source field, series and spark colour differ.
  */
 function MemoryTile() {
-  const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
-  const t = dashboardData.state<DashboardTrends>("dashboard-trends").data;
+  const s = useSourceState<DashboardSummary>("dashboard-summary").data;
+  const t = useSourceState<DashboardTrends>("dashboard-trends").data;
   const withheld = withheldReason(s, "memory");
   const pct = Math.round(s?.memory?.percentage ?? 0);
 

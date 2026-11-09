@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The ceiling rule, the metric pairing and the unknown/at-ceiling/saturated
 // distinction all live in lib/, under test, because none of them is a field
@@ -9,8 +10,8 @@ import {
   hpaHref,
   hpaStatusView,
 } from "@/lib/dashboard/autoscaling.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { ResourceListPage } from "@/lib/dashboard/wire-types.ts";
 
 /** How many rows the card lists. The header counts cover the whole page. */
@@ -54,7 +55,7 @@ const STATE_BADGE: Readonly<Record<HPAState, string>> = {
  * still render the two a caller CAN see.
  */
 function Autoscalers() {
-  const page = dashboardData.state<ResourceListPage>("hpas-list").data;
+  const page = useSourceState<ResourceListPage>("hpas-list").data;
   const view = hpaStatusView(page, ROW_LIMIT);
 
   return (
@@ -64,7 +65,7 @@ function Autoscalers() {
         view.saturated > 0 ? (
           <span
             data-testid="hpa-status-summary"
-            class="text-xs"
+            className="text-xs"
             style={{ color: "var(--error)" }}
           >
             {view.saturated} out of room
@@ -72,7 +73,7 @@ function Autoscalers() {
         ) : view.atCeiling > 0 ? (
           <span
             data-testid="hpa-status-summary"
-            class="text-xs text-text-muted"
+            className="text-xs text-text-muted"
           >
             {view.atCeiling} at max
           </span>
@@ -86,19 +87,19 @@ function Autoscalers() {
         // unanswered read is the failure this release exists to prevent.
         <p
           data-testid="hpa-status-unreadable-page"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The autoscaler roll-up returned a result this card cannot read.
         </p>
       ) : view.hpas.length === 0 ? (
         <p
           data-testid="hpa-status-empty"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           No HorizontalPodAutoscalers on this cluster.
         </p>
       ) : (
-        <ul class="flex flex-col gap-1.5" data-testid="hpa-status-list">
+        <ul className="flex flex-col gap-1.5" data-testid="hpa-status-list">
           {view.hpas.map((h) => (
             <HPARow key={`${h.namespace}/${h.name}`} hpa={h} />
           ))}
@@ -108,7 +109,7 @@ function Autoscalers() {
       {view.unknown > 0 && (
         <p
           data-testid="hpa-status-unknown"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unknown} autoscaler{view.unknown === 1 ? "" : "s"} could not be
           read, so {view.unknown === 1 ? "it is" : "they are"} left out of the
@@ -119,7 +120,7 @@ function Autoscalers() {
       {view.truncated && (
         <p
           data-testid="hpa-status-truncated"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           Ranked across the first {view.counted} of {view.total} autoscalers.
         </p>
@@ -127,7 +128,7 @@ function Autoscalers() {
 
       <a
         href={HPA_LIST_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all autoscalers →
       </a>
@@ -153,11 +154,11 @@ function HPARow({ hpa }: { hpa: HPAStatus }) {
         : `${hpa.current}/${hpa.max}`;
 
   return (
-    <li class="flex items-center justify-between gap-2 text-xs">
-      <span class="flex min-w-0 items-center gap-2">
+    <li className="flex items-center justify-between gap-2 text-xs">
+      <span className="flex min-w-0 items-center gap-2">
         <span
           aria-hidden="true"
-          class="size-2 shrink-0 rounded-full"
+          className="size-2 shrink-0 rounded-full"
           style={{ background: STATE_COLOR[hpa.state] }}
         />
         <a
@@ -169,13 +170,13 @@ function HPARow({ hpa }: { hpa: HPAStatus }) {
               ? ""
               : ` (${hpa.min}–${hpa.max} replicas)`,
           ].join("")}
-          class="truncate text-text-secondary no-underline hover:text-accent"
+          className="truncate text-text-secondary no-underline hover:text-accent"
         >
           {hpa.name}
         </a>
         {badge !== "" && (
           <span
-            class="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
             style={{
               background:
                 hpa.state === "saturated"
@@ -188,9 +189,9 @@ function HPARow({ hpa }: { hpa: HPAStatus }) {
           </span>
         )}
       </span>
-      <span class="flex shrink-0 items-baseline gap-2 font-mono">
+      <span className="flex shrink-0 items-baseline gap-2 font-mono">
         <span
-          class="text-[11px]"
+          className="text-[11px]"
           style={{
             color:
               hpa.utilization === null
@@ -207,7 +208,10 @@ function HPARow({ hpa }: { hpa: HPAStatus }) {
             ? "—"
             : `${Math.round(hpa.utilization)}%/${hpa.targetUtilization}%`}
         </span>
-        <span class="font-semibold" style={{ color: STATE_COLOR[hpa.state] }}>
+        <span
+          className="font-semibold"
+          style={{ color: STATE_COLOR[hpa.state] }}
+        >
           {replicas}
         </span>
       </span>

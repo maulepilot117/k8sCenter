@@ -1,9 +1,9 @@
+/** @jsxImportSource react */
 import {
   SeverityDot,
   SourceBadge,
 } from "@/components/ui/NotifCenterBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The severity roll-up, the page-coverage arithmetic and the unreadable-row
 // accounting live in lib/, under test (D-10, KTD8). Do not inline them.
 import type { NotificationRow } from "@/lib/dashboard/platform.ts";
@@ -13,6 +13,7 @@ import {
 } from "@/lib/dashboard/platform.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { NotifSeverity, NotifSource } from "@/lib/notif-center-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 
@@ -37,7 +38,7 @@ const ROW_LIMIT = 5;
  */
 function NotificationsFeed({ mode }: WidgetProps) {
   const view = notificationsFeedView(
-    dashboardData.state("unread-notifications").data,
+    useSourceState("unread-notifications").data,
     ROW_LIMIT,
   );
 
@@ -49,10 +50,10 @@ function NotificationsFeed({ mode }: WidgetProps) {
       <WidgetShell title="Unread">
         <div
           data-testid="notifications-feed-compact"
-          class="flex h-full flex-col items-center justify-center gap-1"
+          className="flex h-full flex-col items-center justify-center gap-1"
         >
           <span
-            class="text-3xl font-semibold leading-none"
+            className="text-3xl font-semibold leading-none"
             style={{
               color:
                 view.counts.critical > 0
@@ -64,7 +65,7 @@ function NotificationsFeed({ mode }: WidgetProps) {
           >
             {view.readable ? view.unread : "—"}
           </span>
-          <span class="text-[11px] text-text-muted">
+          <span className="text-[11px] text-text-muted">
             {view.readable ? "unread" : "unreadable"}
           </span>
         </div>
@@ -79,7 +80,7 @@ function NotificationsFeed({ mode }: WidgetProps) {
         view.readable && view.unread > 0 ? (
           <span
             data-testid="notifications-feed-summary"
-            class="text-xs"
+            className="text-xs"
             style={{
               color:
                 view.counts.critical > 0 ? "var(--error)" : "var(--text-muted)",
@@ -95,20 +96,23 @@ function NotificationsFeed({ mode }: WidgetProps) {
         // list here would read as an account with nothing waiting.
         <p
           data-testid="notifications-feed-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The notifications endpoint returned a result this card cannot read.
         </p>
       ) : view.rows.length === 0 ? (
         <p
           data-testid="notifications-feed-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           Nothing unread.
         </p>
       ) : (
         <>
-          <ul class="flex flex-col gap-2" data-testid="notifications-feed-list">
+          <ul
+            className="flex flex-col gap-2"
+            data-testid="notifications-feed-list"
+          >
             {view.rows.map((row) => (
               <NotificationItem key={row.id} row={row} />
             ))}
@@ -117,7 +121,7 @@ function NotificationsFeed({ mode }: WidgetProps) {
           {view.truncated && (
             <p
               data-testid="notifications-feed-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing {view.rows.length} of {view.unread} unread.
             </p>
@@ -128,7 +132,7 @@ function NotificationsFeed({ mode }: WidgetProps) {
       {view.unreadableRows > 0 && (
         <p
           data-testid="notifications-feed-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} carried no title this card
@@ -139,7 +143,7 @@ function NotificationsFeed({ mode }: WidgetProps) {
 
       <a
         href={NOTIFICATIONS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all notifications →
       </a>
@@ -159,21 +163,21 @@ function NotificationsFeed({ mode }: WidgetProps) {
  */
 function NotificationItem({ row }: { row: NotificationRow }) {
   return (
-    <li class="flex items-start gap-2">
-      <span class="mt-1 shrink-0">
+    <li className="flex items-start gap-2">
+      <span className="mt-1 shrink-0">
         {/* The three known severities render their dot; anything else falls
             back to "info" so an unrecognised value is quiet rather than loud.
             The roll-up above has already counted it apart. */}
         <SeverityDot severity={severityOrInfo(row.severity)} />
       </span>
-      <span class="min-w-0 flex-1">
+      <span className="min-w-0 flex-1">
         <span
-          class="block truncate text-xs text-text-secondary"
+          className="block truncate text-xs text-text-secondary"
           title={row.title}
         >
           {row.title}
         </span>
-        <span class="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-muted">
+        <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-muted">
           {row.source !== "" && (
             <SourceBadge source={row.source as NotifSource} />
           )}

@@ -1,6 +1,12 @@
-import { useSignal } from "@preact/signals";
-import type { VNode } from "preact";
-import { useContext, useLayoutEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  memo,
+  type ReactElement,
+  useContext,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";
@@ -11,13 +17,15 @@ import {
   WIDGET_SECTIONS,
   widgetCoverage,
 } from "@/lib/dashboard/coverage.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
+import { dashboardData, type SourceState } from "@/lib/dashboard/data.ts";
 import { pickMode } from "@/lib/dashboard/display-mode.ts";
+import { sourceKeyFor } from "@/lib/dashboard/params.ts";
 import type { WidgetDef } from "@/lib/dashboard/types.ts";
+import { useSourceStates } from "@/lib/dashboard/use-source-state.ts";
 // Which of the seven outcomes this box shows is a pure decision with unit
 // tests, because this repo has no component test harness (D-10). Do not move
 // it back inline.
-import { resolveWidgetState } from "@/lib/dashboard/widget-state.ts";
+import { resolveWidgetState, sourcesOf } from "@/lib/dashboard/widget-state.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 /**
@@ -36,12 +44,12 @@ function StateCard({
   testId: string;
   heading: string;
   detail: string;
-  icon: VNode;
+  icon: ReactElement;
 }) {
   return (
     <div
       data-testid={testId}
-      class="flex h-full flex-col items-center justify-center gap-1.5 p-4 text-center text-text-muted"
+      className="flex h-full flex-col items-center justify-center gap-1.5 p-4 text-center text-text-muted"
     >
       <svg
         width="20"
@@ -49,15 +57,15 @@ function StateCard({
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
         aria-hidden="true"
       >
         {icon}
       </svg>
-      <span class="text-xs font-medium">{heading}</span>
-      <span class="text-[11px] leading-[1.4] opacity-80">{detail}</span>
+      <span className="text-xs font-medium">{heading}</span>
+      <span className="text-[11px] leading-[1.4] opacity-80">{detail}</span>
     </div>
   );
 }
@@ -73,6 +81,8 @@ const LOCK_ICON = (
     <path d="M7 11V7a5 5 0 0 1 10 0v4" />
   </>
 );
+
+const NO_PARAMS: Record<string, string> = {};
 
 interface WidgetHostProps {
   def: WidgetDef;
@@ -101,10 +111,10 @@ interface WidgetHostProps {
  * Deliberately thin. Everything here that could be wrong lives in pickMode and
  * resolveWidgetState, both pure functions with unit tests.
  */
-export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
+function WidgetHost({ def, params = NO_PARAMS }: WidgetHostProps) {
   const box = useRef<HTMLDivElement | null>(null);
-  const width = useSignal(0);
-  const height = useSignal(0);
+  const [width, setWidth] = useState(0);
+  const [height, setHeight] = useState(0);
 
   // Layout, not plain, effect: useEffect runs after the browser paints, so the
   // widget would paint once at 0x0 (that is, "compact") and then flip to its
@@ -121,8 +131,8 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
     // typed as the platform's handle rather than a number.
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     const measure = () => {
-      width.value = el.clientWidth;
-      height.value = el.clientHeight;
+      setWidth(el.clientWidth);
+      setHeight(el.clientHeight);
     };
     const ro = new ResizeObserver(() => {
       clearTimeout(resizeTimer);
@@ -153,11 +163,19 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
   // cached under keys that carry them -- resolving against the bare source
   // name would read a key nothing ever fetched, and the card would sit in the
   // skeleton rather than failing visibly.
-  const resolved = resolveWidgetState(
-    def,
-    (k) => dashboardData.state(k),
-    params,
-  );
+  // Every key the decision reads is subscribed here, because a read of
+  // `dashboardData.state` in render would show the first value and never
+  // update. The summary is in the set only for the widgets that headline one
+  // of its sections.
+  const headlinesSection = WIDGET_SECTIONS[def.id] !== undefined;
+  const keys = [
+    ...sourcesOf(def).map((k) => sourceKeyFor(k, params)),
+    ...(headlinesSection ? ["dashboard-summary"] : []),
+  ];
+  const states = useSourceStates(keys);
+  const stateOf = (k: string): SourceState =>
+    states.get(k) ?? dashboardData.signalFor(k).peek();
+  const resolved = resolveWidgetState(def, stateOf, params);
 
   // Coverage (Release C, AE3), asked only once the summary has landed and only
   // by the widgets that headline one of its sections -- everything else never
@@ -167,16 +185,16 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
   // `render`, for the same reason an absent feature is. A local summary has no
   // rows and `coverage` stays null, which renders exactly as before.
   const coverage =
-    resolved.state === "ready" && WIDGET_SECTIONS[def.id] !== undefined
+    resolved.state === "ready" && headlinesSection
       ? widgetCoverage(
           def.id,
-          dashboardData.state<CoveredSummary>("dashboard-summary").data,
+          (stateOf("dashboard-summary") as SourceState<CoveredSummary>).data,
         )
       : null;
   const tone = sectionTone(coverage);
   const withheld = !isRenderable(tone);
 
-  const mode = pickMode(def.modes, width.value, height.value);
+  const mode = pickMode(def.modes, width, height);
   // In a grid cell the stale notice takes its natural height and the widget
   // takes the rest, so a card that fills its space still fits the cell.
   const fill = useContext(CellFillContext);
@@ -363,3 +381,8 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
     </div>
   );
 }
+
+// Memoized: the grid re-renders every cell on each step of a drag, and a card
+// whose widget and params are unchanged has nothing new to draw. A widget's
+// own data and store reads re-render it through their subscriptions.
+export default memo(WidgetHost);

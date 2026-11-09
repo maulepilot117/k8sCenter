@@ -1,5 +1,5 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The readable/empty distinction, the kind-to-page routing and the
 // unreadable-row accounting live in lib/, under test (D-10, KTD8).
 import type { SavedViewRow } from "@/lib/dashboard/platform.ts";
@@ -8,6 +8,7 @@ import {
   savedViewsView,
 } from "@/lib/dashboard/platform.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /** How many views the card lists. The count beside them covers every view the
  * route returned. */
@@ -35,7 +36,7 @@ const ROW_LIMIT = 6;
  */
 function SavedViews() {
   const view = savedViewsView(
-    dashboardData.state("preference-views").data,
+    useSourceState("preference-views").data,
     ROW_LIMIT,
   );
 
@@ -46,7 +47,7 @@ function SavedViews() {
         view.readable && view.total > 0 ? (
           <span
             data-testid="saved-views-summary"
-            class="text-xs text-text-muted"
+            className="text-xs text-text-muted"
           >
             {view.total} saved
           </span>
@@ -56,7 +57,7 @@ function SavedViews() {
       {!view.readable ? (
         <p
           data-testid="saved-views-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The preferences endpoint returned a result this card cannot read.
         </p>
@@ -66,19 +67,21 @@ function SavedViews() {
         // from the table it describes.
         <div
           data-testid="saved-views-none"
-          class="flex flex-col items-center gap-1.5 py-4 text-center"
+          className="flex flex-col items-center gap-1.5 py-4 text-center"
         >
-          <p class="text-xs text-text-muted">You have not saved a view yet.</p>
+          <p className="text-xs text-text-muted">
+            You have not saved a view yet.
+          </p>
           <a
             href={PREFERENCES_START_HREF}
-            class="text-xs text-accent no-underline"
+            className="text-xs text-accent no-underline"
           >
             Open a resource list and save one →
           </a>
         </div>
       ) : (
         <>
-          <ul class="flex flex-col gap-1.5" data-testid="saved-views-list">
+          <ul className="flex flex-col gap-1.5" data-testid="saved-views-list">
             {view.rows.map((row) => (
               <SavedViewItem key={row.id} row={row} />
             ))}
@@ -87,7 +90,7 @@ function SavedViews() {
           {view.total > view.rows.length && (
             <p
               data-testid="saved-views-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing {view.rows.length} of {view.total}.
             </p>
@@ -98,7 +101,7 @@ function SavedViews() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="saved-views-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} record
           {view.unreadableRows === 1 ? "" : "s"} carried no name this card could
@@ -124,12 +127,12 @@ function SavedViewItem({ row }: { row: SavedViewRow }) {
   const label = (
     <>
       <span
-        class="min-w-0 truncate text-xs text-text-secondary"
+        className="min-w-0 truncate text-xs text-text-secondary"
         title={row.name}
       >
         {row.name}
       </span>
-      <span class="shrink-0 font-mono text-[10px] text-text-muted">
+      <span className="shrink-0 font-mono text-[10px] text-text-muted">
         {row.kind === "" ? "unknown kind" : row.kind}
         {row.namespace === "" ? "" : ` · ${row.namespace}`}
       </span>
@@ -137,13 +140,13 @@ function SavedViewItem({ row }: { row: SavedViewRow }) {
   );
 
   return (
-    <li class="flex items-center justify-between gap-2">
+    <li className="flex items-center justify-between gap-2">
       {row.href === null ? (
         label
       ) : (
         <a
           href={row.href}
-          class="flex min-w-0 flex-1 items-center justify-between gap-2 no-underline"
+          className="flex min-w-0 flex-1 items-center justify-between gap-2 no-underline"
         >
           {label}
         </a>

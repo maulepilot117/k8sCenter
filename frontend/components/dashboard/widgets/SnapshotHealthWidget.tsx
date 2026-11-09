@@ -1,7 +1,7 @@
+/** @jsxImportSource react */
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The outcome ranking, the error-over-ready precedence and the unreadable-row
 // accounting live in lib/, under test, because none of them is a field read
 // (D-10, KTD8). Do not inline them.
@@ -11,6 +11,7 @@ import {
   snapshotHealthView,
 } from "@/lib/dashboard/expiry.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 
 /** How many snapshots the card lists. The counts above them cover every
  * snapshot the endpoint returned, not just these. */
@@ -51,7 +52,7 @@ const WORST_COLORS: Record<string, string> = {
  */
 function SnapshotHealth() {
   const view = snapshotHealthView(
-    dashboardData.state("snapshots-list").data,
+    useSourceState("snapshots-list").data,
     ROW_LIMIT,
   );
   const attention = view.counts.error + view.counts.pending;
@@ -63,7 +64,7 @@ function SnapshotHealth() {
         view.readable && view.worst !== null ? (
           <span
             data-testid="snapshot-health-summary"
-            class="text-xs"
+            className="text-xs"
             style={{ color: WORST_COLORS[view.worst] ?? "var(--text-muted)" }}
           >
             {view.total} snapshot{view.total === 1 ? "" : "s"}
@@ -76,7 +77,7 @@ function SnapshotHealth() {
         // An empty list here would read as a cluster with nothing broken.
         <p
           data-testid="snapshot-health-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The snapshots endpoint returned a result this card cannot read.
         </p>
@@ -85,14 +86,14 @@ function SnapshotHealth() {
         // nothing has been snapshotted. Not an absence, and not good news.
         <p
           data-testid="snapshot-health-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           Volume snapshots are supported here but none you can see exists.
         </p>
       ) : (
         <>
           <div
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
             data-testid="snapshot-health-counts"
           >
             <SeverityCount
@@ -115,13 +116,16 @@ function SnapshotHealth() {
           {attention === 0 ? (
             <p
               data-testid="snapshot-health-clear"
-              class="py-2 text-center text-xs text-text-muted"
+              className="py-2 text-center text-xs text-text-muted"
             >
               All {view.total} snapshot{view.total === 1 ? " is" : "s are"}{" "}
               ready to restore from.
             </p>
           ) : (
-            <ul class="flex flex-col gap-2" data-testid="snapshot-health-list">
+            <ul
+              className="flex flex-col gap-2"
+              data-testid="snapshot-health-list"
+            >
               {view.rows.map((row) => (
                 <SnapshotItem key={`${row.namespace}/${row.name}`} row={row} />
               ))}
@@ -131,7 +135,7 @@ function SnapshotHealth() {
           {attention > view.rows.length && (
             <p
               data-testid="snapshot-health-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing the {view.rows.length} worst of {attention} that are not
               ready.
@@ -143,7 +147,7 @@ function SnapshotHealth() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="snapshot-health-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no snapshot this card
@@ -154,7 +158,7 @@ function SnapshotHealth() {
 
       <a
         href={SNAPSHOTS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all snapshots →
       </a>
@@ -173,15 +177,15 @@ function SnapshotHealth() {
  */
 function SnapshotItem({ row }: { row: SnapshotRow }) {
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <span
-          class="min-w-0 truncate text-xs text-text-secondary"
+          className="min-w-0 truncate text-xs text-text-secondary"
           title={`${row.namespace}/${row.name}`}
         >
           {row.name}
         </span>
-        <span class="shrink-0">
+        <span className="shrink-0">
           <StatusBadge
             label={row.outcome === "error" ? "Error" : "Pending"}
             tone={row.outcome === "error" ? "crit" : "warn"}
@@ -189,7 +193,7 @@ function SnapshotItem({ row }: { row: SnapshotRow }) {
         </span>
       </span>
       <span
-        class="truncate text-[10px] text-text-muted"
+        className="truncate text-[10px] text-text-muted"
         title={row.errorMessage}
       >
         {row.namespace}

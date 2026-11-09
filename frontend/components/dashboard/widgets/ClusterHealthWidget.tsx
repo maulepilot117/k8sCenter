@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import Gauge from "@/components/charts/Gauge.tsx";
 import { CheckItem, type CheckItemProps } from "@/components/ui/CheckItem.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
@@ -10,9 +11,9 @@ import {
   shouldRenderHealth,
   withheldReason,
 } from "@/lib/dashboard/coverage.ts";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import { healthStatusColor } from "@/lib/score-color.ts";
 
 type CheckStatus = CheckItemProps["status"];
@@ -74,7 +75,7 @@ function checkValue(
  * placement belongs to the grid, not the widget.
  */
 function ClusterHealth({ mode }: WidgetProps) {
-  const s = dashboardData.state<CoveredSummary>("dashboard-summary").data;
+  const s = useSourceState<CoveredSummary>("dashboard-summary").data;
 
   // The island wrote `s?.nodes.total ?? info?.nodeCount ?? 0`, but that
   // cluster-info fallback cannot fire here: WidgetHost guarantees the summary

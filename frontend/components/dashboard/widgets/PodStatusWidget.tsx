@@ -1,8 +1,9 @@
+/** @jsxImportSource react */
 import Donut from "@/components/charts/Donut.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 import { podStatusSegments } from "@/lib/dashboard/pod-status.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
 
 /**
@@ -14,7 +15,7 @@ import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
  * three plotted phases is non-zero.
  */
 function PodStatus() {
-  const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
+  const s = useSourceState<DashboardSummary>("dashboard-summary").data;
 
   const podCount = s?.pods.total ?? 0;
   const podRunning = s?.pods.running ?? 0;

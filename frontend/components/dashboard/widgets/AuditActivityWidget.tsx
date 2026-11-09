@@ -1,8 +1,8 @@
+/** @jsxImportSource react */
 import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The result roll-up, the target composition and the unreadable-row
 // accounting live in lib/, under test (D-10, KTD8). Do not inline them.
 import type { AuditRow } from "@/lib/dashboard/platform.ts";
@@ -11,7 +11,9 @@ import {
   auditActivityView,
 } from "@/lib/dashboard/platform.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import { age } from "@/lib/format.ts";
+import { withUniqueKeys } from "@/lib/unique-keys.ts";
 
 /** How many entries the card lists. The counts above them cover the page the
  * route returned, which is all this card asked for. */
@@ -47,10 +49,7 @@ const RESULT_TONE: Record<string, Tone> = {
  * be loaded.
  */
 function AuditActivity() {
-  const view = auditActivityView(
-    dashboardData.state("audit-log").data,
-    ROW_LIMIT,
-  );
+  const view = auditActivityView(useSourceState("audit-log").data, ROW_LIMIT);
   const attention = view.counts.failure + view.counts.denied;
 
   return (
@@ -60,7 +59,7 @@ function AuditActivity() {
         view.readable && view.total > 0 ? (
           <span
             data-testid="audit-activity-summary"
-            class="text-xs"
+            className="text-xs"
             style={{
               color: attention > 0 ? "var(--warning)" : "var(--text-muted)",
             }}
@@ -75,21 +74,21 @@ function AuditActivity() {
         // list here would read as a cluster nobody has changed.
         <p
           data-testid="audit-activity-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The audit endpoint returned a result this card cannot read.
         </p>
       ) : view.total === 0 ? (
         <p
           data-testid="audit-activity-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           Audit logging is on and has recorded nothing yet.
         </p>
       ) : (
         <>
           <div
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
             data-testid="audit-activity-counts"
           >
             <SeverityCount
@@ -114,19 +113,20 @@ function AuditActivity() {
             />
           </div>
 
-          <ul class="flex flex-col gap-2" data-testid="audit-activity-list">
-            {view.rows.map((row, idx) => (
-              <AuditItem
-                key={`${row.timestamp}-${row.user}-${idx}`}
-                row={row}
-              />
+          <ul className="flex flex-col gap-2" data-testid="audit-activity-list">
+            {withUniqueKeys(
+              view.rows,
+              (row) =>
+                `${row.timestamp}-${row.user}-${row.action}-${row.target}`,
+            ).map(({ item, key }) => (
+              <AuditItem key={key} row={item} />
             ))}
           </ul>
 
           {view.total > view.rows.length && (
             <p
               data-testid="audit-activity-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing the {view.rows.length} most recent of the {view.total}{" "}
               this card read.
@@ -138,7 +138,7 @@ function AuditActivity() {
       {view.unreadableRows > 0 && (
         <p
           data-testid="audit-activity-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} entr
           {view.unreadableRows === 1 ? "y" : "ies"} named no action this card
@@ -149,7 +149,7 @@ function AuditActivity() {
 
       <a
         href={AUDIT_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View the audit log →
       </a>
@@ -165,28 +165,28 @@ function AuditActivity() {
  */
 function AuditItem({ row }: { row: AuditRow }) {
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
-        <span class="min-w-0 truncate text-xs text-text-secondary">
-          <span class="font-medium">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate text-xs text-text-secondary">
+          <span className="font-medium">
             {row.user === "" ? "unknown" : row.user}
           </span>{" "}
           {row.action}
           {row.target !== "" && (
-            <span class="font-mono text-[11px] text-text-muted">
+            <span className="font-mono text-[11px] text-text-muted">
               {" "}
               {row.target}
             </span>
           )}
         </span>
-        <span class="shrink-0">
+        <span className="shrink-0">
           <StatusBadge
             label={row.result === "" ? "unknown" : row.result}
             tone={RESULT_TONE[row.result] ?? "neutral"}
           />
         </span>
       </span>
-      <span class="truncate text-[10px] text-text-muted">
+      <span className="truncate text-[10px] text-text-muted">
         {row.timestamp === "" ? "no timestamp" : `${age(row.timestamp)} ago`}
         {row.detail === "" ? "" : ` · ${row.detail}`}
       </span>

@@ -1,10 +1,11 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The classification and the ranking live in lib/, under test, and are shared
 // with pod-restarts so the two cards cannot disagree about the same pod
 // (D-10, KTD8). Do not inline them.
 import { pendingPodsView } from "@/lib/dashboard/pod-health.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { ResourceListPage } from "@/lib/dashboard/wire-types.ts";
 import { durationShort } from "@/lib/format.ts";
 
@@ -30,7 +31,7 @@ const ROW_LIMIT = 6;
  * time the body runs, "no pods are waiting" is something we actually know.
  */
 function PendingPods() {
-  const page = dashboardData.state<ResourceListPage>("pods-list").data;
+  const page = useSourceState<ResourceListPage>("pods-list").data;
   const view = pendingPodsView(page, ROW_LIMIT);
   const waiting = view.unschedulable + view.pending;
 
@@ -41,7 +42,7 @@ function PendingPods() {
         waiting > 0 ? (
           <span
             data-testid="pending-pods-summary"
-            class="text-xs"
+            className="text-xs"
             style={{
               color: view.unschedulable > 0 ? "var(--error)" : "var(--warning)",
             }}
@@ -60,28 +61,28 @@ function PendingPods() {
         // unanswered read is the failure this release exists to prevent.
         <p
           data-testid="pending-pods-unreadable-page"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The pod roll-up returned a result this card cannot read.
         </p>
       ) : waiting === 0 ? (
         <p
           data-testid="pending-pods-empty"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           Every pod has been scheduled and started.
         </p>
       ) : (
-        <ul class="flex flex-col gap-1.5" data-testid="pending-pods-list">
+        <ul className="flex flex-col gap-1.5" data-testid="pending-pods-list">
           {view.pods.map((p) => (
             <li
               key={`${p.namespace}/${p.name}`}
-              class="flex items-center justify-between gap-2 text-xs"
+              className="flex items-center justify-between gap-2 text-xs"
             >
-              <span class="flex min-w-0 items-center gap-2">
+              <span className="flex min-w-0 items-center gap-2">
                 <span
                   aria-hidden="true"
-                  class="size-2 shrink-0 rounded-full"
+                  className="size-2 shrink-0 rounded-full"
                   style={{
                     background:
                       p.state === "unschedulable"
@@ -92,18 +93,18 @@ function PendingPods() {
                 <a
                   href={`/workloads/pods/${encodeURIComponent(p.namespace)}/${encodeURIComponent(p.name)}`}
                   title={`${p.namespace}/${p.name}`}
-                  class="truncate text-text-secondary no-underline hover:text-accent"
+                  className="truncate text-text-secondary no-underline hover:text-accent"
                 >
                   {p.name}
                 </a>
               </span>
-              <span class="flex shrink-0 items-center gap-2">
+              <span className="flex shrink-0 items-center gap-2">
                 {p.reason !== "" && (
-                  <span class="max-w-[9rem] truncate text-[11px] text-text-muted">
+                  <span className="max-w-[9rem] truncate text-[11px] text-text-muted">
                     {p.reason}
                   </span>
                 )}
-                <span class="font-mono text-text-muted">
+                <span className="font-mono text-text-muted">
                   {durationShort(p.ageMs)}
                 </span>
               </span>
@@ -115,7 +116,7 @@ function PendingPods() {
       {view.truncated && (
         <p
           data-testid="pending-pods-truncated"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           Counted across the first {view.counted} of {view.total} pods.
         </p>
@@ -123,7 +124,7 @@ function PendingPods() {
 
       <a
         href="/workloads/pods"
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View all pods →
       </a>

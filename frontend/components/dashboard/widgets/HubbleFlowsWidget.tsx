@@ -1,6 +1,6 @@
+/** @jsxImportSource react */
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
 // The verdict tally, the blocked share and the worst-first ranking live in
 // lib/, under test (D-10, KTD8). The rounding in particular: one dropped flow
 // in five hundred is 0.2%, which plain rounding prints as 0% -- a card
@@ -14,6 +14,8 @@ import {
 import { PARAM_KEY_NAMESPACE, sourceKeyFor } from "@/lib/dashboard/params.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
+import { withUniqueKeys } from "@/lib/unique-keys.ts";
 
 /** How many flows the card lists. The verdict counts above them cover the
  * whole batch, not just these. */
@@ -43,7 +45,7 @@ const ROW_LIMIT = 5;
 function HubbleFlows({ params }: WidgetProps) {
   const namespace = params[PARAM_KEY_NAMESPACE] ?? "";
   const view = hubbleFlowsView(
-    dashboardData.state(sourceKeyFor("hubble-flows", params)).data,
+    useSourceState(sourceKeyFor("hubble-flows", params)).data,
     ROW_LIMIT,
   );
 
@@ -54,7 +56,7 @@ function HubbleFlows({ params }: WidgetProps) {
         <span
           data-testid="hubble-flows-namespace"
           title={namespace}
-          class="max-w-[10rem] truncate rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted"
+          className="max-w-[10rem] truncate rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted"
         >
           {namespace}
         </span>
@@ -65,7 +67,7 @@ function HubbleFlows({ params }: WidgetProps) {
         // verdict tally here would read as a namespace with nothing blocked.
         <p
           data-testid="hubble-flows-unreadable"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           The flow endpoint returned a result this card cannot read.
         </p>
@@ -75,7 +77,7 @@ function HubbleFlows({ params }: WidgetProps) {
         // blocked", and the card says which.
         <p
           data-testid="hubble-flows-none"
-          class="py-4 text-center text-xs text-text-muted"
+          className="py-4 text-center text-xs text-text-muted"
         >
           Hubble is watching this namespace and saw no traffic in the last
           batch.
@@ -83,7 +85,7 @@ function HubbleFlows({ params }: WidgetProps) {
       ) : (
         <>
           <p
-            class="mb-3 text-[11px] leading-snug text-text-muted"
+            className="mb-3 text-[11px] leading-snug text-text-muted"
             data-testid="hubble-flows-caption"
           >
             {view.blocked === 0
@@ -92,7 +94,7 @@ function HubbleFlows({ params }: WidgetProps) {
           </p>
 
           <div
-            class="mb-3 flex flex-wrap gap-1.5"
+            className="mb-3 flex flex-wrap gap-1.5"
             data-testid="hubble-flows-counts"
           >
             <SeverityCount
@@ -132,17 +134,17 @@ function HubbleFlows({ params }: WidgetProps) {
           {view.rows.length === 0 ? (
             <p
               data-testid="hubble-flows-unnamed"
-              class="py-2 text-center text-xs text-text-muted"
+              className="py-2 text-center text-xs text-text-muted"
             >
               No flow in this batch named both of its endpoints.
             </p>
           ) : (
-            <ul class="flex flex-col gap-2" data-testid="hubble-flows-list">
-              {view.rows.map((row, i) => (
-                <FlowItem
-                  key={`${row.time}-${row.source}-${row.destination}-${i}`}
-                  row={row}
-                />
+            <ul className="flex flex-col gap-2" data-testid="hubble-flows-list">
+              {withUniqueKeys(
+                view.rows,
+                (row) => `${row.time}-${row.source}-${row.destination}`,
+              ).map(({ item, key }) => (
+                <FlowItem key={key} row={item} />
               ))}
             </ul>
           )}
@@ -150,7 +152,7 @@ function HubbleFlows({ params }: WidgetProps) {
           {view.blocked > view.shown && (
             <p
               data-testid="hubble-flows-more"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               Showing {view.shown} of {view.blocked} blocked flows.
             </p>
@@ -161,7 +163,7 @@ function HubbleFlows({ params }: WidgetProps) {
             // that hit its ceiling rather than of everything Hubble saw.
             <p
               data-testid="hubble-flows-capped"
-              class="mt-2 text-[11px] leading-snug text-text-muted"
+              className="mt-2 text-[11px] leading-snug text-text-muted"
             >
               This is the most recent {HUBBLE_FLOW_BATCH} flows, not the whole
               window.
@@ -173,7 +175,7 @@ function HubbleFlows({ params }: WidgetProps) {
       {view.unreadableRows > 0 && (
         <p
           data-testid="hubble-flows-unreadable-rows"
-          class="mt-2 text-[11px] leading-snug text-text-muted"
+          className="mt-2 text-[11px] leading-snug text-text-muted"
         >
           {view.unreadableRows} flow
           {view.unreadableRows === 1 ? "" : "s"} named no endpoint this card
@@ -184,7 +186,7 @@ function HubbleFlows({ params }: WidgetProps) {
 
       <a
         href={HUBBLE_FLOWS_PAGE_HREF}
-        class="mt-3 block text-xs text-accent no-underline"
+        className="mt-3 block text-xs text-accent no-underline"
       >
         View flows →
       </a>
@@ -203,16 +205,16 @@ function HubbleFlows({ params }: WidgetProps) {
 function FlowItem({ row }: { row: FlowRow }) {
   const blocked = row.verdict === "dropped" || row.verdict === "error";
   return (
-    <li class="flex flex-col gap-1">
-      <span class="flex items-center justify-between gap-2">
+    <li className="flex flex-col gap-1">
+      <span className="flex items-center justify-between gap-2">
         <span
           title={`${row.source} → ${row.destination}`}
-          class="min-w-0 truncate text-xs text-text-secondary"
+          className="min-w-0 truncate text-xs text-text-secondary"
         >
           {row.source} → {row.destination}
         </span>
         <span
-          class="shrink-0 text-[10px] font-medium uppercase"
+          className="shrink-0 text-[10px] font-medium uppercase"
           style={{
             color: blocked
               ? row.verdict === "dropped"
@@ -224,7 +226,7 @@ function FlowItem({ row }: { row: FlowRow }) {
           {row.verdict}
         </span>
       </span>
-      <span class="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
+      <span className="flex items-center gap-1.5 truncate text-[10px] text-text-muted">
         {row.protocol === "" ? "traffic" : row.protocol}
         {row.port === null ? "" : `:${row.port}`}
         {row.dropReason === "" ? "" : ` · ${row.dropReason}`}
