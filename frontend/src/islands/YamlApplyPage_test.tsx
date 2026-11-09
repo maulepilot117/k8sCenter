@@ -1007,3 +1007,73 @@ test("a malformed repair link is refused rather than sent", async () => {
     history.replaceState(null, "", "/tools/yaml-apply");
   }
 });
+
+// --- Page-owned apply options -------------------------------------------------
+// The page owns the force, tracked and repairOf inputs the hook reads at apply
+// time. These pin down that each press reads what is on screen at that moment.
+
+function labelledBox(root: HTMLElement, text: string): HTMLInputElement {
+  const label = [...root.querySelectorAll("label")].find((l) =>
+    l.textContent?.includes(text),
+  );
+  const box = label?.querySelector("input");
+  if (!box) throw new Error(`no "${text}" checkbox`);
+  return box;
+}
+
+const applyUrls = () =>
+  sent
+    .filter((s) => s.url.startsWith("/api/v1/yaml/apply"))
+    .map((s) => new URL(s.url, "http://x"));
+
+test("Force conflicts adds force=true to the apply only while it is ticked", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({ apply: applied() });
+  const root = await mount();
+  await type(root, CM_YAML);
+  await click(button(root, "Validate"));
+
+  await click(labelledBox(root, "Force conflicts"));
+  expect(labelledBox(root, "Force conflicts").checked).toBe(true);
+  await click(button(root, "Apply"));
+  await click(labelledBox(root, "Force conflicts"));
+  await click(button(root, "Apply"));
+
+  const [forced, plain] = applyUrls();
+  expect(forced.searchParams.get("force")).toBe("true");
+  expect(forced.searchParams.get("targetCluster")).toBe(LOCAL_CLUSTER_ID);
+  expect(plain.searchParams.has("force")).toBe(false);
+});
+
+test("unticking Keep a record sends the next apply untracked", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({ apply: applied() });
+  const root = await mount();
+  expect(trackingBox(root).checked).toBe(true);
+
+  await click(trackingBox(root));
+  expect(trackingBox(root).checked).toBe(false);
+  await validateAndApply(root);
+
+  expect(applyUrl().searchParams.has("trackedOperationId")).toBe(false);
+  expect(applyUrl().searchParams.has("repairOf")).toBe(false);
+});
+
+test("after Stop repairing the next tracked apply carries no repairOf", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  history.replaceState(null, "", `/tools/yaml-apply?repairOf=${OP_ID}`);
+  try {
+    stubTracked();
+    const root = await mount();
+    await click(button(root, "Stop repairing"));
+    await validateAndApply(root);
+
+    const url = applyUrl();
+    expect(url.searchParams.get("trackedOperationId")).toMatch(
+      /^[0-9a-f-]{36}$/,
+    );
+    expect(url.searchParams.has("repairOf")).toBe(false);
+  } finally {
+    history.replaceState(null, "", "/tools/yaml-apply");
+  }
+});

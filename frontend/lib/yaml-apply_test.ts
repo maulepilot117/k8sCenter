@@ -139,14 +139,24 @@ function mount(
   let captured: UseYamlApplyReturn | undefined;
   function Harness() {
     captured = useYamlApply(initialYaml, options);
+    latest = captured;
     return null;
   }
   act(() => {
     mounted = render(createElement(Harness, null));
   });
+  rerenderHook = () => {
+    const rendered = mounted;
+    if (rendered) act(() => rendered.rerender(createElement(Harness, null)));
+  };
   if (!captured) throw new Error("hook did not render");
   return captured;
 }
+
+/** What the mounted hook returned on its most recent render. */
+let latest: UseYamlApplyReturn | undefined;
+/** Renders the mounted hook again with the same arguments. */
+let rerenderHook: () => void = () => {};
 
 function preview(targetCluster: string, targetGeneration: string) {
   return {
@@ -1324,5 +1334,24 @@ test("the refusal and retry helpers ignore errors that are not tracked refusals"
   expect(trackedApplyRefusal(undefined)).toBeNull();
   expect(isIndeterminateApplyFailure(new TypeError("Failed to fetch"))).toBe(
     true,
+  );
+});
+
+test("handlers keep their identity across renders, so a stored one stays current", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const first = mount("kind: ConfigMap", { pinApplyToPreview: true });
+
+  await run(first.handleValidate, 200, preview("cluster-a", "gen-a"));
+  rerenderHook();
+
+  expect(latest).toBeDefined();
+  expect(latest?.handleValidate).toBe(first.handleValidate);
+  expect(latest?.handleApply).toBe(first.handleApply);
+  expect(latest?.clearPin).toBe(first.clearPin);
+  // The first render's handler sees the pin the preview set afterwards.
+  const call = await run(first.handleApply, 200, applied);
+  expect(new URL(call.url, "http://x").searchParams.get("targetCluster")).toBe(
+    "cluster-a",
   );
 });
