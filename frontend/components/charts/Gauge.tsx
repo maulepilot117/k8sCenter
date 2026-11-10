@@ -1,3 +1,5 @@
+import RadialGauge from "./RadialGauge.tsx";
+
 interface GaugeProps {
   /** 0..100 */
   value: number;
@@ -9,6 +11,8 @@ interface GaugeProps {
   label?: string;
   /** small caption under the label, e.g. "HEALTHY" */
   sublabel?: string;
+  /** What the gauge measures, e.g. "Cluster health"; leads the accessible label. */
+  name?: string;
 }
 
 /** Radial progress ring. Used for cluster health, utilization headlines. */
@@ -20,80 +24,48 @@ export default function Gauge({
   track = "var(--border-subtle)",
   label,
   sublabel,
+  name,
 }: GaugeProps) {
-  const cx = size / 2;
-  const r = cx - thickness / 2 - 1;
-  const circ = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, value));
-  const offset = circ * (1 - pct / 100);
+  const shown = label ?? `${Math.round(pct)}%`;
+  const accessibleLabel = [name ? `${name}: ${shown}` : shown, sublabel]
+    .filter(Boolean)
+    .join(", ");
 
   return (
-    <div
-      style={{
-        position: "relative",
-        width: `${size}px`,
-        height: `${size}px`,
-        flexShrink: 0,
-      }}
+    <RadialGauge
+      percent={pct}
+      size={size}
+      thickness={thickness}
+      color={color}
+      track={track}
+      label={accessibleLabel}
     >
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        <circle
-          cx={cx}
-          cy={cx}
-          r={r}
-          fill="none"
-          stroke={track}
-          strokeWidth={thickness}
-        />
-        <circle
-          cx={cx}
-          cy={cx}
-          r={r}
-          fill="none"
-          stroke={color}
-          strokeWidth={thickness}
-          strokeLinecap="round"
-          strokeDasharray={circ.toFixed(1)}
-          strokeDashoffset={offset.toFixed(1)}
-          transform={`rotate(-90 ${cx} ${cx})`}
-        />
-      </svg>
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        {label && (
-          <span
-            style={{
-              fontSize: "30px",
-              fontWeight: 750,
-              letterSpacing: "-0.02em",
-              color: "var(--text-primary)",
-            }}
-          >
-            {label}
-          </span>
-        )}
-        {sublabel && (
-          <span
-            style={{
-              fontSize: "11px",
-              fontWeight: 600,
-              color,
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-            }}
-          >
-            {sublabel}
-          </span>
-        )}
-      </div>
-    </div>
+      {label && (
+        <span
+          style={{
+            fontSize: "30px",
+            fontWeight: 750,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+        >
+          {label}
+        </span>
+      )}
+      {sublabel && (
+        <span
+          style={{
+            fontSize: "11px",
+            fontWeight: 600,
+            color,
+            textTransform: "uppercase",
+            letterSpacing: "0.05em",
+          }}
+        >
+          {sublabel}
+        </span>
+      )}
+    </RadialGauge>
   );
 }

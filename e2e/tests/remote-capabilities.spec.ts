@@ -393,9 +393,17 @@ test.describe.serial("Remote cluster capabilities", () => {
     await page.goto("/");
     const health = page.locator('[data-widget-id="cluster-health"]');
     await expect(health).toHaveAttribute("data-widget-state", "ready");
-    // The gauge's progress arc carries stroke-dashoffset, which the coverage
-    // card's own glyph does not.
-    await expect(health.locator("circle[stroke-dashoffset]")).toHaveCount(1);
+    // The gauge is one image named for the health score, and its chart is
+    // drawn into a box with a size.
+    await expect(
+      health.getByRole("img", { name: /cluster health: \d+/i }),
+    ).toHaveCount(1);
+    const gaugeBox = await health
+      .locator('[data-chart="gauge"] svg')
+      .first()
+      .boundingBox();
+    expect(gaugeBox?.width).toBeGreaterThan(0);
+    expect(gaugeBox?.height).toBeGreaterThan(0);
     await expect(health.getByTestId("health-unscored")).toHaveCount(0);
     await expect(health.getByTestId("widget-coverage-unavailable")).toHaveCount(
       0,
