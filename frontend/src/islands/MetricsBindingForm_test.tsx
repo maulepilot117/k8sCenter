@@ -1,11 +1,15 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
 import { setAccessToken } from "@/lib/api.ts";
+import {
+  act,
+  fireEvent,
+  render,
+  settle,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
-GlobalRegistrator.register({ url: "http://localhost/" });
+setupDom({ browser: true });
 
 const toasts: Array<{ message: string; type: string }> = [];
 // bun shares modules across test files, so the real module is kept and put
@@ -26,7 +30,6 @@ const { default: MetricsBindingForm } = await import(
 
 afterAll(() => {
   mock.module("@/src/lib/toast-store.ts", () => realToastStore);
-  GlobalRegistrator.unregister();
 });
 
 interface Call {
@@ -39,8 +42,11 @@ type Reply = { status: number; body?: unknown };
 // putGate, when set, holds every PUT until it resolves, so a test can act
 // while a save is in flight.
 let putGate: Promise<void> | null = null;
+let deleteGate: Promise<void> | null = null;
+let getGates: Array<Promise<void>> = [];
 
-let host: HTMLElement | null = null;
+let view: ReturnType<typeof render> | null = null;
+const originalConfirm = globalThis.confirm;
 let originalFetch: typeof globalThis.fetch | undefined;
 let calls: Call[] = [];
 let replies: Record<string, Reply> = {};
@@ -62,6 +68,9 @@ beforeEach(() => {
   replies = {};
   badges = [];
   putGate = null;
+  deleteGate = null;
+  getGates = [];
+  view = null;
   originalFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -70,6 +79,9 @@ beforeEach(() => {
       body: init?.body ? JSON.parse(String(init.body)) : null,
     });
     if (method === "PUT" && putGate) await putGate;
+    if (method === "DELETE" && deleteGate) await deleteGate;
+    const gate = method === "GET" ? getGates.shift() : undefined;
+    if (gate) await gate;
     const reply = replies[method] ?? { status: 500, body: {} };
     if (reply.status === 204) return new Response(null, { status: 204 });
     return new Response(JSON.stringify(reply.body ?? {}), {
@@ -81,37 +93,29 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   if (originalFetch) globalThis.fetch = originalFetch;
+  globalThis.confirm = originalConfirm;
   setAccessToken(null);
 });
 
-async function settle() {
-  for (let i = 0; i < 5; i++) {
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-  }
+function form(clusterId: string) {
+  return (
+    <MetricsBindingForm
+      clusterId={clusterId}
+      onBinding={(id, state) => badges.push([id, state])}
+    />
+  );
+}
+
+function renderForm(clusterId: string) {
+  if (view) view.rerender(form(clusterId));
+  else view = render(form(clusterId));
 }
 
 async function mount() {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <MetricsBindingForm
-        clusterId="c1"
-        onBinding={(id, state) => badges.push([id, state])}
-      />,
-      host as HTMLElement,
-    ),
-  );
+  renderForm("c1");
   await settle();
-  return host;
+  return (view as ReturnType<typeof render>).container;
 }
 
 /** The control a visible label names, through the label's `for`. */
@@ -142,8 +146,7 @@ async function click(el: HTMLElement) {
 
 async function type(el: HTMLInputElement, value: string) {
   await act(async () => {
-    el.value = value;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    fireEvent.input(el, { target: { value } });
   });
   await settle();
 }
@@ -360,15 +363,7 @@ test("a save that finishes after the form moved to another cluster badges its ow
     hasAlertmanagerToken: false,
   };
   replies.GET = { status: 200, body: { data: c2 } };
-  act(() =>
-    render(
-      <MetricsBindingForm
-        clusterId="c2"
-        onBinding={(id, state) => badges.push([id, state])}
-      />,
-      host as HTMLElement,
-    ),
-  );
+  renderForm("c2");
   await settle();
   expect(byLabel(root, "Prometheus URL").value).toBe(
     "https://prom-c2.example.com",
@@ -386,4 +381,228 @@ test("a save that finishes after the form moved to another cluster badges its ow
   );
   expect(toasts).toEqual([]);
   expect(button(root, "Save").disabled).toBe(false);
+});
+
+const NOT_CONFIGURED: Reply = {
+  status: 404,
+  body: {
+    error: {
+      code: 404,
+      message: "metrics are not configured",
+      reason: "metrics_not_configured",
+    },
+  },
+};
+
+const PROM_URL = "Prometheus URL";
+
+test("a stored binding fills both URLs but never a token, and reports configured", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+  expect(byLabel(root, PROM_URL).value).toBe("https://prom.example.com");
+  expect(byLabel(root, AM_URL).value).toBe("https://am.example.com");
+  expect(byLabel(root, PROM_TOKEN).value).toBe("");
+  expect(byLabel(root, AM_TOKEN).value).toBe("");
+  expect(root.textContent).toContain("A token is stored for this binding.");
+  expect(badges).toEqual([["c1", "configured"]]);
+  expect(button(root, "Remove binding").disabled).toBe(false);
+});
+
+test("an unconfigured cluster reports not-configured without a toast and keeps Save off", async () => {
+  replies.GET = NOT_CONFIGURED;
+  const root = await mount();
+  expect(badges).toEqual([["c1", "not-configured"]]);
+  expect(toasts).toEqual([]);
+  expect(byLabel(root, PROM_URL).value).toBe("");
+  expect(button(root, "Save").disabled).toBe(true);
+  expect(() => button(root, "Remove binding")).toThrow();
+});
+
+test("a failed load shows the server text for a 400", async () => {
+  replies.GET = {
+    status: 400,
+    body: { error: { code: 400, message: "bad binding" } },
+  };
+  await mount();
+  expect(toasts.at(-1)).toEqual({ message: "bad binding", type: "error" });
+  expect(badges).toEqual([]);
+});
+
+test("an unexpected load failure shows the fallback, not the server text", async () => {
+  replies.GET = {
+    status: 500,
+    body: { error: { code: 500, message: "internal detail" } },
+  };
+  await mount();
+  expect(toasts.at(-1)).toEqual({
+    message: "Could not load the binding",
+    type: "error",
+  });
+});
+
+test("a typed Prometheus token is sent as token and the field resets after the save", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  replies.PUT = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+  await type(byLabel(root, PROM_TOKEN), "prom-secret");
+  await click(button(root, "Save"));
+  expect(puts()[0].body?.token).toBe("prom-secret");
+  expect(byLabel(root, PROM_TOKEN).value).toBe("");
+  expect(toasts.at(-1)).toEqual({
+    message: "Metrics binding saved",
+    type: "success",
+  });
+});
+
+test("the Prometheus clear box sends an empty token and is disabled while one is typed", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  replies.PUT = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+  const clear = "Clear the stored Prometheus token on save";
+  await click(byLabel(root, clear));
+  await click(button(root, "Save"));
+  expect(puts()[0].body?.token).toBe("");
+  expect("alertmanagerToken" in (puts()[0].body as object)).toBe(false);
+
+  await type(byLabel(root, PROM_TOKEN), "typed");
+  expect(byLabel(root, clear).disabled).toBe(true);
+});
+
+test("Save stays off while the Prometheus URL is blank, and a blank Alertmanager URL is omitted", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  replies.PUT = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+  await type(byLabel(root, AM_URL), "");
+  await click(button(root, "Save"));
+  expect("alertmanagerUrl" in (puts()[0].body as object)).toBe(false);
+
+  await type(byLabel(root, PROM_URL), "  ");
+  expect(button(root, "Save").disabled).toBe(true);
+});
+
+test("an unreachable Prometheus shows a fixed sentence, and other failures the fallback", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  replies.PUT = {
+    status: 502,
+    body: { error: { code: 502, message: "dial tcp 10.0.0.1: refused" } },
+  };
+  const root = await mount();
+  await click(button(root, "Save"));
+  expect(toasts.at(-1)?.message).toBe("Could not reach Prometheus at that URL");
+
+  replies.PUT = {
+    status: 500,
+    body: { error: { code: 500, message: "internal detail" } },
+  };
+  await click(button(root, "Save"));
+  expect(toasts.at(-1)?.message).toBe("Failed to save the binding");
+});
+
+test("removing the binding clears the form and drops the Remove button", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  replies.DELETE = { status: 204 };
+  globalThis.confirm = () => true;
+  const root = await mount();
+  await click(button(root, "Remove binding"));
+  expect(byLabel(root, PROM_URL).value).toBe("");
+  expect(byLabel(root, AM_URL).value).toBe("");
+  expect(toasts.at(-1)).toEqual({
+    message: "Metrics binding removed",
+    type: "success",
+  });
+  expect(() => button(root, "Remove binding")).toThrow();
+});
+
+test("declining the remove confirmation sends nothing", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  globalThis.confirm = () => false;
+  const root = await mount();
+  await click(button(root, "Remove binding"));
+  expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  expect(byLabel(root, PROM_URL).value).toBe("https://prom.example.com");
+});
+
+test("a failed remove keeps the form and its badge as they were", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  replies.DELETE = {
+    status: 500,
+    body: { error: { code: 500, message: "internal detail" } },
+  };
+  globalThis.confirm = () => true;
+  const root = await mount();
+  await click(button(root, "Remove binding"));
+  expect(toasts.at(-1)).toEqual({
+    message: "Failed to remove the binding",
+    type: "error",
+  });
+  expect(badges).toEqual([["c1", "configured"]]);
+  expect(byLabel(root, PROM_URL).value).toBe("https://prom.example.com");
+  expect(button(root, "Remove binding").disabled).toBe(false);
+});
+
+test("a remove that finishes after the form moved to another cluster badges its own cluster and leaves the new form alone", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  globalThis.confirm = () => true;
+  const root = await mount();
+
+  let release = () => {};
+  deleteGate = new Promise<void>((r) => {
+    release = r;
+  });
+  replies.DELETE = { status: 204 };
+  await click(button(root, "Remove binding"));
+
+  replies.GET = {
+    status: 200,
+    body: {
+      data: {
+        ...BINDING,
+        clusterId: "c2",
+        prometheusUrl: "https://prom-c2.example.com",
+      },
+    },
+  };
+  renderForm("c2");
+  await settle();
+
+  toasts.length = 0;
+  const before = badges.length;
+  release();
+  await settle();
+
+  expect(badges.slice(before)).toEqual([["c1", "not-configured"]]);
+  expect(byLabel(root, PROM_URL).value).toBe("https://prom-c2.example.com");
+  expect(toasts).toEqual([]);
+});
+
+test("a load that answers after the form moved to another cluster leaves the new form alone", async () => {
+  let releaseFirst = () => {};
+  getGates = [
+    new Promise<void>((r) => {
+      releaseFirst = r;
+    }),
+  ];
+  replies.GET = { status: 200, body: { data: BINDING } };
+  renderForm("c1");
+  await settle();
+
+  replies.GET = {
+    status: 200,
+    body: {
+      data: {
+        ...BINDING,
+        clusterId: "c2",
+        prometheusUrl: "https://prom-c2.example.com",
+      },
+    },
+  };
+  renderForm("c2");
+  await settle();
+  const root = (view as ReturnType<typeof render>).container;
+  expect(byLabel(root, PROM_URL).value).toBe("https://prom-c2.example.com");
+
+  releaseFirst();
+  await settle();
+  expect(byLabel(root, PROM_URL).value).toBe("https://prom-c2.example.com");
+  expect(badges).toEqual([["c2", "configured"]]);
 });

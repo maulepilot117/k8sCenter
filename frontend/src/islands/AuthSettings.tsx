@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -15,17 +15,17 @@ type TabType = "providers" | "oidc" | "ldap";
  * Shows configured providers and allows testing OIDC/LDAP connections.
  */
 export default function AuthSettings() {
-  const activeTab = useSignal<TabType>("providers");
-  const providers = useSignal<ProviderInfo[]>([]);
-  const loading = useSignal(true);
-  const testResult = useSignal("");
-  const testLoading = useSignal(false);
+  const [activeTab, setActiveTab] = useState<TabType>("providers");
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [testResult, setTestResult] = useState("");
+  const [testLoading, setTestLoading] = useState(false);
 
-  // Test form state (signals instead of document.getElementById)
-  const oidcIssuerURL = useSignal("");
-  const ldapURL = useSignal("");
-  const ldapBindDN = useSignal("");
+  const [oidcIssuerURL, setOidcIssuerURL] = useState("");
+  const [ldapURL, setLdapURL] = useState("");
+  const [ldapBindDN, setLdapBindDN] = useState("");
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `loadProviders` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
     loadProviders();
@@ -36,53 +36,57 @@ export default function AuthSettings() {
       const res = await api<ProviderInfo[]>("/v1/auth/providers", {
         method: "GET",
       });
-      providers.value = res.data;
+      setProviders(res.data);
     } catch {
       // fail silently
     } finally {
-      loading.value = false;
+      setLoading(false);
     }
   }
 
   async function testOIDCConnection() {
-    if (!oidcIssuerURL.value) return;
-    testLoading.value = true;
-    testResult.value = "";
+    if (!oidcIssuerURL) return;
+    setTestLoading(true);
+    setTestResult("");
     try {
       await api("/v1/settings/auth/test-oidc", {
         method: "POST",
-        body: JSON.stringify({ issuerURL: oidcIssuerURL.value }),
+        body: JSON.stringify({ issuerURL: oidcIssuerURL }),
       });
-      testResult.value = "OIDC discovery successful";
+      setTestResult("OIDC discovery successful");
     } catch (err) {
-      testResult.value = `OIDC test failed: ${
-        err instanceof Error ? err.message : "unknown error"
-      }`;
+      setTestResult(
+        `OIDC test failed: ${
+          err instanceof Error ? err.message : "unknown error"
+        }`,
+      );
     } finally {
-      testLoading.value = false;
+      setTestLoading(false);
     }
   }
 
   async function testLDAPConnection() {
-    if (!ldapURL.value || !ldapBindDN.value) return;
-    testLoading.value = true;
-    testResult.value = "";
+    if (!ldapURL || !ldapBindDN) return;
+    setTestLoading(true);
+    setTestResult("");
     try {
       await api("/v1/settings/auth/test-ldap", {
         method: "POST",
-        body: JSON.stringify({ url: ldapURL.value, bindDN: ldapBindDN.value }),
+        body: JSON.stringify({ url: ldapURL, bindDN: ldapBindDN }),
       });
-      testResult.value = "LDAP connection successful";
+      setTestResult("LDAP connection successful");
     } catch (err) {
-      testResult.value = `LDAP test failed: ${
-        err instanceof Error ? err.message : "unknown error"
-      }`;
+      setTestResult(
+        `LDAP test failed: ${
+          err instanceof Error ? err.message : "unknown error"
+        }`,
+      );
     } finally {
-      testLoading.value = false;
+      setTestLoading(false);
     }
   }
 
-  if (loading.value) {
+  if (loading) {
     return (
       <div
         style={{ display: "flex", justifyContent: "center", padding: "48px 0" }}
@@ -114,18 +118,17 @@ export default function AuthSettings() {
             key={key}
             type="button"
             onClick={() => {
-              activeTab.value = key;
-              testResult.value = "";
+              setActiveTab(key);
+              setTestResult("");
             }}
             style={{
               padding: "0 0 12px",
               fontSize: "14px",
-              fontWeight: activeTab.value === key ? 650 : 400,
-              color:
-                activeTab.value === key ? "var(--accent)" : "var(--text-muted)",
+              fontWeight: activeTab === key ? 650 : 400,
+              color: activeTab === key ? "var(--accent)" : "var(--text-muted)",
               border: "none",
               borderBottom:
-                activeTab.value === key
+                activeTab === key
                   ? "2px solid var(--accent)"
                   : "2px solid transparent",
               background: "none",
@@ -140,7 +143,7 @@ export default function AuthSettings() {
       </div>
 
       {/* Providers tab */}
-      {activeTab.value === "providers" && (
+      {activeTab === "providers" && (
         <WidgetShell title="Configured Providers">
           <div
             style={{
@@ -149,7 +152,7 @@ export default function AuthSettings() {
               gap: "0",
             }}
           >
-            {providers.value.map((p, i) => (
+            {providers.map((p, i) => (
               <div
                 key={p.id}
                 style={{
@@ -158,7 +161,7 @@ export default function AuthSettings() {
                   justifyContent: "space-between",
                   padding: "12px 0",
                   borderBottom:
-                    i < providers.value.length - 1
+                    i < providers.length - 1
                       ? "1px solid var(--border-subtle)"
                       : "none",
                 }}
@@ -206,7 +209,7 @@ export default function AuthSettings() {
                 </span>
               </div>
             ))}
-            {providers.value.length === 0 && (
+            {providers.length === 0 && (
               <p
                 style={{
                   margin: 0,
@@ -223,7 +226,7 @@ export default function AuthSettings() {
       )}
 
       {/* OIDC tab */}
-      {activeTab.value === "oidc" && (
+      {activeTab === "oidc" && (
         <WidgetShell title="OIDC Provider Configuration">
           <p
             style={{
@@ -255,30 +258,30 @@ export default function AuthSettings() {
               label="Test Issuer URL"
               type="url"
               placeholder="https://accounts.google.com"
-              value={oidcIssuerURL.value}
-              onInput={(e) => {
-                oidcIssuerURL.value = (e.target as HTMLInputElement).value;
+              value={oidcIssuerURL}
+              onChange={(e) => {
+                setOidcIssuerURL(e.currentTarget.value);
               }}
             />
             <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
               <Button
                 type="button"
                 variant="secondary"
-                loading={testLoading.value}
+                loading={testLoading}
                 onClick={testOIDCConnection}
               >
                 Test Discovery
               </Button>
-              {testResult.value && (
+              {testResult && (
                 <span
                   style={{
                     fontSize: "13px",
-                    color: testResult.value.includes("successful")
+                    color: testResult.includes("successful")
                       ? "var(--success)"
                       : "var(--error)",
                   }}
                 >
-                  {testResult.value}
+                  {testResult}
                 </span>
               )}
             </div>
@@ -287,7 +290,7 @@ export default function AuthSettings() {
       )}
 
       {/* LDAP tab */}
-      {activeTab.value === "ldap" && (
+      {activeTab === "ldap" && (
         <WidgetShell title="LDAP Provider Configuration">
           <p
             style={{
@@ -319,39 +322,39 @@ export default function AuthSettings() {
               label="Test LDAP URL"
               type="url"
               placeholder="ldaps://ldap.example.com:636"
-              value={ldapURL.value}
-              onInput={(e) => {
-                ldapURL.value = (e.target as HTMLInputElement).value;
+              value={ldapURL}
+              onChange={(e) => {
+                setLdapURL(e.currentTarget.value);
               }}
             />
             <Input
               label="Test Bind DN"
               type="text"
               placeholder="cn=readonly,dc=example,dc=com"
-              value={ldapBindDN.value}
-              onInput={(e) => {
-                ldapBindDN.value = (e.target as HTMLInputElement).value;
+              value={ldapBindDN}
+              onChange={(e) => {
+                setLdapBindDN(e.currentTarget.value);
               }}
             />
             <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
               <Button
                 type="button"
                 variant="secondary"
-                loading={testLoading.value}
+                loading={testLoading}
                 onClick={testLDAPConnection}
               >
                 Test Connection
               </Button>
-              {testResult.value && (
+              {testResult && (
                 <span
                   style={{
                     fontSize: "13px",
-                    color: testResult.value.includes("successful")
+                    color: testResult.includes("successful")
                       ? "var(--success)"
                       : "var(--error)",
                   }}
                 >
-                  {testResult.value}
+                  {testResult}
                 </span>
               )}
             </div>

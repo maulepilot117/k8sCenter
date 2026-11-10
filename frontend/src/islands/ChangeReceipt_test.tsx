@@ -1,14 +1,12 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import type {
   CheckView,
   ReceiptDetail,
   VerificationView,
 } from "@/lib/change-types.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * Render-level coverage for the change receipt page: what each execution and
@@ -17,10 +15,9 @@ import type {
  * cancelled on unmount. fetch is routed by URL; everything else is real.
  */
 
-const { default: ChangeReceipt } = await import("./ChangeReceipt.tsx");
+setupDom({ browser: true });
 
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
+const { default: ChangeReceipt } = await import("./ChangeReceipt.tsx");
 
 const ID = "6f1d3c52-4b1e-4f0a-9c53-0d7a2b8e1f64";
 
@@ -32,15 +29,11 @@ interface Call {
 type Reply = { status?: number; body: unknown };
 
 let calls: Call[] = [];
-let host: HTMLElement | null = null;
+let unmountCurrent: (() => void) | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  unmountCurrent = null;
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
   setAccessToken(null);
@@ -160,16 +153,10 @@ const flush = () =>
  * several iterations in real time (1 means retryAfterSeconds: 5 waits 5ms).
  */
 async function mount(msPerSecond?: number) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <ChangeReceipt id={ID} msPerSecond={msPerSecond} />,
-      host as HTMLElement,
-    ),
-  );
+  const view = render(<ChangeReceipt id={ID} msPerSecond={msPerSecond} />);
+  unmountCurrent = view.unmount;
   await flush();
-  return host;
+  return view.container as HTMLElement;
 }
 
 const verificationCalls = () =>
@@ -256,11 +243,11 @@ test("unmount aborts the verification request in flight", async () => {
       }),
     );
   }) as typeof globalThis.fetch;
-  const root = await mount();
+  await mount();
   const pending = verificationCalls()[0];
   expect(pending?.signal?.aborted).toBe(false);
 
-  act(() => render(null, root));
+  act(() => unmountCurrent?.());
   expect(pending?.signal?.aborted).toBe(true);
 });
 
@@ -492,9 +479,7 @@ test("load failures each say what happened", async () => {
     stubFetch(fail(status));
     const root = await mount();
     seen.push(root.querySelector('[role="alert"]')?.textContent ?? "");
-    act(() => render(null, root));
-    root.remove();
-    host = null;
+    act(() => unmountCurrent?.());
     if (originalFetch) globalThis.fetch = originalFetch;
   }
   expect(seen[0]).toContain("Change receipt not found");
@@ -568,9 +553,9 @@ test("without retryAfterSeconds the default delay applies between passes", async
 
 test("unmount between passes stops polling for good", async () => {
   stubFetch(ok(receipt()), [verifyingView(5)]);
-  const root = await mount(1);
+  await mount(1);
   await until(() => verificationCalls().length >= 2);
-  act(() => render(null, root));
+  act(() => unmountCurrent?.());
   const after = verificationCalls().length;
   await settle(40);
   expect(verificationCalls()).toHaveLength(after);
@@ -658,12 +643,33 @@ test("Check again restarts the cycle and drops the stale live view", async () =>
 
 test("a malformed id is reported without calling the API", async () => {
   stubFetch(ok(receipt()));
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<ChangeReceipt id="%zz" />, host as HTMLElement));
+  const { container } = render(<ChangeReceipt id="%zz" />);
   await flush();
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
     "This is not a valid change receipt id.",
   );
   expect(calls).toHaveLength(0);
+});
+
+test("a failed verification shows its message text, not an object", async () => {
+  stubFetch(ok(receipt()), [fail(504)]);
+  const root = await mount();
+  const status = [...root.querySelectorAll('[role="status"]')].find((n) =>
+    n.textContent?.includes("Verification timed out."),
+  );
+  expect(status?.textContent).toContain(
+    "Verification timed out. Showing the last recorded verification.",
+  );
+  expect(root.textContent).not.toContain("[object Object]");
+  expect(status?.querySelector("button")?.textContent).toBe("Check again");
+});
+
+test("a failed re-read of an applying receipt shows the load error text", async () => {
+  stubFetch([ok(receipt({ state: "applying" })), fail(503, "no db")], []);
+  const root = await mount(1);
+  await until(() =>
+    (root.textContent ?? "").includes("Change records are unavailable"),
+  );
+  expect(root.textContent).not.toContain("[object Object]");
+  expect(verificationCalls()).toHaveLength(0);
 });

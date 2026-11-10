@@ -1,7 +1,7 @@
-import { type ReadonlySignal, useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect } from "react";
 import { apiGet } from "@/lib/api.ts";
 import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /** The fields of a cluster record a label needs. */
 export interface ClusterRecord {
@@ -32,16 +32,18 @@ export function clusterLabel(
  */
 export function useClusterNames(
   ids: readonly (string | undefined)[],
-): ReadonlySignal<ReadonlyMap<string, string>> {
-  const names = useSignal<ReadonlyMap<string, string>>(new Map());
-  const wanted = [
+): ReadonlyMap<string, string> {
+  const [names, setNames, namesRef] = useStateRef<ReadonlyMap<string, string>>(
+    new Map(),
+  );
+  const key = [
     ...new Set(
       ids.filter((id): id is string => !!id && id !== LOCAL_CLUSTER_ID),
     ),
-  ];
-  const key = wanted.join("\n");
+  ].join("\n");
   useEffect(() => {
-    const known = names.peek();
+    const wanted = key ? key.split("\n") : [];
+    const known = namesRef.current;
     const controller = new AbortController();
     for (const id of wanted) {
       if (known.has(id)) continue;
@@ -51,9 +53,9 @@ export function useClusterNames(
         .then((res) => {
           const c = res.data;
           if (!c) return;
-          const next = new Map(names.peek());
+          const next = new Map(namesRef.current);
           next.set(id, c.displayName || c.name || id);
-          names.value = next;
+          setNames(next);
         })
         .catch(() => {});
     }

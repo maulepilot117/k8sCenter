@@ -1,14 +1,11 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, expect, test } from "bun:test";
 import type { NoteView } from "@/lib/incident-types.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+
+setupDom({ browser: true });
 
 const { default: IncidentNotes } = await import("./IncidentNotes.tsx");
-
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
 
 const ID = "00000000-0000-4000-8000-000000000001";
 const N1 = "00000000-0000-4000-8000-0000000000a1";
@@ -23,15 +20,13 @@ type Reply = Response | Promise<Response> | undefined;
 type Route = (call: Call) => Reply;
 
 let calls: Call[] = [];
-let host: HTMLElement | null = null;
+let view: ReturnType<typeof render> | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  const mounted = view;
+  if (mounted) act(() => mounted.unmount());
+  view = null;
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
 });
@@ -68,20 +63,15 @@ const flush = () =>
   });
 
 async function mount(currentUserId = "alice", canAnnotate = true) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <IncidentNotes
-        incidentId={ID}
-        canAnnotate={canAnnotate}
-        currentUserId={currentUserId}
-      />,
-      host as HTMLElement,
-    ),
+  view = render(
+    <IncidentNotes
+      incidentId={ID}
+      canAnnotate={canAnnotate}
+      currentUserId={currentUserId}
+    />,
   );
   await flush();
-  return host;
+  return view.container as HTMLElement;
 }
 
 function note(id: string, over: Partial<NoteView> = {}): NoteView {
@@ -624,9 +614,8 @@ test("a note held for one incident is never placed into another incident's threa
   await flush();
   // The view switches to another incident while the first load is held.
   act(() =>
-    render(
+    view?.rerender(
       <IncidentNotes incidentId={ID2} canAnnotate currentUserId="alice" />,
-      host as HTMLElement,
     ),
   );
   await flush();
@@ -664,9 +653,8 @@ test("a note whose create resolves after the incident changed is not placed in t
   );
   // The view switches incidents; the new thread is loaded, complete and idle.
   act(() =>
-    render(
+    view?.rerender(
       <IncidentNotes incidentId={ID2} canAnnotate currentUserId="alice" />,
-      host as HTMLElement,
     ),
   );
   await flush();
@@ -675,4 +663,199 @@ test("a note whose create resolves after the incident changed is not placed in t
   expect(root.textContent).not.toContain("for the old one");
   expect(root.textContent).toContain("No notes yet.");
   expect(root.textContent).not.toContain("Note added");
+});
+
+// --- Handlers that read state after an await or between renders ---------------
+
+const held = () => {
+  let release: (r: Response) => void = () => {};
+  const promise = new Promise<Response>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release: (r: Response) => release(r) };
+};
+
+test("two submits before the form renders again send one create", async () => {
+  const gate = held();
+  stubFetch(
+    listRoute(() => ({ "": { items: [] } })),
+    (c) => (c.method === "POST" ? gate.promise : undefined),
+  );
+  const root = await mount();
+  type(
+    root.querySelector(`textarea#new-note-${ID}`) as HTMLTextAreaElement,
+    "once",
+  );
+  const form = root.querySelector("form") as HTMLFormElement;
+  act(() => {
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+  });
+  await flush();
+  gate.release(json(201, { data: note(N1, { body: "once" }) }));
+  await flush();
+  expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
+});
+
+test("two Save clicks before the editor renders again send one update", async () => {
+  const gate = held();
+  stubFetch(
+    listRoute(() => ({ "": { items: [note(N1)] } })),
+    (c) => (c.method === "PUT" ? gate.promise : undefined),
+  );
+  const root = await mount();
+  await click(root, "Edit");
+  type(editor(root, N1) as HTMLTextAreaElement, "rewritten");
+  const save = button(root, "Save");
+  act(() => {
+    save?.click();
+    save?.click();
+  });
+  await flush();
+  gate.release(
+    json(200, { data: note(N1, { body: "rewritten", revision: 2 }) }),
+  );
+  await flush();
+  expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+  expect(root.textContent).toContain("rewritten");
+});
+
+test("a note created while Load more is in flight is held for that page, not placed early", async () => {
+  const create = held();
+  const page = held();
+  stubFetch(
+    (c) => {
+      if (c.method !== "GET" || !c.url.includes("/notes")) return undefined;
+      return c.url.includes("continue=p2")
+        ? page.promise
+        : json(200, { data: [note(N2)], metadata: { continue: "p2" } });
+    },
+    (c) => (c.method === "POST" ? create.promise : undefined),
+  );
+  const root = await mount();
+  submitNew(root, "held note");
+  await flush();
+  await click(root, "Load more notes");
+  create.release(json(201, { data: note(N1, { body: "held note" }) }));
+  await flush();
+  // The create landed mid-load: nothing is announced yet.
+  expect(root.textContent).not.toContain("Note added");
+  page.release(json(200, { data: [note("p2-note")], metadata: {} }));
+  await flush();
+  const list = root.querySelector("ol[aria-label='Notes']")?.textContent ?? "";
+  expect(list).toContain("held note");
+  expect(list).toContain("body of p2-note");
+  expect(root.textContent).not.toContain("Note added");
+});
+
+test("a save that lands after Load more completed keeps the loaded page", async () => {
+  const save = held();
+  stubFetch(
+    listRoute(() => ({
+      "": { items: [note(N1)], next: "p2" },
+      p2: { items: [note(N2)] },
+    })),
+    (c) => (c.method === "PUT" ? save.promise : undefined),
+  );
+  const root = await mount();
+  await click(root, "Edit");
+  type(editor(root, N1) as HTMLTextAreaElement, "rewritten");
+  await click(root, "Save");
+  await click(root, "Load more notes");
+  expect(root.textContent).toContain(`body of ${N2}`);
+  save.release(
+    json(200, { data: note(N1, { body: "rewritten", revision: 2 }) }),
+  );
+  await flush();
+  const list = root.querySelector("ol[aria-label='Notes']")?.textContent ?? "";
+  expect(list).toContain("rewritten");
+  expect(list).toContain(`body of ${N2}`);
+});
+
+test("a delete that lands after Load more completed keeps the loaded page", async () => {
+  const del = held();
+  stubFetch(
+    listRoute(() => ({
+      "": { items: [note(N1)], next: "p2" },
+      p2: { items: [note(N2, { authorId: "bob" })] },
+    })),
+    (c) => (c.method === "DELETE" ? del.promise : undefined),
+  );
+  const root = await mount();
+  await click(root, "Delete");
+  await click(root, "Confirm delete");
+  await click(root, "Load more notes");
+  del.release(json(204, null));
+  await flush();
+  const list = root.querySelector("ol[aria-label='Notes']")?.textContent ?? "";
+  expect(list).not.toContain(`body of ${N1}`);
+  expect(list).toContain(`body of ${N2}`);
+});
+
+test("a page that was asked for before a save landed is appended to the list as the save left it", async () => {
+  const save = held();
+  const page = held();
+  stubFetch((c) => {
+    if (c.method === "GET" && c.url.includes("/notes")) {
+      return c.url.includes("continue=p2")
+        ? page.promise
+        : json(200, { data: [note(N1)], metadata: { continue: "p2" } });
+    }
+    return c.method === "PUT" ? save.promise : undefined;
+  });
+  const root = await mount();
+  await click(root, "Edit");
+  type(editor(root, N1) as HTMLTextAreaElement, "rewritten");
+  await click(root, "Save");
+  await click(root, "Load more notes");
+  save.release(
+    json(200, { data: note(N1, { body: "rewritten", revision: 2 }) }),
+  );
+  await flush();
+  page.release(json(200, { data: [note(N2)], metadata: {} }));
+  await flush();
+  const list = root.querySelector("ol[aria-label='Notes']")?.textContent ?? "";
+  expect(list).toContain("rewritten");
+  expect(list).toContain(`body of ${N2}`);
+});
+
+test("a page issued while a save was pending does not rebind the editor after that save conflicts", async () => {
+  const save = held();
+  const page = held();
+  stubFetch((c) => {
+    if (c.method === "GET" && c.url.includes("/notes")) {
+      return c.url.includes("continue=p2")
+        ? page.promise
+        : json(200, {
+            data: [note(N1)],
+            metadata: { continue: "p2" },
+          });
+    }
+    return c.method === "PUT" ? save.promise : undefined;
+  });
+  const root = await mount();
+  await click(root, "Edit");
+  type(editor(root, N1) as HTMLTextAreaElement, "mine");
+  await click(root, "Save");
+  await click(root, "Load more notes");
+  save.release(conflict(3));
+  await flush();
+  expect(root.textContent).toContain("Your last loaded copy");
+  // The page was issued before the 409, so it may predate the conflicting save.
+  page.release(
+    json(200, {
+      data: [
+        note("other", { body: "x" }),
+        note(N1, { revision: 3, body: "theirs" }),
+      ],
+      metadata: {},
+    }),
+  );
+  await flush();
+  expect(root.textContent).toContain("Your last loaded copy");
+  expect(root.textContent).not.toContain("Current saved text");
 });

@@ -1,17 +1,14 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
 import { setAccessToken } from "@/lib/api.ts";
+import { act, render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The per-cluster metrics binding form (#608 PR 4a). The island only runs its
- * mount effect when `IS_BROWSER` is true, so this file stubs it for its own
- * island and puts the real value back afterwards (as DiagnosticWorkspace_test).
+ * mount effect when `IS_BROWSER` is true, which `setupDom` sets for this file
+ * and puts back afterwards.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+setupDom({ browser: true });
 
 const toasts: Array<{ message: string; type: string }> = [];
 // bun shares modules across test files, so the real module is kept and put
@@ -29,9 +26,7 @@ mock.module("@/src/lib/toast-store.ts", () => ({
 const { default: ClusterManager } = await import("./ClusterManager.tsx");
 
 afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
   mock.module("@/src/lib/toast-store.ts", () => realToastStore);
-  GlobalRegistrator.unregister();
 });
 
 interface Call {
@@ -40,7 +35,6 @@ interface Call {
   body: Record<string, unknown> | null;
 }
 
-let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 let calls: Call[] = [];
 
@@ -95,6 +89,8 @@ let logsReplies: Record<string, Reply> = {};
 // response open; and an opt-in second remote cluster.
 let pathReplies: Record<string, Record<string, Promise<Reply>>> = {};
 let withSecondRemote = false;
+// "METHOD /path-suffix" -> reply, for the cluster list's own endpoints.
+let routeReplies: Record<string, Reply> = {};
 
 beforeEach(() => {
   toasts.length = 0;
@@ -103,6 +99,7 @@ beforeEach(() => {
   logsReplies = {};
   pathReplies = {};
   withSecondRemote = false;
+  routeReplies = {};
   originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input).replace(/^https?:\/\/[^/]+/, "");
@@ -110,7 +107,12 @@ beforeEach(() => {
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     calls.push({ method, path, body });
     let reply: Reply = { status: 404, body: {} };
-    if (path.endsWith("/v1/clusters")) {
+    const routed = Object.entries(routeReplies).find(
+      ([k]) => k === `${method} ${path.replace(/^\/api/, "")}`,
+    )?.[1];
+    if (routed) {
+      reply = routed;
+    } else if (path.endsWith("/v1/clusters") && method === "GET") {
       const list = withSecondRemote
         ? [...CLUSTERS, { ...CLUSTERS[1], id: "c-other", name: "other" }]
         : CLUSTERS;
@@ -135,29 +137,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   if (originalFetch) globalThis.fetch = originalFetch;
   setAccessToken(null);
 });
 
-async function settle() {
-  for (let i = 0; i < 5; i++) {
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-  }
-}
-
 async function mount() {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<ClusterManager />, host as HTMLElement));
+  const { container } = render(<ClusterManager />);
   await settle();
-  return host;
+  return container as HTMLElement;
 }
 
 function button(root: HTMLElement, label: string): HTMLButtonElement {
@@ -488,4 +475,122 @@ test("a save that finishes after the form moved to another cluster still flips t
     "metrics: configured",
     "metrics: not configured",
   ]);
+});
+
+function field(root: HTMLElement, selector: string): HTMLInputElement {
+  const el = root.querySelector(selector);
+  if (!el) throw new Error(`no ${selector}`);
+  return el as HTMLInputElement;
+}
+
+async function typeText(
+  el: HTMLInputElement | HTMLTextAreaElement,
+  value: string,
+) {
+  await act(async () => {
+    el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+test("lists the registered clusters with the count", async () => {
+  const root = await mount();
+  expect(root.textContent).toContain("2 clusters registered");
+  expect(root.textContent).toContain("Remote");
+  expect(root.textContent).toContain("https://k8s.example.com");
+});
+
+test("Register Cluster stays disabled until a CA or the insecure opt-in is given", async () => {
+  const root = await mount();
+  await click(button(root, "Add Cluster"));
+  const register = () => button(root, "Register Cluster");
+  expect(register().disabled).toBe(true);
+  await typeText(input(root, "production-us-east"), "prod");
+  await typeText(input(root, "https://k8s-api"), "https://api.example.com");
+  await typeText(field(root, "textarea[placeholder^='eyJ']"), "tok");
+  expect(register().disabled).toBe(true);
+  await typeText(
+    field(root, "textarea[placeholder^='-----BEGIN']"),
+    "-----BEGIN CERTIFICATE-----",
+  );
+  expect(register().disabled).toBe(false);
+});
+
+test("registering posts the form, returns to the list and reloads it", async () => {
+  routeReplies["POST /v1/clusters"] = { status: 201, body: { data: {} } };
+  const root = await mount();
+  await click(button(root, "Add Cluster"));
+  await typeText(input(root, "production-us-east"), "prod");
+  await typeText(input(root, "Production US"), "Prod");
+  await typeText(input(root, "https://k8s-api"), "https://api.example.com");
+  await typeText(field(root, "textarea[placeholder^='eyJ']"), "tok");
+  await typeText(field(root, "textarea[placeholder^='-----BEGIN']"), "CERT");
+  const listCalls = calls.filter(
+    (c) => c.method === "GET" && c.path.endsWith("/v1/clusters"),
+  ).length;
+  await click(button(root, "Register Cluster"));
+  const posts = calls.filter((c) => c.method === "POST");
+  expect(posts.length).toBe(1);
+  expect(posts[0].body).toEqual({
+    name: "prod",
+    displayName: "Prod",
+    apiServerUrl: "https://api.example.com",
+    token: "tok",
+    caCert: "CERT",
+    allowInsecureTLS: false,
+  });
+  expect(root.textContent).toContain("clusters registered");
+  expect(
+    calls.filter((c) => c.method === "GET" && c.path.endsWith("/v1/clusters"))
+      .length,
+  ).toBe(listCalls + 1);
+});
+
+test("a rejected registration shows the server's message and keeps the form", async () => {
+  routeReplies["POST /v1/clusters"] = {
+    status: 400,
+    body: { error: { code: 400, message: "apiServerUrl is not allowed" } },
+  };
+  const root = await mount();
+  await click(button(root, "Add Cluster"));
+  await typeText(input(root, "production-us-east"), "prod");
+  await typeText(input(root, "https://k8s-api"), "https://api.example.com");
+  await typeText(field(root, "textarea[placeholder^='eyJ']"), "tok");
+  await typeText(field(root, "textarea[placeholder^='-----BEGIN']"), "CERT");
+  await click(button(root, "Register Cluster"));
+  expect(root.textContent).toContain("apiServerUrl is not allowed");
+  expect(input(root, "production-us-east").value).toBe("prod");
+});
+
+test("Test replaces the cluster's status from the response and toasts", async () => {
+  routeReplies["POST /v1/clusters/c-remote/test"] = {
+    status: 200,
+    body: {
+      data: { ...CLUSTERS[1], status: "unreachable", statusMessage: "refused" },
+    },
+  };
+  const root = await mount();
+  await click(button(root, "Test"));
+  expect(toasts.at(-1)).toEqual({
+    message: "Connection failed",
+    type: "error",
+  });
+  expect(root.textContent).toContain("refused");
+  expect(root.textContent).toContain("unreachable");
+});
+
+test("Remove asks first, deletes, and reloads the list", async () => {
+  routeReplies["DELETE /v1/clusters/c-remote"] = { status: 204 };
+  let asked = 0;
+  globalThis.confirm = () => {
+    asked++;
+    return false;
+  };
+  const root = await mount();
+  await click(button(root, "Remove"));
+  expect(asked).toBe(1);
+  expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  globalThis.confirm = () => true;
+  await click(button(root, "Remove"));
+  expect(calls.filter((c) => c.method === "DELETE").length).toBe(1);
 });

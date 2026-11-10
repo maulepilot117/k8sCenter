@@ -1,5 +1,11 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type ChangeEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   SeverityDot,
   SourceBadge,
@@ -16,19 +22,39 @@ import {
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const PAGE_SIZE = 25;
 
+interface FeedQuery {
+  page: number;
+  source: string;
+  severity: string;
+  read: string;
+}
+
 export default function NotificationFeed() {
-  const notifications = useSignal<AppNotification[]>([]);
-  const total = useSignal(0);
-  const loading = useSignal(true);
-  const page = useSignal(0);
-  const filterSource = useSignal<string>("all");
-  const filterSeverity = useSignal<string>("all");
-  const filterRead = useSignal<string>("all");
+  const isClient = useIsClient();
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const [filterSource, setFilterSource] = useState<string>("all");
+  const [filterSeverity, setFilterSeverity] = useState<string>("all");
+  const [filterRead, setFilterRead] = useState<string>("all");
   const fetchSeq = useRef(0); // sequence counter to discard stale fetch results
   const mounted = useRef(true);
+
+  // The live-update refetch runs long after the render that registered it,
+  // so it reads the filters and page as they are when it fires.
+  const queryRef = useLatest<FeedQuery>({
+    page,
+    source: filterSource,
+    severity: filterSeverity,
+    read: filterRead,
+  });
 
   useEffect(
     () => () => {
@@ -37,73 +63,82 @@ export default function NotificationFeed() {
     [],
   );
 
-  async function fetchData() {
+  const fetchData = useCallback(async (query: FeedQuery) => {
     const seq = ++fetchSeq.current;
     try {
       const params: Record<string, string | number> = {
         limit: PAGE_SIZE,
-        offset: page.value * PAGE_SIZE,
+        offset: query.page * PAGE_SIZE,
       };
-      if (filterSource.value !== "all") params.source = filterSource.value;
-      if (filterSeverity.value !== "all") {
-        params.severity = filterSeverity.value;
+      if (query.source !== "all") params.source = query.source;
+      if (query.severity !== "all") {
+        params.severity = query.severity;
       }
-      if (filterRead.value !== "all") params.read = filterRead.value;
+      if (query.read !== "all") params.read = query.read;
 
       const res = await notifApi.list(
         params as unknown as Parameters<typeof notifApi.list>[0],
       );
       if (seq !== fetchSeq.current || !mounted.current) return; // stale response
-      notifications.value = res.data ?? [];
-      total.value = res.metadata?.total ?? 0;
+      setNotifications(res.data ?? []);
+      setTotal(res.metadata?.total ?? 0);
     } catch {
       if (seq !== fetchSeq.current || !mounted.current) return;
-      notifications.value = [];
-      total.value = 0;
+      setNotifications([]);
+      setTotal(0);
     } finally {
-      if (seq === fetchSeq.current) loading.value = false;
+      if (seq === fetchSeq.current) setLoading(false);
     }
-  }
+  }, []);
 
   // Fetch on mount + re-fetch when filters or page change
   useEffect(() => {
     if (!IS_BROWSER) return;
-    loading.value = true;
-    fetchData();
-  }, [filterSource.value, filterSeverity.value, filterRead.value, page.value]);
+    setLoading(true);
+    fetchData({
+      page,
+      source: filterSource,
+      severity: filterSeverity,
+      read: filterRead,
+    });
+  }, [filterSource, filterSeverity, filterRead, page, fetchData]);
 
   // Live WS updates with 2s debounce
-  useWsRefetch(fetchData, [["notif-feed", "notifications", ""]], 2000);
+  useWsRefetch(
+    () => fetchData(queryRef.current),
+    [["notif-feed", "notifications", ""]],
+    2000,
+  );
 
   function resetAndFilter() {
-    page.value = 0;
+    setPage(0);
   }
 
-  function handleSourceChange(e: Event) {
-    filterSource.value = (e.target as HTMLSelectElement).value;
+  function handleSourceChange(e: ChangeEvent<HTMLSelectElement>) {
+    setFilterSource(e.currentTarget.value);
     resetAndFilter();
   }
 
-  function handleSeverityChange(e: Event) {
-    filterSeverity.value = (e.target as HTMLSelectElement).value;
+  function handleSeverityChange(e: ChangeEvent<HTMLSelectElement>) {
+    setFilterSeverity(e.currentTarget.value);
     resetAndFilter();
   }
 
-  function handleReadChange(e: Event) {
-    filterRead.value = (e.target as HTMLSelectElement).value;
+  function handleReadChange(e: ChangeEvent<HTMLSelectElement>) {
+    setFilterRead(e.currentTarget.value);
     resetAndFilter();
   }
 
-  const { user } = useAuth();
-  const isAdmin = !!user.value?.roles?.includes("admin");
+  const user = useSignalValue(useAuth().user);
+  const isAdmin = !!user?.roles?.includes("admin");
 
   function handleRowClick(n: AppNotification) {
     // Fire-and-forget markRead with keepalive so it survives page navigation
     if (!n.read) {
       notifApi.markReadQuiet(n.id).catch(() => {});
       // Optimistic read-state update
-      notifications.value = notifications.value.map((item) =>
-        item.id === n.id ? { ...item, read: true } : item,
+      setNotifications((prev) =>
+        prev.map((item) => (item.id === n.id ? { ...item, read: true } : item)),
       );
     }
     const href = notifActionUrl(n, { isAdmin });
@@ -112,12 +147,12 @@ export default function NotificationFeed() {
     }
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const start = page.value * PAGE_SIZE;
-  const end = Math.min(start + PAGE_SIZE, total.value);
-  const hasNext = end < total.value;
-  const hasPrev = page.value > 0;
+  const start = page * PAGE_SIZE;
+  const end = Math.min(start + PAGE_SIZE, total);
+  const hasNext = end < total;
+  const hasPrev = page > 0;
 
   const selectStyle = {
     padding: "6px 10px",
@@ -133,7 +168,7 @@ export default function NotificationFeed() {
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
       {/* Filter bar */}
       <div
-        class="flex flex-wrap items-center gap-3"
+        className="flex flex-wrap items-center gap-3"
         style={{
           padding: "12px 16px",
           backgroundColor: "var(--bg-elevated)",
@@ -142,12 +177,12 @@ export default function NotificationFeed() {
         }}
       >
         <label
-          class="flex items-center gap-1.5 text-xs"
+          className="flex items-center gap-1.5 text-xs"
           style={{ color: "var(--text-muted)" }}
         >
           Source
           <select
-            value={filterSource.value}
+            value={filterSource}
             onChange={handleSourceChange}
             style={selectStyle}
           >
@@ -161,12 +196,12 @@ export default function NotificationFeed() {
         </label>
 
         <label
-          class="flex items-center gap-1.5 text-xs"
+          className="flex items-center gap-1.5 text-xs"
           style={{ color: "var(--text-muted)" }}
         >
           Severity
           <select
-            value={filterSeverity.value}
+            value={filterSeverity}
             onChange={handleSeverityChange}
             style={selectStyle}
           >
@@ -180,12 +215,12 @@ export default function NotificationFeed() {
         </label>
 
         <label
-          class="flex items-center gap-1.5 text-xs"
+          className="flex items-center gap-1.5 text-xs"
           style={{ color: "var(--text-muted)" }}
         >
           Status
           <select
-            value={filterRead.value}
+            value={filterRead}
             onChange={handleReadChange}
             style={selectStyle}
           >
@@ -197,16 +232,16 @@ export default function NotificationFeed() {
       </div>
 
       {/* Content */}
-      {loading.value ? (
+      {loading ? (
         <div
-          class="flex items-center justify-center"
+          className="flex items-center justify-center"
           style={{ padding: "48px 0", color: "var(--text-muted)" }}
         >
           Loading...
         </div>
-      ) : notifications.value.length === 0 ? (
+      ) : notifications.length === 0 ? (
         <div
-          class="flex items-center justify-center"
+          className="flex items-center justify-center"
           style={{ padding: "48px 0", color: "var(--text-muted)" }}
         >
           No notifications yet
@@ -279,7 +314,7 @@ export default function NotificationFeed() {
                 </tr>
               </thead>
               <tbody>
-                {notifications.value.map((n) => {
+                {notifications.map((n) => {
                   const isUnread = !n.read;
                   const href = notifActionUrl(n, { isAdmin });
                   return (
@@ -295,16 +330,12 @@ export default function NotificationFeed() {
                         transition: "background-color 0.15s",
                       }}
                       onMouseEnter={(e) => {
-                        (
-                          e.currentTarget as HTMLTableRowElement
-                        ).style.backgroundColor = isUnread
+                        e.currentTarget.style.backgroundColor = isUnread
                           ? "color-mix(in srgb, var(--accent) 12%, transparent)"
                           : "color-mix(in srgb, var(--text-primary) 4%, transparent)";
                       }}
                       onMouseLeave={(e) => {
-                        (
-                          e.currentTarget as HTMLTableRowElement
-                        ).style.backgroundColor = isUnread
+                        e.currentTarget.style.backgroundColor = isUnread
                           ? "color-mix(in srgb, var(--accent) 6%, transparent)"
                           : "transparent";
                       }}
@@ -356,7 +387,7 @@ export default function NotificationFeed() {
 
           {/* Pagination */}
           <div
-            class="flex items-center justify-between"
+            className="flex items-center justify-between"
             style={{
               padding: "0 4px",
               color: "var(--text-muted)",
@@ -364,14 +395,14 @@ export default function NotificationFeed() {
             }}
           >
             <span>
-              Showing {start + 1}-{end} of {total.value}
+              Showing {start + 1}-{end} of {total}
             </span>
-            <div class="flex items-center gap-2">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 disabled={!hasPrev}
                 onClick={() => {
-                  page.value = page.value - 1;
+                  setPage(page - 1);
                 }}
                 style={{
                   padding: "6px 14px",
@@ -390,7 +421,7 @@ export default function NotificationFeed() {
                 type="button"
                 disabled={!hasNext}
                 onClick={() => {
-                  page.value = page.value + 1;
+                  setPage(page + 1);
                 }}
                 style={{
                   padding: "6px 14px",

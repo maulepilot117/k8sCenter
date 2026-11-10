@@ -1,9 +1,7 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The "New incident" form's outstanding create across a reload (#597). A
@@ -12,17 +10,13 @@ import { setAccessToken } from "@/lib/api.ts";
  * go through a fetch stub that routes by method and path and records every
  * call; navigation is observed through a spy on `location.assign`.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
+setupDom({ browser: true });
 
 const { default: IncidentList } = await import("./IncidentList.tsx");
 const { currentUserId, fetchCurrentUser, logout } = await import(
   "@/lib/auth.ts"
 );
 const { PENDING_INTENT_MAX_AGE_MS } = await import("@/lib/incident-create.ts");
-
-afterAll(() => {
-  GlobalRegistrator.unregister();
-});
 
 interface Call {
   method: string;
@@ -32,7 +26,7 @@ interface Call {
 type Reply = { status: number; body: unknown };
 type Route = (call: Call) => Reply | Promise<Reply> | undefined;
 
-let host: HTMLElement | null = null;
+let view: ReturnType<typeof render> | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 let calls: Call[] = [];
 let assigned: string[] = [];
@@ -230,19 +224,16 @@ async function settle() {
 /** Mounts the island (a page load) with `user` signed in. */
 async function mount(user: string | null = "u1") {
   if (user !== null && currentUserId() !== user) await signIn(user);
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<IncidentList />, host as HTMLElement));
+  view = render(<IncidentList />);
   await settle();
-  return host;
+  return view.container as HTMLElement;
 }
 
 /** Unmounts the island and drops the host, as leaving the page does. */
 function unmount() {
-  if (!host) return;
-  act(() => render(null, host as HTMLElement));
-  host.remove();
-  host = null;
+  const mounted = view;
+  if (mounted) act(() => mounted.unmount());
+  view = null;
 }
 
 /** A reload: the island goes away and a new one mounts. */
@@ -995,4 +986,138 @@ test("a create restored after a reload keeps its id through a 413, like a 400", 
   await submit(root);
   expect(requestIdOf(creates()[0])).toBe(SEEDED_ID);
   expect(stored().requestId).toBe(SEEDED_ID);
+});
+
+// --- The list: paging, retry, and the in-flight guards ---------------------------
+
+const listRow = (n: number) => ({
+  id: incidentId(n),
+  ownerId: "u1",
+  clusterId: "local",
+  title: `Incident ${n}`,
+  summary: "",
+  status: "open",
+  windowStart: "2026-10-06T00:00:00Z",
+  retentionDays: 30,
+  createdAt: "2026-10-06T00:00:00Z",
+  updatedAt: "2026-10-06T00:00:00Z",
+  role: "owner",
+  canAnnotate: true,
+});
+const listPage = (rows: number[], next?: string) =>
+  json(200, { data: rows.map(listRow), metadata: { continue: next } });
+const listCalls = () => calls.filter((c) => c.method === "GET");
+const titles = (root: HTMLElement) =>
+  [...root.querySelectorAll("tbody a")].map((a) => a.textContent);
+
+test("Load more appends the next page and sends the cursor of the page before", async () => {
+  stub((c) =>
+    c.method !== "GET"
+      ? undefined
+      : c.path.includes("continue=c2")
+        ? listPage([3])
+        : c.path.includes("continue=c1")
+          ? listPage([2], "c2")
+          : listPage([1], "c1"),
+  );
+  const root = await mount();
+  expect(titles(root)).toEqual(["Incident 1"]);
+
+  await click(buttonNamed(root, "Load more"));
+  expect(titles(root)).toEqual(["Incident 1", "Incident 2"]);
+  await click(buttonNamed(root, "Load more"));
+  expect(titles(root)).toEqual(["Incident 1", "Incident 2", "Incident 3"]);
+  expect(listCalls().map((c) => c.path)).toEqual([
+    "/api/v1/incidents?limit=50",
+    "/api/v1/incidents?limit=50&continue=c1",
+    "/api/v1/incidents?limit=50&continue=c2",
+  ]);
+  expect(
+    [...root.querySelectorAll("button")].some(
+      (b) => b.textContent === "Load more",
+    ),
+  ).toBe(false);
+});
+
+test("a second Load more activation before the page renders again asks once", async () => {
+  let release: () => void = () => {};
+  stub((c) =>
+    c.method !== "GET"
+      ? undefined
+      : c.path.includes("continue=c1")
+        ? new Promise<Reply>((resolve) => {
+            release = () => resolve(listPage([2]));
+          })
+        : listPage([1], "c1"),
+  );
+  const root = await mount();
+  const more = buttonNamed(root, "Load more");
+  act(() => {
+    more.click();
+    more.click();
+  });
+  await settle();
+  release();
+  await settle();
+  expect(listCalls()).toHaveLength(2);
+  expect(titles(root)).toEqual(["Incident 1", "Incident 2"]);
+});
+
+test("a failed read shows its message and keeps the rows; two Retry activations ask once and re-ask the same cursor", async () => {
+  let fail = false;
+  let release: () => void = () => {};
+  stub((c) => {
+    if (c.method !== "GET") return undefined;
+    if (!c.path.includes("continue=c1")) return listPage([1], "c1");
+    if (fail) return busyReply;
+    return new Promise<Reply>((resolve) => {
+      release = () => resolve(listPage([2]));
+    });
+  });
+  const root = await mount();
+  fail = true;
+  await click(buttonNamed(root, "Load more"));
+  expect(root.textContent).toContain("The incident store is busy");
+  expect(titles(root)).toEqual(["Incident 1"]);
+
+  fail = false;
+  const retry = buttonNamed(root, "Retry");
+  const before = listCalls().length;
+  act(() => {
+    retry.click();
+    retry.click();
+  });
+  await settle();
+  expect(listCalls().length - before).toBe(1);
+  expect(listCalls().at(-1)?.path).toContain("continue=c1");
+  expect(root.textContent).not.toContain("The incident store is busy");
+  release();
+  await settle();
+  expect(titles(root)).toEqual(["Incident 1", "Incident 2"]);
+});
+
+test("a second submit before the form renders again sends one create", async () => {
+  let release: () => void = () => {};
+  serve(
+    () =>
+      new Promise<Reply>((resolve) => {
+        release = () => resolve(busyReply);
+      }),
+  );
+  const root = await mount();
+  await openForm(root);
+  await type(root, "incident-title", "API latency");
+  act(() => {
+    const form = root.querySelector("form") as HTMLFormElement;
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+  });
+  await settle();
+  release();
+  await settle();
+  expect(creates()).toHaveLength(1);
 });

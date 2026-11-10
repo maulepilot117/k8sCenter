@@ -41,8 +41,7 @@ export const INSTANCE_SUFFIX_LEN = 8;
  * secure context (HTTPS) and is `undefined` on the HTTP-only homelab
  * deployment this repo ships values for, which made this function throw
  * inside the palette's click handler and turned "Add widget" into a silent
- * no-op. Same convention as `GaugeRing.tsx`'s gradient ids, for the same
- * reason. Eight base-36 characters is still far more entropy than a layout
+ * no-op. Eight base-36 characters is still far more entropy than a layout
  * that holds at most `DASHBOARD_MAX_ITEMS` of them needs, and the full id
  * stays well inside the 64-rune bound the server stores it under.
  *

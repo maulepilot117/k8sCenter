@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { Input } from "@/components/ui/Input.tsx";
@@ -23,104 +23,105 @@ interface AlertingSettings {
 }
 
 export default function AlertSettings() {
-  const settings = useSignal<AlertingSettings | null>(null);
-  const loading = useSignal(true);
-  const saving = useSignal(false);
-  const testing = useSignal(false);
-  const error = useSignal<string | null>(null);
-  const success = useSignal<string | null>(null);
+  const [settings, setSettings] = useState<AlertingSettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   // Form state
-  const smtpHost = useSignal("");
-  const smtpPort = useSignal(587);
-  const smtpUsername = useSignal("");
-  const smtpPassword = useSignal("");
-  const smtpFrom = useSignal("");
-  const smtpTLSInsecure = useSignal(false);
-  const enabled = useSignal(false);
-  const rateLimit = useSignal(120);
-  const retentionDays = useSignal(30);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState(587);
+  const [smtpUsername, setSmtpUsername] = useState("");
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [smtpFrom, setSmtpFrom] = useState("");
+  const [smtpTLSInsecure, setSmtpTLSInsecure] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [rateLimit, setRateLimit] = useState(120);
+  const [retentionDays, setRetentionDays] = useState(30);
 
   function fetchSettings() {
-    loading.value = true;
+    setLoading(true);
     apiGet<AlertingSettings>("/v1/alerts/settings")
       .then((res) => {
         const s = res.data;
         if (s) {
-          settings.value = s;
-          smtpHost.value = s.smtp.host;
-          smtpPort.value = s.smtp.port;
-          smtpUsername.value = s.smtp.username;
-          smtpFrom.value = s.smtp.from;
-          smtpTLSInsecure.value = s.smtp.tlsInsecure;
-          enabled.value = s.enabled;
-          rateLimit.value = s.rateLimit;
-          retentionDays.value = s.retentionDays;
+          setSettings(s);
+          setSmtpHost(s.smtp.host);
+          setSmtpPort(s.smtp.port);
+          setSmtpUsername(s.smtp.username);
+          setSmtpFrom(s.smtp.from);
+          setSmtpTLSInsecure(s.smtp.tlsInsecure);
+          setEnabled(s.enabled);
+          setRateLimit(s.rateLimit);
+          setRetentionDays(s.retentionDays);
         }
-        error.value = null;
+        setError(null);
       })
       .catch((err) => {
-        error.value = err.message ?? "Failed to fetch settings";
+        setError(err.message ?? "Failed to fetch settings");
       })
       .finally(() => {
-        loading.value = false;
+        setLoading(false);
       });
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `fetchSettings` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchSettings();
   }, []);
 
   function handleSave() {
-    saving.value = true;
-    error.value = null;
-    success.value = null;
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
 
     apiPut("/v1/alerts/settings", {
-      enabled: enabled.value,
-      rateLimit: rateLimit.value,
-      retentionDays: retentionDays.value,
+      enabled,
+      rateLimit,
+      retentionDays,
       smtp: {
-        host: smtpHost.value,
-        port: smtpPort.value,
-        username: smtpUsername.value,
-        password: smtpPassword.value,
-        from: smtpFrom.value,
-        tlsInsecure: smtpTLSInsecure.value,
+        host: smtpHost,
+        port: smtpPort,
+        username: smtpUsername,
+        password: smtpPassword,
+        from: smtpFrom,
+        tlsInsecure: smtpTLSInsecure,
       },
     })
       .then(() => {
-        success.value = "Settings saved.";
-        smtpPassword.value = ""; // Clear password field after save
+        setSuccess("Settings saved.");
+        setSmtpPassword("");
         fetchSettings();
       })
       .catch((err) => {
-        error.value = err.message ?? "Failed to save settings";
+        setError(err.message ?? "Failed to save settings");
       })
       .finally(() => {
-        saving.value = false;
+        setSaving(false);
       });
   }
 
   function handleTestEmail() {
-    testing.value = true;
-    error.value = null;
-    success.value = null;
+    setTesting(true);
+    setError(null);
+    setSuccess(null);
 
     apiPost("/v1/alerts/test")
       .then(() => {
-        success.value = "Test email queued successfully.";
+        setSuccess("Test email queued successfully.");
       })
       .catch((err) => {
-        error.value = err.message ?? "Failed to send test email";
+        setError(err.message ?? "Failed to send test email");
       })
       .finally(() => {
-        testing.value = false;
+        setTesting(false);
       });
   }
 
-  if (loading.value) {
+  if (loading) {
     return (
       <div
         style={{
@@ -152,9 +153,9 @@ export default function AlertSettings() {
         restart. Use environment variables for persistent configuration.
       </div>
 
-      {error.value && <ErrorBanner message={error.value} />}
+      {error && <ErrorBanner message={error} />}
 
-      {success.value && (
+      {success && (
         <div
           style={{
             borderRadius: "12px",
@@ -165,7 +166,7 @@ export default function AlertSettings() {
             color: "var(--success)",
           }}
         >
-          {success.value}
+          {success}
         </div>
       )}
 
@@ -176,10 +177,8 @@ export default function AlertSettings() {
             <input
               type="checkbox"
               id="alerting-enabled"
-              checked={enabled.value}
-              onChange={(e) =>
-                (enabled.value = (e.target as HTMLInputElement).checked)
-              }
+              checked={enabled}
+              onChange={(e) => setEnabled(e.currentTarget.checked)}
               style={{
                 width: "16px",
                 height: "16px",
@@ -188,7 +187,7 @@ export default function AlertSettings() {
               }}
             />
             <label
-              for="alerting-enabled"
+              htmlFor="alerting-enabled"
               style={{
                 fontSize: "13px",
                 color: "var(--text-muted)",
@@ -208,19 +207,17 @@ export default function AlertSettings() {
             <Input
               label="Rate Limit (emails/hour)"
               type="number"
-              value={String(rateLimit.value)}
-              onInput={(e) =>
-                (rateLimit.value =
-                  parseInt((e.target as HTMLInputElement).value, 10) || 120)
+              value={String(rateLimit)}
+              onChange={(e) =>
+                setRateLimit(parseInt(e.currentTarget.value, 10) || 120)
               }
             />
             <Input
               label="Retention (days)"
               type="number"
-              value={String(retentionDays.value)}
-              onInput={(e) =>
-                (retentionDays.value =
-                  parseInt((e.target as HTMLInputElement).value, 10) || 30)
+              value={String(retentionDays)}
+              onChange={(e) =>
+                setRetentionDays(parseInt(e.currentTarget.value, 10) || 30)
               }
             />
           </div>
@@ -239,19 +236,16 @@ export default function AlertSettings() {
           >
             <Input
               label="SMTP Host"
-              value={smtpHost.value}
-              onInput={(e) =>
-                (smtpHost.value = (e.target as HTMLInputElement).value)
-              }
+              value={smtpHost}
+              onChange={(e) => setSmtpHost(e.currentTarget.value)}
               placeholder="smtp.example.com"
             />
             <Input
               label="Port"
               type="number"
-              value={String(smtpPort.value)}
-              onInput={(e) =>
-                (smtpPort.value =
-                  parseInt((e.target as HTMLInputElement).value, 10) || 587)
+              value={String(smtpPort)}
+              onChange={(e) =>
+                setSmtpPort(parseInt(e.currentTarget.value, 10) || 587)
               }
             />
           </div>
@@ -264,20 +258,16 @@ export default function AlertSettings() {
           >
             <Input
               label="Username"
-              value={smtpUsername.value}
-              onInput={(e) =>
-                (smtpUsername.value = (e.target as HTMLInputElement).value)
-              }
+              value={smtpUsername}
+              onChange={(e) => setSmtpUsername(e.currentTarget.value)}
             />
             <Input
               label="Password"
               type="password"
-              value={smtpPassword.value}
-              onInput={(e) =>
-                (smtpPassword.value = (e.target as HTMLInputElement).value)
-              }
+              value={smtpPassword}
+              onChange={(e) => setSmtpPassword(e.currentTarget.value)}
               placeholder={
-                settings.value?.smtp.password
+                settings?.smtp.password
                   ? "**** (leave empty to keep current)"
                   : ""
               }
@@ -285,20 +275,16 @@ export default function AlertSettings() {
           </div>
           <Input
             label="From Address"
-            value={smtpFrom.value}
-            onInput={(e) =>
-              (smtpFrom.value = (e.target as HTMLInputElement).value)
-            }
+            value={smtpFrom}
+            onChange={(e) => setSmtpFrom(e.currentTarget.value)}
             placeholder="alerts@example.com"
           />
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <input
               type="checkbox"
               id="tls-insecure"
-              checked={smtpTLSInsecure.value}
-              onChange={(e) =>
-                (smtpTLSInsecure.value = (e.target as HTMLInputElement).checked)
-              }
+              checked={smtpTLSInsecure}
+              onChange={(e) => setSmtpTLSInsecure(e.currentTarget.checked)}
               style={{
                 width: "16px",
                 height: "16px",
@@ -307,7 +293,7 @@ export default function AlertSettings() {
               }}
             />
             <label
-              for="tls-insecure"
+              htmlFor="tls-insecure"
               style={{
                 fontSize: "13px",
                 color: "var(--text-muted)",
@@ -318,15 +304,15 @@ export default function AlertSettings() {
             </label>
           </div>
           <div style={{ display: "flex", gap: "8px" }}>
-            <Button onClick={handleSave} disabled={saving.value}>
-              {saving.value ? "Saving..." : "Save Settings"}
+            <Button onClick={handleSave} disabled={saving}>
+              {saving ? "Saving..." : "Save Settings"}
             </Button>
             <Button
               variant="secondary"
               onClick={handleTestEmail}
-              disabled={testing.value}
+              disabled={testing}
             >
-              {testing.value ? "Sending..." : "Send Test Email"}
+              {testing ? "Sending..." : "Send Test Email"}
             </Button>
           </div>
         </div>
@@ -388,7 +374,7 @@ export default function AlertSettings() {
                 color: "var(--text-primary)",
               }}
             >
-              {settings.value?.webhookToken || "not configured"}
+              {settings?.webhookToken || "not configured"}
             </code>
           </div>
         </div>

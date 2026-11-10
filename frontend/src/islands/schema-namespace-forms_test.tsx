@@ -157,13 +157,13 @@ function RegisterAction(props: {
   const slot = useContext(WizardPrimaryActionContext);
   useEffect(() => {
     if (!slot) return;
-    slot.value = {
+    slot({
       label: props.label,
       onClick: props.onClick,
       disabled: props.disabled,
-    };
+    });
     return () => {
-      slot.value = null;
+      slot(null);
     };
   }, [slot, props.label, props.onClick, props.disabled]);
   return <p>registering step</p>;

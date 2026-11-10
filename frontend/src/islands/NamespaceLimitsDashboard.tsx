@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import BarRow from "@/components/charts/BarRow.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
@@ -17,6 +17,7 @@ import type {
 } from "@/lib/limits-types.ts";
 import NamespaceLimitsWizard from "@/src/islands/NamespaceLimitsWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 const PAGE_SIZE = 50;
 const PANEL_WIDTH = 400;
@@ -36,17 +37,17 @@ function barColor(status: ThresholdStatus): string {
 }
 
 export default function NamespaceLimitsDashboard() {
-  const status = useSignal<LimitsStatus | null>(null);
-  const summaries = useSignal<NamespaceSummary[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const search = useSignal("");
-  const filterStatus = useSignal<string>("all");
-  const page = useSignal(1);
-  const refreshing = useSignal(false);
+  const isClient = useIsClient();
+  const [, setStatus] = useState<LimitsStatus | null>(null);
+  const [summaries, setSummaries] = useState<NamespaceSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [page, setPage] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Wizard modal signal
-  const wizardOpen = useSignal(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
   useEffect(() => {
@@ -54,7 +55,7 @@ export default function NamespaceLimitsDashboard() {
     if (
       new URL(globalThis.location.href).searchParams.get("action") === "create"
     ) {
-      wizardOpen.value = true;
+      setWizardOpen(true);
       const url = new URL(globalThis.location.href);
       url.searchParams.delete("action");
       globalThis.history.replaceState({}, "", url.toString());
@@ -62,10 +63,12 @@ export default function NamespaceLimitsDashboard() {
   }, []);
 
   // Slide-out panel state
-  const selectedNamespace = useSignal<string | null>(null);
-  const detailData = useSignal<NamespaceLimits | null>(null);
-  const detailLoading = useSignal(false);
-  const detailError = useSignal<string | null>(null);
+  const [selectedNamespace, setSelectedNamespace] = useState<string | null>(
+    null,
+  );
+  const [detailData, setDetailData] = useState<NamespaceLimits | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   async function fetchData() {
     try {
@@ -73,85 +76,84 @@ export default function NamespaceLimitsDashboard() {
         limitsApi.status(),
         limitsApi.list(),
       ]);
-      status.value = statusRes.data;
-      summaries.value = Array.isArray(summariesRes.data)
-        ? summariesRes.data
-        : [];
-      error.value = null;
+      setStatus(statusRes.data);
+      setSummaries(Array.isArray(summariesRes.data) ? summariesRes.data : []);
+      setError(null);
     } catch {
-      error.value = "Failed to load namespace limits data";
+      setError("Failed to load namespace limits data");
     }
   }
 
   async function fetchDetail(namespace: string) {
-    detailLoading.value = true;
-    detailError.value = null;
+    setDetailLoading(true);
+    setDetailError(null);
     try {
       const res = await limitsApi.get(namespace);
-      detailData.value = res.data;
+      setDetailData(res.data);
     } catch {
-      detailError.value = "Failed to load namespace details";
+      setDetailError("Failed to load namespace details");
     } finally {
-      detailLoading.value = false;
+      setDetailLoading(false);
     }
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `fetchData` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
   }, []);
 
   // Fetch detail when namespace is selected
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetches when the selection changes; `fetchDetail` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
-    if (selectedNamespace.value) {
-      fetchDetail(selectedNamespace.value);
+    if (selectedNamespace) {
+      fetchDetail(selectedNamespace);
     } else {
-      detailData.value = null;
+      setDetailData(null);
     }
-  }, [selectedNamespace.value]);
+  }, [selectedNamespace]);
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
-  if (!IS_BROWSER) return null;
-
-  // Compute counts
-  const withQuota = summaries.value.filter((s) => s.hasQuota).length;
-  const warningCount = summaries.value.filter(
-    (s) => s.status === "warning",
-  ).length;
-  const criticalCount = summaries.value.filter(
-    (s) => s.status === "critical",
-  ).length;
-  const noQuotaCount = summaries.value.filter((s) => !s.hasQuota).length;
-
-  // Filter and search
-  const filtered = summaries.value.filter((s) => {
-    if (filterStatus.value === "warning" && s.status !== "warning") {
+  const filtered = summaries.filter((s) => {
+    if (filterStatus === "warning" && s.status !== "warning") {
       return false;
     }
-    if (filterStatus.value === "critical" && s.status !== "critical") {
+    if (filterStatus === "critical" && s.status !== "critical") {
       return false;
     }
-    if (filterStatus.value === "no-quota" && s.hasQuota) return false;
-    if (filterStatus.value === "ok" && s.status !== "ok") return false;
-    if (search.value) {
-      return s.namespace.toLowerCase().includes(search.value.toLowerCase());
+    if (filterStatus === "no-quota" && s.hasQuota) return false;
+    if (filterStatus === "ok" && s.status !== "ok") return false;
+    if (search) {
+      return s.namespace.toLowerCase().includes(search.toLowerCase());
     }
     return true;
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (page.value > totalPages) page.value = totalPages;
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  if (!isClient) return null;
+
+  // Compute counts
+  const withQuota = summaries.filter((s) => s.hasQuota).length;
+  const warningCount = summaries.filter((s) => s.status === "warning").length;
+  const criticalCount = summaries.filter((s) => s.status === "critical").length;
+  const noQuotaCount = summaries.filter((s) => !s.hasQuota).length;
+
+  const currentPage = Math.min(page, totalPages);
   const displayed = filtered.slice(
-    (page.value - 1) * PAGE_SIZE,
-    page.value * PAGE_SIZE,
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
   );
 
   // KPI tile data
@@ -165,8 +167,8 @@ export default function NamespaceLimitsDashboard() {
   return (
     <div style={{ display: "flex", height: "100%" }}>
       {/* Floating wizard modal — rendered above everything when open */}
-      {wizardOpen.value && (
-        <NamespaceLimitsWizard onClose={() => (wizardOpen.value = false)} />
+      {wizardOpen && (
+        <NamespaceLimitsWizard onClose={() => setWizardOpen(false)} />
       )}
 
       {/* Main content */}
@@ -175,7 +177,7 @@ export default function NamespaceLimitsDashboard() {
           flex: 1,
           overflowY: "auto",
           padding: "0",
-          marginRight: selectedNamespace.value ? `${PANEL_WIDTH}px` : 0,
+          marginRight: selectedNamespace ? `${PANEL_WIDTH}px` : 0,
         }}
       >
         {/* Page header */}
@@ -199,12 +201,12 @@ export default function NamespaceLimitsDashboard() {
           >
             Namespace Limits
           </h1>
-          {!loading.value && (
+          {!loading && (
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <Button
                 type="button"
                 variant="primary"
-                onClick={() => (wizardOpen.value = true)}
+                onClick={() => setWizardOpen(true)}
               >
                 Create Limits
               </Button>
@@ -212,9 +214,9 @@ export default function NamespaceLimitsDashboard() {
                 type="button"
                 variant="ghost"
                 onClick={handleRefresh}
-                disabled={refreshing.value}
+                disabled={refreshing}
               >
-                {refreshing.value ? "Refreshing..." : "Refresh"}
+                {refreshing ? "Refreshing..." : "Refresh"}
               </Button>
             </div>
           )}
@@ -229,7 +231,7 @@ export default function NamespaceLimitsDashboard() {
           ResourceQuota and LimitRange management for namespaces.
         </p>
 
-        {loading.value && (
+        {loading && (
           <div
             style={{
               display: "flex",
@@ -242,9 +244,9 @@ export default function NamespaceLimitsDashboard() {
           </div>
         )}
 
-        {error.value && <ErrorBanner message={error.value} />}
+        {error && <ErrorBanner message={error} />}
 
-        {!loading.value && !error.value && (
+        {!loading && !error && (
           <>
             {/* KPI summary tiles — WidgetShell glass, symmetric 2×2 */}
             <div
@@ -300,10 +302,10 @@ export default function NamespaceLimitsDashboard() {
             >
               <div style={{ maxWidth: "280px", flex: "1 1 auto" }}>
                 <SearchBar
-                  value={search.value}
+                  value={search}
                   onInput={(v) => {
-                    search.value = v;
-                    page.value = 1;
+                    setSearch(v);
+                    setPage(1);
                   }}
                   placeholder="Search namespaces..."
                 />
@@ -319,10 +321,10 @@ export default function NamespaceLimitsDashboard() {
                   outline: "none",
                   cursor: "pointer",
                 }}
-                value={filterStatus.value}
+                value={filterStatus}
                 onChange={(e) => {
-                  filterStatus.value = (e.target as HTMLSelectElement).value;
-                  page.value = 1;
+                  setFilterStatus(e.currentTarget.value);
+                  setPage(1);
                 }}
               >
                 <option value="all">All Status</option>
@@ -400,16 +402,17 @@ export default function NamespaceLimitsDashboard() {
                         borderBottom: "1px solid var(--border-primary)",
                         cursor: "pointer",
                         background:
-                          selectedNamespace.value === s.namespace
+                          selectedNamespace === s.namespace
                             ? "color-mix(in srgb, var(--accent) 6%, transparent)"
                             : "transparent",
                         transition: "background 120ms ease",
                       }}
                       onClick={() => {
-                        selectedNamespace.value =
-                          selectedNamespace.value === s.namespace
+                        setSelectedNamespace(
+                          selectedNamespace === s.namespace
                             ? null
-                            : s.namespace;
+                            : s.namespace,
+                        );
                       }}
                     >
                       <td
@@ -523,22 +526,22 @@ export default function NamespaceLimitsDashboard() {
                 }}
               >
                 <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-                  Page {page.value} of {totalPages} ({filtered.length} total)
+                  Page {currentPage} of {totalPages} ({filtered.length} total)
                 </span>
                 <div style={{ display: "flex", gap: "8px" }}>
                   <Button
                     type="button"
                     variant="ghost"
-                    disabled={page.value === 1}
-                    onClick={() => page.value--}
+                    disabled={currentPage === 1}
+                    onClick={() => setPage(currentPage - 1)}
                   >
                     Previous
                   </Button>
                   <Button
                     type="button"
                     variant="ghost"
-                    disabled={page.value === totalPages}
-                    onClick={() => page.value++}
+                    disabled={currentPage === totalPages}
+                    onClick={() => setPage(currentPage + 1)}
                   >
                     Next
                   </Button>
@@ -550,9 +553,9 @@ export default function NamespaceLimitsDashboard() {
       </div>
 
       {/* Slide-out detail panel — glass surface */}
-      {selectedNamespace.value && (
+      {selectedNamespace && (
         <div
-          class="glass"
+          className="glass"
           style={{
             // Below the top bar, not under it: the bar (z-index 50) overlays
             // the content column's top strip, and at top: 0 it covered the
@@ -591,7 +594,7 @@ export default function NamespaceLimitsDashboard() {
                   fontFamily: "var(--font-mono, monospace)",
                 }}
               >
-                {selectedNamespace.value}
+                {selectedNamespace}
               </h2>
               <p
                 style={{
@@ -618,7 +621,7 @@ export default function NamespaceLimitsDashboard() {
                 cursor: "pointer",
               }}
               onClick={() => {
-                selectedNamespace.value = null;
+                setSelectedNamespace(null);
               }}
               aria-label="Close panel"
             >
@@ -634,7 +637,7 @@ export default function NamespaceLimitsDashboard() {
           </div>
 
           <div style={{ padding: "20px" }}>
-            {detailLoading.value && (
+            {detailLoading && (
               <div
                 style={{
                   display: "flex",
@@ -647,9 +650,9 @@ export default function NamespaceLimitsDashboard() {
               </div>
             )}
 
-            {detailError.value && <ErrorBanner message={detailError.value} />}
+            {detailError && <ErrorBanner message={detailError} />}
 
-            {!detailLoading.value && detailData.value && (
+            {!detailLoading && detailData && (
               <>
                 {/* Quotas section */}
                 <div style={{ marginBottom: "24px" }}>
@@ -663,9 +666,9 @@ export default function NamespaceLimitsDashboard() {
                       color: "var(--text-muted)",
                     }}
                   >
-                    ResourceQuotas ({detailData.value.quotas.length})
+                    ResourceQuotas ({detailData.quotas.length})
                   </h3>
-                  {detailData.value.quotas.length === 0 ? (
+                  {detailData.quotas.length === 0 ? (
                     <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
                       No quotas defined
                     </p>
@@ -677,7 +680,7 @@ export default function NamespaceLimitsDashboard() {
                         gap: "12px",
                       }}
                     >
-                      {detailData.value.quotas.map((quota) => (
+                      {detailData.quotas.map((quota) => (
                         <WidgetShell key={quota.name} padding={14}>
                           <div
                             style={{
@@ -746,9 +749,9 @@ export default function NamespaceLimitsDashboard() {
                       color: "var(--text-muted)",
                     }}
                   >
-                    LimitRanges ({detailData.value.limitRanges.length})
+                    LimitRanges ({detailData.limitRanges.length})
                   </h3>
-                  {detailData.value.limitRanges.length === 0 ? (
+                  {detailData.limitRanges.length === 0 ? (
                     <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
                       No limit ranges defined
                     </p>
@@ -760,7 +763,7 @@ export default function NamespaceLimitsDashboard() {
                         gap: "12px",
                       }}
                     >
-                      {detailData.value.limitRanges.map((lr) => (
+                      {detailData.limitRanges.map((lr) => (
                         <WidgetShell key={lr.name} padding={14}>
                           <div
                             style={{
@@ -774,6 +777,7 @@ export default function NamespaceLimitsDashboard() {
                             {lr.name}
                           </div>
                           {lr.limits.map((limit, i) => (
+                            // biome-ignore lint/suspicious/noArrayIndexKey: a LimitRange may hold several entries of one type and the list is never reordered
                             <div key={i} style={{ marginBottom: "10px" }}>
                               <div
                                 style={{

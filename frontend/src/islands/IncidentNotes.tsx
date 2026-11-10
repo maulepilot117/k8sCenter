@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError } from "@/lib/api.ts";
 import {
@@ -21,6 +21,7 @@ import {
   FIELD,
   HEADING,
 } from "@/src/components/incidents/ui.tsx";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /**
  * An incident's notes, oldest first, paged with "Load more".
@@ -90,7 +91,7 @@ interface Editing {
 
 function NoteBody({ body }: { body: string }) {
   return (
-    <p class="m-0 whitespace-pre-wrap break-words text-sm text-text-primary">
+    <p className="m-0 whitespace-pre-wrap break-words text-sm text-text-primary">
       {body}
     </p>
   );
@@ -116,7 +117,7 @@ function NoteEditor({
 }) {
   const fieldId = `note-edit-${edit.noteId}`;
   return (
-    <div class="flex flex-col gap-2" data-note-editor={edit.noteId}>
+    <div className="flex flex-col gap-2" data-note-editor={edit.noteId}>
       {missing && (
         <div role="status">
           <Alert variant="info">
@@ -140,8 +141,8 @@ function NoteEditor({
         </div>
       )}
       {edit.conflict && (
-        <div class="flex flex-col gap-1">
-          <span class="text-xs text-text-muted">
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-text-muted">
             {edit.conflict.reloaded
               ? "Current saved text"
               : "Your last loaded copy"}
@@ -154,7 +155,7 @@ function NoteEditor({
           <Alert variant="error">{edit.error}</Alert>
         </div>
       )}
-      <label class="sr-only" for={fieldId}>
+      <label className="sr-only" htmlFor={fieldId}>
         Edit note
       </label>
       <textarea
@@ -163,15 +164,15 @@ function NoteEditor({
         maxLength={INCIDENT_MAX_NOTE_BODY_CHARS}
         value={edit.draft}
         disabled={edit.saving}
-        onInput={(ev) => onDraft(ev.currentTarget.value)}
-        class={FIELD}
+        onChange={(ev) => onDraft(ev.currentTarget.value)}
+        className={FIELD}
       />
-      <div class="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           aria-disabled={edit.saving}
           onClick={onSave}
-          class={BUTTON_PRIMARY}
+          className={BUTTON_PRIMARY}
         >
           {edit.saving ? "Saving…" : "Save"}
         </button>
@@ -180,7 +181,7 @@ function NoteEditor({
             type="button"
             aria-disabled={busy}
             onClick={onReload}
-            class={BUTTON_SECONDARY}
+            className={BUTTON_SECONDARY}
           >
             Reload notes
           </button>
@@ -189,7 +190,7 @@ function NoteEditor({
           type="button"
           aria-disabled={edit.saving}
           onClick={onCancel}
-          class={BUTTON_SECONDARY}
+          className={BUTTON_SECONDARY}
         >
           Cancel
         </button>
@@ -209,23 +210,30 @@ export default function IncidentNotes({
   /** The signed-in user's id, to offer edit/delete on their own notes. */
   currentUserId: string | null;
 }) {
-  const notes = useSignal<NoteView[]>([]);
-  const nextCursor = useSignal<string | undefined>(undefined);
-  const loaded = useSignal(false);
-  const loading = useSignal(true);
-  const loadError = useSignal<string | null>(null);
-  const request = useSignal<{ cursor: string; seq: number }>({
+  const [notes, setNotes, notesRef] = useStateRef<NoteView[]>([]);
+  const [nextCursor, setNextCursor, nextCursorRef] = useStateRef<
+    string | undefined
+  >(undefined);
+  const [loaded, setLoaded, loadedRef] = useStateRef(false);
+  const [loading, setLoading, loadingRef] = useStateRef(true);
+  const [loadError, setLoadError, loadErrorRef] = useStateRef<string | null>(
+    null,
+  );
+  const [request, setRequest, requestRef] = useStateRef<{
+    cursor: string;
+    seq: number;
+  }>({
     cursor: "",
     seq: 0,
   });
-  const draft = useSignal("");
-  const posting = useSignal(false);
-  const postError = useSignal<string | null>(null);
-  const postNotice = useSignal<string | null>(null);
-  const editing = useSignal<Editing | null>(null);
-  const confirmDelete = useSignal<string | null>(null);
-  const deleting = useSignal<string | null>(null);
-  const deleteError = useSignal<string | null>(null);
+  const [draft, setDraftText, draftRef] = useStateRef("");
+  const [posting, setPosting, postingRef] = useStateRef(false);
+  const [postError, setPostError] = useState<string | null>(null);
+  const [postNotice, setPostNotice] = useState<string | null>(null);
+  const [editing, setEditing, editingRef] = useStateRef<Editing | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleting, setDeleting, deletingRef] = useStateRef<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   /**
    * A note created while a list load was in flight. That load may have read
@@ -246,11 +254,12 @@ export default function IncidentNotes({
     };
   }, [incidentId]);
 
-  const { cursor, seq } = request.value;
+  const { cursor, seq } = request;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloads only when the incident, cursor or sequence changes; the settle helpers read refs
   useEffect(() => {
     const controller = new AbortController();
-    loading.value = true;
-    loadError.value = null;
+    setLoading(true);
+    setLoadError(null);
     listNotes(
       incidentId,
       { limit: PAGE_SIZE, continue: cursor || undefined },
@@ -259,13 +268,13 @@ export default function IncidentNotes({
       .then((page) => {
         if (controller.signal.aborted) return;
         if (cursor) {
-          const seen = new Set(notes.value.map((n) => n.id));
-          notes.value = [
-            ...notes.value,
+          const seen = new Set(notesRef.current.map((n) => n.id));
+          setNotes([
+            ...notesRef.current,
             ...page.items.filter((n) => !seen.has(n.id)),
-          ];
+          ]);
         } else {
-          notes.value = page.items;
+          setNotes(page.items);
         }
         // After a conflict the user asked to see the current text: bind the
         // editor to what a load issued AFTER the 409 read, so the next save
@@ -273,46 +282,47 @@ export default function IncidentNotes({
         // conflicting save and is ignored for this. Without a conflict the
         // editor keeps the revision it was opened on, so someone else's
         // later save still surfaces as a 409 instead of being overwritten.
-        const e = editing.peek();
+        const e = editingRef.current;
         const fresh =
           e?.conflict &&
           seq > e.conflict.afterSeq &&
           page.items.find((n) => n.id === e.noteId);
         if (e?.conflict && fresh && !e.saving) {
-          editing.value = {
+          setEditing({
             ...e,
             revision: fresh.revision,
             loadedBody: fresh.body,
             conflict: { ...e.conflict, reloaded: true },
-          };
+          });
         }
-        nextCursor.value = page.continue;
-        loaded.value = true;
-        loading.value = false;
+        setNextCursor(page.continue);
+        setLoaded(true);
+        setLoading(false);
         settlePendingNote();
       })
       .catch(() => {
         if (controller.signal.aborted) return;
-        loadError.value = "Could not load notes.";
-        loading.value = false;
+        setLoadError("Could not load notes.");
+        setLoading(false);
         settlePendingNote();
       });
     return () => controller.abort();
   }, [incidentId, cursor, seq]);
 
   const issue = (to: string) => {
-    loading.value = true;
-    request.value = { cursor: to, seq: request.peek().seq + 1 };
+    setLoading(true);
+    setRequest({ cursor: to, seq: requestRef.current.seq + 1 });
   };
   const reload = () => {
-    if (!loading.value) issue("");
+    if (!loadingRef.current) issue("");
   };
   const loadMore = () => {
-    if (loading.value || !nextCursor.value) return;
-    issue(nextCursor.value);
+    const next = nextCursorRef.current;
+    if (loadingRef.current || !next) return;
+    issue(next);
   };
   const retryLoad = () => {
-    if (!loading.value) issue(request.peek().cursor);
+    if (!loadingRef.current) issue(requestRef.current.cursor);
   };
 
   const ADDED_ELSEWHERE =
@@ -324,13 +334,17 @@ export default function IncidentNotes({
    */
   const placeNote = (note: NoteView) => {
     const complete =
-      loaded.peek() && !loadError.peek() && nextCursor.peek() === undefined;
+      loadedRef.current &&
+      !loadErrorRef.current &&
+      nextCursorRef.current === undefined;
     if (complete) {
-      notes.value = [...notes.value.filter((n) => n.id !== note.id), note];
-    } else if (!notes.peek().some((n) => n.id === note.id)) {
-      postNotice.value = loaded.peek()
-        ? ADDED_ELSEWHERE
-        : "Note added. Load the notes to see it.";
+      setNotes([...notesRef.current.filter((n) => n.id !== note.id), note]);
+    } else if (!notesRef.current.some((n) => n.id === note.id)) {
+      setPostNotice(
+        loadedRef.current
+          ? ADDED_ELSEWHERE
+          : "Note added. Load the notes to see it.",
+      );
     }
   };
 
@@ -341,26 +355,26 @@ export default function IncidentNotes({
     for (const note of created) placeNote(note);
   }
 
-  const post = async (e: Event) => {
+  const post = async (e: FormEvent) => {
     e.preventDefault();
-    if (posting.value) return;
-    const body = draft.value;
+    if (postingRef.current) return;
+    const body = draftRef.current;
     if (!body.trim()) {
-      postError.value = "Write something first.";
+      setPostError("Write something first.");
       return;
     }
-    posting.value = true;
-    postError.value = null;
-    postNotice.value = null;
+    setPosting(true);
+    setPostError(null);
+    setPostNotice(null);
     const postedTo = incidentId;
     try {
       const note = await createNote(postedTo, body);
-      draft.value = "";
+      setDraftText("");
       // The view moved to another incident while the create was in flight:
       // this note belongs to the old thread, so it is neither placed nor
       // held here.
       if (currentIncident.current !== postedTo) return;
-      if (loading.peek()) {
+      if (loadingRef.current) {
         // A load in flight may have read the thread before this note
         // existed; place it once that load settles.
         pendingNotes.current.push(note);
@@ -370,17 +384,17 @@ export default function IncidentNotes({
     } catch (err) {
       // An error about the old incident's note is not shown on another one.
       if (currentIncident.current === postedTo) {
-        postError.value = noteErrorText(err, "added");
+        setPostError(noteErrorText(err, "added"));
       }
     } finally {
-      posting.value = false;
+      setPosting(false);
     }
   };
 
   const startEdit = (note: NoteView) => {
     // A save in flight owns the editor until it settles.
-    if (editing.peek()?.saving) return;
-    editing.value = {
+    if (editingRef.current?.saving) return;
+    setEditing({
       noteId: note.id,
       draft: note.body,
       revision: note.revision,
@@ -388,82 +402,81 @@ export default function IncidentNotes({
       conflict: null,
       saving: false,
       error: null,
-    };
+    });
   };
 
   const setDraft = (value: string) => {
-    const cur = editing.peek();
-    if (cur && !cur.saving) editing.value = { ...cur, draft: value };
+    const cur = editingRef.current;
+    if (cur && !cur.saving) setEditing({ ...cur, draft: value });
   };
 
   const saveEdit = async () => {
-    const e = editing.value;
+    const e = editingRef.current;
     if (!e || e.saving) return;
     if (!e.draft.trim()) {
-      editing.value = { ...e, error: "A note cannot be empty." };
+      setEditing({ ...e, error: "A note cannot be empty." });
       return;
     }
-    editing.value = { ...e, saving: true, error: null };
+    setEditing({ ...e, saving: true, error: null });
     // The result belongs to this note's editor only. Nothing can replace or
     // close the editor while `saving` is set (startEdit, cancelEdit, setDraft
     // and a conflict reload all refuse), so the editor open when the result
     // lands is still this one.
     try {
       const saved = await updateNote(incidentId, e.noteId, e.draft, e.revision);
-      notes.value = notes.value.map((n) => (n.id === saved.id ? saved : n));
-      editing.value = null;
+      setNotes(notesRef.current.map((n) => (n.id === saved.id ? saved : n)));
+      setEditing(null);
     } catch (err) {
-      const current = editing.peek() ?? e;
+      const current = editingRef.current ?? e;
       if (err instanceof ApiError && err.reason === "note_revision_conflict") {
-        editing.value = {
+        setEditing({
           ...current,
           saving: false,
           conflict: {
             current: incidentErrorNumber(err, "currentRevision"),
             reloaded: false,
-            afterSeq: request.peek().seq,
+            afterSeq: requestRef.current.seq,
           },
-        };
+        });
       } else {
-        editing.value = {
+        setEditing({
           ...current,
           saving: false,
           error: noteErrorText(err, "saved"),
-        };
+        });
       }
     }
   };
 
   const cancelEdit = () => {
-    if (!editing.peek()?.saving) editing.value = null;
+    if (!editingRef.current?.saving) setEditing(null);
   };
 
   const remove = async (noteId: string) => {
-    if (deleting.value) return;
-    deleting.value = noteId;
-    deleteError.value = null;
+    if (deletingRef.current) return;
+    setDeleting(noteId);
+    setDeleteError(null);
     try {
       await deleteNote(incidentId, noteId);
-      notes.value = notes.value.filter((n) => n.id !== noteId);
-      confirmDelete.value = null;
+      setNotes(notesRef.current.filter((n) => n.id !== noteId));
+      setConfirmDelete(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
         // Already gone (another tab, or a retried click): the outcome the
         // user asked for.
-        notes.value = notes.value.filter((n) => n.id !== noteId);
-        confirmDelete.value = null;
+        setNotes(notesRef.current.filter((n) => n.id !== noteId));
+        setConfirmDelete(null);
       } else {
-        deleteError.value = noteErrorText(err, "deleted");
+        setDeleteError(noteErrorText(err, "deleted"));
       }
     } finally {
-      deleting.value = null;
+      setDeleting(null);
     }
   };
 
-  const busy = loading.value;
-  const edit = editing.value;
-  const editMissing =
-    edit !== null && !notes.value.some((n) => n.id === edit.noteId);
+  const busy = loading;
+  const edit = editing;
+  const editMissing = edit !== null && !notes.some((n) => n.id === edit.noteId);
   const editorProps = edit && {
     edit,
     busy,
@@ -476,63 +489,66 @@ export default function IncidentNotes({
   return (
     <section
       aria-labelledby="incident-notes-heading"
-      class="flex flex-col gap-3"
+      className="flex flex-col gap-3"
     >
-      <h2 id="incident-notes-heading" class={HEADING}>
+      <h2 id="incident-notes-heading" className={HEADING}>
         Notes
       </h2>
 
-      {busy && !loaded.value && (
-        <p role="status" class="m-0 text-sm text-text-muted">
+      {busy && !loaded && (
+        <p role="status" className="m-0 text-sm text-text-muted">
           Loading notes…
         </p>
       )}
-      {loadError.value && (
-        <div class="flex flex-col items-start gap-2">
-          <div role="alert" class="w-full">
-            <Alert variant="error">{loadError.value}</Alert>
+      {loadError && (
+        <div className="flex flex-col items-start gap-2">
+          <div role="alert" className="w-full">
+            <Alert variant="error">{loadError}</Alert>
           </div>
           <button
             type="button"
             aria-disabled={busy}
             onClick={retryLoad}
-            class={BUTTON_SECONDARY}
+            className={BUTTON_SECONDARY}
           >
             Retry
           </button>
         </div>
       )}
-      {loaded.value && notes.value.length === 0 && !editMissing && (
-        <p class="m-0 text-sm text-text-secondary">No notes yet.</p>
+      {loaded && notes.length === 0 && !editMissing && (
+        <p className="m-0 text-sm text-text-secondary">No notes yet.</p>
       )}
-      {deleteError.value && (
+      {deleteError && (
         <div role="alert">
-          <Alert variant="error">{deleteError.value}</Alert>
+          <Alert variant="error">{deleteError}</Alert>
         </div>
       )}
 
       {editorProps && editMissing && (
-        <div class="rounded-lg border border-border-subtle bg-surface p-3">
+        <div className="rounded-lg border border-border-subtle bg-surface p-3">
           <NoteEditor {...editorProps} missing />
         </div>
       )}
 
-      {notes.value.length > 0 && (
-        <ol aria-label="Notes" class="m-0 flex list-none flex-col gap-2 p-0">
-          {notes.value.map((note) => {
+      {notes.length > 0 && (
+        <ol
+          aria-label="Notes"
+          className="m-0 flex list-none flex-col gap-2 p-0"
+        >
+          {notes.map((note) => {
             const mine =
               canAnnotate &&
               currentUserId !== null &&
               note.authorId === currentUserId;
             const isEditing = edit?.noteId === note.id;
-            const removing = deleting.value === note.id;
+            const removing = deleting === note.id;
             return (
               <li
                 key={note.id}
-                class="flex flex-col gap-2 rounded-lg border border-border-subtle bg-surface p-3"
+                className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-surface p-3"
               >
-                <div class="flex flex-wrap items-center gap-2 text-xs text-text-muted">
-                  <span class="font-medium text-text-secondary">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+                  <span className="font-medium text-text-secondary">
                     {note.authorId === currentUserId ? "You" : note.authorId}
                   </span>
                   <time dateTime={note.createdAt} title={note.createdAt}>
@@ -546,21 +562,21 @@ export default function IncidentNotes({
                   <NoteBody body={note.body} />
                 )}
                 {mine && !isEditing && (
-                  <div class="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={() => startEdit(note)}
-                      class={BUTTON_SECONDARY}
+                      className={BUTTON_SECONDARY}
                     >
                       Edit
                     </button>
-                    {confirmDelete.value === note.id ? (
+                    {confirmDelete === note.id ? (
                       <>
                         <button
                           type="button"
                           aria-disabled={removing}
                           onClick={() => remove(note.id)}
-                          class={BUTTON_SECONDARY}
+                          className={BUTTON_SECONDARY}
                         >
                           {removing ? "Deleting…" : "Confirm delete"}
                         </button>
@@ -568,9 +584,9 @@ export default function IncidentNotes({
                           type="button"
                           aria-disabled={removing}
                           onClick={() => {
-                            if (!removing) confirmDelete.value = null;
+                            if (!removing) setConfirmDelete(null);
                           }}
-                          class={BUTTON_SECONDARY}
+                          className={BUTTON_SECONDARY}
                         >
                           Keep note
                         </button>
@@ -579,10 +595,10 @@ export default function IncidentNotes({
                       <button
                         type="button"
                         onClick={() => {
-                          deleteError.value = null;
-                          confirmDelete.value = note.id;
+                          setDeleteError(null);
+                          setConfirmDelete(note.id);
                         }}
-                        class={BUTTON_SECONDARY}
+                        className={BUTTON_SECONDARY}
                       >
                         Delete
                       </button>
@@ -595,18 +611,18 @@ export default function IncidentNotes({
         </ol>
       )}
 
-      {nextCursor.value && (
-        <div class="flex items-center gap-3 text-sm">
+      {nextCursor && (
+        <div className="flex items-center gap-3 text-sm">
           <button
             type="button"
             aria-disabled={busy}
             onClick={loadMore}
-            class={BUTTON_SECONDARY}
+            className={BUTTON_SECONDARY}
           >
             Load more notes
           </button>
           {busy && (
-            <span role="status" class="text-text-muted">
+            <span role="status" className="text-text-muted">
               Loading notes…
             </span>
           )}
@@ -614,46 +630,44 @@ export default function IncidentNotes({
       )}
 
       {canAnnotate ? (
-        <form onSubmit={post} class="flex flex-col gap-2">
+        <form onSubmit={post} className="flex flex-col gap-2">
           <label
-            for={`new-note-${incidentId}`}
-            class="text-sm font-medium text-text-secondary"
+            htmlFor={`new-note-${incidentId}`}
+            className="text-sm font-medium text-text-secondary"
           >
             Add a note
           </label>
-          {postError.value && (
+          {postError && (
             <div role="alert">
-              <Alert variant="error">{postError.value}</Alert>
+              <Alert variant="error">{postError}</Alert>
             </div>
           )}
-          {postNotice.value && (
-            <p role="status" class="m-0 text-sm text-text-secondary">
-              {postNotice.value}
+          {postNotice && (
+            <p role="status" className="m-0 text-sm text-text-secondary">
+              {postNotice}
             </p>
           )}
           <textarea
             id={`new-note-${incidentId}`}
             rows={3}
             maxLength={INCIDENT_MAX_NOTE_BODY_CHARS}
-            value={draft.value}
-            disabled={posting.value}
-            onInput={(ev) => {
-              draft.value = ev.currentTarget.value;
-            }}
-            class={FIELD}
+            value={draft}
+            disabled={posting}
+            onChange={(ev) => setDraftText(ev.currentTarget.value)}
+            className={FIELD}
           />
           <div>
             <button
               type="submit"
-              aria-disabled={posting.value}
-              class={BUTTON_PRIMARY}
+              aria-disabled={posting}
+              className={BUTTON_PRIMARY}
             >
-              {posting.value ? "Adding…" : "Add note"}
+              {posting ? "Adding…" : "Add note"}
             </button>
           </div>
         </form>
       ) : (
-        <p class="m-0 text-xs text-text-muted">
+        <p className="m-0 text-xs text-text-muted">
           Your access to this incident is read-only, so you cannot add notes.
         </p>
       )}

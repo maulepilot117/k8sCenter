@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
@@ -11,6 +11,8 @@ import type { LocalUser } from "@/lib/user-types.ts";
 import UserWizard from "@/src/islands/UserWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 type DialogState =
   | { kind: "idle" }
@@ -20,67 +22,68 @@ type DialogState =
 export default function UserManager() {
   const { user: currentUser } = useAuth();
 
-  const users = useSignal<LocalUser[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const dialog = useSignal<DialogState>({ kind: "idle" });
-  const actionLoading = useSignal(false);
-  const wizardOpen = useSignal(false);
+  const [users, setUsers] = useState<LocalUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<DialogState>({ kind: "idle" });
+  const [actionLoading, setActionLoading, actionLoadingRef] =
+    useStateRef(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const fetchUsers = useCallback(async () => {
-    loading.value = true;
-    error.value = null;
+    setLoading(true);
+    setError(null);
     try {
       const res = await apiGet<LocalUser[]>("/v1/users");
-      users.value = Array.isArray(res.data) ? res.data : [];
+      setUsers(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
-      error.value = err instanceof Error ? err.message : "Failed to load users";
+      setError(err instanceof Error ? err.message : "Failed to load users");
     } finally {
-      loading.value = false;
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchUsers();
-  }, []);
+  }, [fetchUsers]);
 
   const handleDelete = async (user: LocalUser) => {
-    if (actionLoading.value) return;
-    actionLoading.value = true;
+    if (actionLoadingRef.current) return;
+    setActionLoading(true);
     // Optimistic removal
-    const prev = users.value;
-    users.value = users.value.filter((u) => u.id !== user.id);
+    const prev = users;
+    setUsers(users.filter((u) => u.id !== user.id));
     try {
       await apiDelete(`/v1/users/${user.id}`);
       showToast(`Deleted user "${user.username}"`, "success");
-      dialog.value = { kind: "idle" };
+      setDialog({ kind: "idle" });
     } catch (err) {
       // Restore on failure
-      users.value = prev;
+      setUsers(prev);
       const msg = err instanceof Error ? err.message : "Delete failed";
       showToast(msg, "error");
     } finally {
-      actionLoading.value = false;
+      setActionLoading(false);
     }
   };
 
   const handleChangePassword = async (user: LocalUser, password: string) => {
-    if (actionLoading.value) return;
-    actionLoading.value = true;
+    if (actionLoadingRef.current) return;
+    setActionLoading(true);
     try {
       await apiPut(`/v1/users/${user.id}/password`, { password });
       showToast(`Password updated for "${user.username}"`, "success");
-      dialog.value = { kind: "idle" };
+      setDialog({ kind: "idle" });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Update failed";
       showToast(msg, "error");
     } finally {
-      actionLoading.value = false;
+      setActionLoading(false);
     }
   };
 
-  const currentUserId = currentUser.value?.id;
+  const currentUserId = useSignalValue(currentUser)?.id;
 
   const columns: Column[] = [
     { key: "username", label: "Username", width: "2fr" },
@@ -90,7 +93,7 @@ export default function UserManager() {
   ];
 
   const buildRows = (): Row[] => {
-    if (loading.value && users.value.length === 0) {
+    if (loading && users.length === 0) {
       return [
         {
           id: "__loading__",
@@ -107,7 +110,7 @@ export default function UserManager() {
         },
       ];
     }
-    if (users.value.length === 0) {
+    if (users.length === 0) {
       return [
         {
           id: "__empty__",
@@ -124,7 +127,7 @@ export default function UserManager() {
         },
       ];
     }
-    return users.value.map((user) => {
+    return users.map((user) => {
       const isSelf = user.id === currentUserId;
       return {
         id: user.id,
@@ -204,11 +207,11 @@ export default function UserManager() {
                 variant="secondary"
                 size="sm"
                 onClick={() => {
-                  dialog.value = {
+                  setDialog({
                     kind: "changePassword",
                     user,
                     password: "",
-                  };
+                  });
                 }}
               >
                 Change Password
@@ -219,7 +222,7 @@ export default function UserManager() {
                 size="sm"
                 disabled={isSelf}
                 onClick={() => {
-                  dialog.value = { kind: "confirmDelete", user };
+                  setDialog({ kind: "confirmDelete", user });
                 }}
               >
                 Delete
@@ -237,8 +240,8 @@ export default function UserManager() {
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <button
           type="button"
-          onClick={() => (wizardOpen.value = true)}
-          class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90"
+          onClick={() => setWizardOpen(true)}
+          className="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90"
           style={{ color: "var(--bg-base)" }}
         >
           Create User
@@ -246,58 +249,54 @@ export default function UserManager() {
       </div>
 
       {/* Error */}
-      {error.value && <ErrorBanner message={error.value} />}
+      {error && <ErrorBanner message={error} />}
 
       {/* Table */}
       <ResourceTable columns={columns} rows={buildRows()} chevron={false} />
 
       {/* Delete Confirm Dialog */}
-      {dialog.value.kind === "confirmDelete" && (
+      {dialog.kind === "confirmDelete" && (
         <ConfirmDialog
-          title={`Delete ${dialog.value.user.username}`}
-          message={`This will permanently delete the user "${dialog.value.user.username}" and revoke their access.`}
+          title={`Delete ${dialog.user.username}`}
+          message={`This will permanently delete the user "${dialog.user.username}" and revoke their access.`}
           confirmLabel="Delete"
           danger
-          typeToConfirm={dialog.value.user.username}
-          loading={actionLoading.value}
+          typeToConfirm={dialog.user.username}
+          loading={actionLoading}
           onConfirm={() => {
-            if (dialog.value.kind === "confirmDelete") {
-              handleDelete(dialog.value.user);
-            }
+            handleDelete(dialog.user);
           }}
           onCancel={() => {
-            dialog.value = { kind: "idle" };
+            setDialog({ kind: "idle" });
           }}
         />
       )}
 
       {/* Change Password Dialog */}
-      {dialog.value.kind === "changePassword" && (
+      {dialog.kind === "changePassword" && (
         <PasswordDialog
-          username={dialog.value.user.username}
-          password={dialog.value.password}
-          loading={actionLoading.value}
+          username={dialog.user.username}
+          password={dialog.password}
+          loading={actionLoading}
           onPasswordInput={(v) => {
-            if (dialog.value.kind === "changePassword") {
-              dialog.value = { ...dialog.value, password: v };
-            }
+            setDialog((d) =>
+              d.kind === "changePassword" ? { ...d, password: v } : d,
+            );
           }}
           onConfirm={() => {
-            if (dialog.value.kind === "changePassword") {
-              handleChangePassword(dialog.value.user, dialog.value.password);
-            }
+            handleChangePassword(dialog.user, dialog.password);
           }}
           onCancel={() => {
-            dialog.value = { kind: "idle" };
+            setDialog({ kind: "idle" });
           }}
         />
       )}
 
       {/* Create User Wizard */}
-      {wizardOpen.value && (
+      {wizardOpen && (
         <UserWizard
           onClose={() => {
-            wizardOpen.value = false;
+            setWizardOpen(false);
             fetchUsers();
           }}
         />
@@ -336,14 +335,14 @@ function PasswordDialog({
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
+      className="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
       onClick={onCancel}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="password-dialog-title"
-        class="w-full max-w-sm glass-elevated rounded-2xl p-6"
+        className="w-full max-w-sm glass-elevated rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <h3
@@ -373,9 +372,7 @@ function PasswordDialog({
             ref={inputRef}
             type="password"
             value={password}
-            onInput={(e) =>
-              onPasswordInput((e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onPasswordInput(e.currentTarget.value)}
             style={{
               width: "100%",
               padding: "10px 12px",

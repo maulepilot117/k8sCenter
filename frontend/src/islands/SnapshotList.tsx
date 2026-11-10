@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
@@ -9,6 +9,8 @@ import ScheduledSnapshotWizard from "@/src/islands/ScheduledSnapshotWizard.tsx";
 import SnapshotWizard from "@/src/islands/SnapshotWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface SnapshotInfo {
   name: string;
@@ -22,77 +24,82 @@ interface SnapshotInfo {
 }
 
 export default function SnapshotList() {
-  const snapshots = useSignal<SnapshotInfo[]>([]);
-  const available = useSignal(true);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const deleteTarget = useSignal<SnapshotInfo | null>(null);
-  const deleting = useSignal(false);
-  const snapshotWizardOpen = useSignal(false);
-  const scheduleWizardOpen = useSignal(false);
+  const isClient = useIsClient();
+  const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([]);
+  const [available, setAvailable] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SnapshotInfo | null>(null);
+  const [deleting, setDeleting, deletingRef] = useStateRef(false);
+  const [snapshotWizardOpen, setSnapshotWizardOpen] = useState(false);
+  const [scheduleWizardOpen, setScheduleWizardOpen] = useState(false);
 
   const fetchSnapshots = () => {
-    loading.value = true;
+    setLoading(true);
     apiGet<SnapshotInfo[]>("/v1/storage/snapshots")
       .then((resp) => {
         // resp = {data: [...], metadata: {available: bool, total: num}}
         // resp.data is the snapshot array, resp.metadata has the available flag
-        snapshots.value = Array.isArray(resp.data) ? resp.data : [];
+        setSnapshots(Array.isArray(resp.data) ? resp.data : []);
         const meta = (resp as unknown as Record<string, unknown>).metadata as
           | { available?: boolean }
           | undefined;
-        available.value = meta?.available ?? true;
+        setAvailable(meta?.available ?? true);
       })
       .catch((err) => {
-        error.value =
-          err instanceof Error ? err.message : "Failed to load snapshots";
+        setError(
+          err instanceof Error ? err.message : "Failed to load snapshots",
+        );
       })
       .finally(() => {
-        loading.value = false;
+        setLoading(false);
       });
   };
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `fetchSnapshots` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchSnapshots();
   }, []);
 
   const handleDelete = async (snap: SnapshotInfo) => {
-    if (deleting.value) return;
-    deleting.value = true;
-    const prev = snapshots.value;
-    snapshots.value = snapshots.value.filter(
-      (s) => !(s.name === snap.name && s.namespace === snap.namespace),
+    if (deletingRef.current) return;
+    setDeleting(true);
+    const prev = snapshots;
+    setSnapshots(
+      snapshots.filter(
+        (s) => !(s.name === snap.name && s.namespace === snap.namespace),
+      ),
     );
     try {
       await apiDelete(`/v1/storage/snapshots/${snap.namespace}/${snap.name}`);
       showToast(`Deleted snapshot"${snap.name}"`, "success");
-      deleteTarget.value = null;
+      setDeleteTarget(null);
     } catch (err) {
-      snapshots.value = prev;
+      setSnapshots(prev);
       showToast(err instanceof Error ? err.message : "Delete failed", "error");
     } finally {
-      deleting.value = false;
+      setDeleting(false);
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading snapshots...</div>;
+  if (!isClient) {
+    return <div className="p-6">Loading snapshots...</div>;
   }
 
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="animate-pulse space-y-4">
-        <div class="h-48 bg-elevated rounded" />
+      <div className="animate-pulse space-y-4">
+        <div className="h-48 bg-elevated rounded" />
       </div>
     );
   }
 
-  if (error.value) {
-    return <ErrorBanner message={error.value} />;
+  if (error) {
+    return <ErrorBanner message={error} />;
   }
 
-  if (!available.value) {
+  if (!available) {
     return (
       <div
         style={{
@@ -111,9 +118,9 @@ export default function SnapshotList() {
           viewBox="0 0 24 24"
           fill="none"
           stroke="var(--error)"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
           style={{ flexShrink: 0, marginTop: "2px" }}
         >
           <circle cx="12" cy="12" r="10" />
@@ -174,7 +181,7 @@ export default function SnapshotList() {
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="1.5"
+              strokeWidth="1.5"
             >
               <path d="M6 3H3v10h10v-3" />
               <path d="M9 2h5v5" />
@@ -188,13 +195,13 @@ export default function SnapshotList() {
   }
 
   return (
-    <div class="space-y-4">
+    <div className="space-y-4">
       {/* Action buttons */}
-      <div class="flex gap-2">
+      <div className="flex gap-2">
         <button
           type="button"
-          onClick={() => (snapshotWizardOpen.value = true)}
-          class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90"
+          onClick={() => setSnapshotWizardOpen(true)}
+          className="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90"
           style={{
             color: "var(--bg-base)",
             fontFamily: "inherit",
@@ -206,8 +213,8 @@ export default function SnapshotList() {
         </button>
         <button
           type="button"
-          onClick={() => (scheduleWizardOpen.value = true)}
-          class="inline-flex items-center rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
+          onClick={() => setScheduleWizardOpen(true)}
+          className="inline-flex items-center rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
           style={{
             fontFamily: "inherit",
             cursor: "pointer",
@@ -218,75 +225,73 @@ export default function SnapshotList() {
         </button>
       </div>
 
-      {snapshotWizardOpen.value && (
-        <SnapshotWizard onClose={() => (snapshotWizardOpen.value = false)} />
+      {snapshotWizardOpen && (
+        <SnapshotWizard onClose={() => setSnapshotWizardOpen(false)} />
       )}
-      {scheduleWizardOpen.value && (
-        <ScheduledSnapshotWizard
-          onClose={() => (scheduleWizardOpen.value = false)}
-        />
+      {scheduleWizardOpen && (
+        <ScheduledSnapshotWizard onClose={() => setScheduleWizardOpen(false)} />
       )}
 
-      {snapshots.value.length === 0 ? (
+      {snapshots.length === 0 ? (
         <Card>
-          <div class="p-6 text-center text-text-muted">
-            <p class="text-lg font-medium">No Volume Snapshots</p>
-            <p class="mt-2 text-sm">
+          <div className="p-6 text-center text-text-muted">
+            <p className="text-lg font-medium">No Volume Snapshots</p>
+            <p className="mt-2 text-sm">
               No VolumeSnapshot resources found in the cluster.
             </p>
           </div>
         </Card>
       ) : (
-        <Card title={`Volume Snapshots (${snapshots.value.length})`}>
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm">
+        <Card title={`Volume Snapshots (${snapshots.length})`}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
               <thead>
-                <tr class="border-b border-border-primary">
-                  <th class="text-left py-2 px-3 font-medium text-text-muted">
+                <tr className="border-b border-border-primary">
+                  <th className="text-left py-2 px-3 font-medium text-text-muted">
                     Name
                   </th>
-                  <th class="text-left py-2 px-3 font-medium text-text-muted">
+                  <th className="text-left py-2 px-3 font-medium text-text-muted">
                     Namespace
                   </th>
-                  <th class="text-left py-2 px-3 font-medium text-text-muted">
+                  <th className="text-left py-2 px-3 font-medium text-text-muted">
                     Source PVC
                   </th>
-                  <th class="text-left py-2 px-3 font-medium text-text-muted">
+                  <th className="text-left py-2 px-3 font-medium text-text-muted">
                     Class
                   </th>
-                  <th class="text-left py-2 px-3 font-medium text-text-muted">
+                  <th className="text-left py-2 px-3 font-medium text-text-muted">
                     Size
                   </th>
-                  <th class="text-left py-2 px-3 font-medium text-text-muted">
+                  <th className="text-left py-2 px-3 font-medium text-text-muted">
                     Status
                   </th>
-                  <th class="text-right py-2 px-3 font-medium text-text-muted">
+                  <th className="text-right py-2 px-3 font-medium text-text-muted">
                     Actions
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {snapshots.value.map((snap) => (
+                {snapshots.map((snap) => (
                   <tr
                     key={`${snap.namespace}/${snap.name}`}
-                    class="border-b border-border-subtle"
+                    className="border-b border-border-subtle"
                   >
-                    <td class="py-2 px-3 font-mono text-xs text-text-secondary">
+                    <td className="py-2 px-3 font-mono text-xs text-text-secondary">
                       {snap.name}
                     </td>
-                    <td class="py-2 px-3 text-xs text-text-secondary">
+                    <td className="py-2 px-3 text-xs text-text-secondary">
                       {snap.namespace}
                     </td>
-                    <td class="py-2 px-3 font-mono text-xs text-text-secondary">
+                    <td className="py-2 px-3 font-mono text-xs text-text-secondary">
                       {snap.sourcePVC || "N/A"}
                     </td>
-                    <td class="py-2 px-3 text-xs text-text-secondary">
+                    <td className="py-2 px-3 text-xs text-text-secondary">
                       {snap.volumeSnapshotClassName || "N/A"}
                     </td>
-                    <td class="py-2 px-3 text-xs text-text-secondary">
+                    <td className="py-2 px-3 text-xs text-text-secondary">
                       {snap.restoreSize || "N/A"}
                     </td>
-                    <td class="py-2 px-3">
+                    <td className="py-2 px-3">
                       {snap.errorMessage ? (
                         <StatusBadge label="Error" tone="crit" />
                       ) : (
@@ -296,13 +301,13 @@ export default function SnapshotList() {
                         />
                       )}
                       {snap.errorMessage && (
-                        <p class="mt-1 text-xs text-error max-w-xs truncate">
+                        <p className="mt-1 text-xs text-error max-w-xs truncate">
                           {snap.errorMessage}
                         </p>
                       )}
                     </td>
-                    <td class="py-2 px-3 text-right">
-                      <div class="flex items-center justify-end gap-2">
+                    <td className="py-2 px-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
                         <a
                           href={
                             snap.readyToUse
@@ -313,7 +318,7 @@ export default function SnapshotList() {
                                 }`
                               : undefined
                           }
-                          class={`rounded px-2 py-1 text-xs font-medium ${
+                          className={`rounded px-2 py-1 text-xs font-medium ${
                             snap.readyToUse
                               ? "text-brand hover:bg-brand/10"
                               : "text-text-muted cursor-not-allowed"
@@ -328,10 +333,8 @@ export default function SnapshotList() {
                         </a>
                         <button
                           type="button"
-                          onClick={() => {
-                            deleteTarget.value = snap;
-                          }}
-                          class="rounded px-2 py-1 text-xs font-medium hover:bg-danger-dim text-danger"
+                          onClick={() => setDeleteTarget(snap)}
+                          className="rounded px-2 py-1 text-xs font-medium hover:bg-danger-dim text-danger"
                         >
                           Delete
                         </button>
@@ -345,20 +348,18 @@ export default function SnapshotList() {
         </Card>
       )}
 
-      {deleteTarget.value && (
+      {deleteTarget && (
         <ConfirmDialog
-          title={`Delete ${deleteTarget.value.name}`}
-          message={`This will permanently delete the snapshot"${deleteTarget.value.name}" in namespace"${deleteTarget.value.namespace}".`}
+          title={`Delete ${deleteTarget.name}`}
+          message={`This will permanently delete the snapshot"${deleteTarget.name}" in namespace"${deleteTarget.namespace}".`}
           confirmLabel="Delete"
           danger
-          typeToConfirm={deleteTarget.value.name}
-          loading={deleting.value}
+          typeToConfirm={deleteTarget.name}
+          loading={deleting}
           onConfirm={() => {
-            if (deleteTarget.value) handleDelete(deleteTarget.value);
+            if (deleteTarget) handleDelete(deleteTarget);
           }}
-          onCancel={() => {
-            deleteTarget.value = null;
-          }}
+          onCancel={() => setDeleteTarget(null)}
         />
       )}
     </div>

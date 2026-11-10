@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useState } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ApiError } from "@/lib/api.ts";
@@ -96,7 +96,7 @@ const ACCESS_LABEL: Record<ReceiptAccess, string> = {
 };
 
 function When({ at }: { at?: string }) {
-  if (!at) return <span class="text-text-muted">—</span>;
+  if (!at) return <span className="text-text-muted">—</span>;
   return (
     <time dateTime={at} title={at}>
       {new Date(at).toLocaleString()} ({timeAgo(at)})
@@ -116,11 +116,13 @@ export default function ChangeReceipt({
    */
   msPerSecond?: number;
 }) {
-  const receipt = useSignal<ReceiptDetail | null>(null);
-  const loadError = useSignal<LoadError | null>(null);
-  const verification = useSignal<VerificationView | null>(null);
-  const verifyError = useSignal<string | null>(null);
-  const polling = useSignal(false);
+  const [rec, setReceipt] = useState<ReceiptDetail | null>(null);
+  const [err, setLoadError] = useState<LoadError | null>(null);
+  const [verification, setVerification] = useState<VerificationView | null>(
+    null,
+  );
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [polling, setPolling] = useState(false);
   // Bumped by "Check again" to restart the load-and-poll cycle.
   const [attempt, setAttempt] = useState(0);
 
@@ -131,6 +133,7 @@ export default function ChangeReceipt({
     };
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is a restart trigger bumped by "Check again", not read by the effect
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
@@ -141,12 +144,12 @@ export default function ChangeReceipt({
       });
 
     async function run() {
-      verifyError.value = null;
+      setVerifyError(null);
       // A live view from an earlier cycle must not shadow what this cycle
       // reads: the stored verdict may have been finalized meanwhile.
-      verification.value = null;
+      setVerification(null);
       if (!isOperationId(id)) {
-        loadError.value = { status: 400, message: INVALID_ID };
+        setLoadError({ status: 400, message: INVALID_ID });
         return;
       }
       let rec: ReceiptDetail;
@@ -154,61 +157,61 @@ export default function ChangeReceipt({
         rec = await getReceipt(id, signal);
       } catch (err) {
         if (signal.aborted) return;
-        loadError.value = loadErrorFor(err);
+        setLoadError(loadErrorFor(err));
         return;
       }
       if (signal.aborted) return;
-      loadError.value = null;
-      receipt.value = rec;
+      setLoadError(null);
+      setReceipt(rec);
 
       // An apply still running is recorded document by document; re-read it
       // until it settles before asking for verification.
       while (rec.state === "applying") {
-        polling.value = true;
+        setPolling(true);
         await wait(verificationPollDelayMs(undefined, msPerSecond));
         if (signal.aborted) return;
         try {
           rec = await getReceipt(id, signal);
         } catch (err) {
           if (signal.aborted) return;
-          polling.value = false;
-          verifyError.value = loadErrorFor(err).message;
+          setPolling(false);
+          setVerifyError(loadErrorFor(err).message);
           return;
         }
         if (signal.aborted) return;
-        receipt.value = rec;
+        setReceipt(rec);
       }
 
       if (
         rec.state === "previewed" ||
         isFinalVerification(rec.verification.state)
       ) {
-        polling.value = false;
+        setPolling(false);
         return;
       }
 
       // Stateless polling (D6): one verification pass per request, repeated
       // while the server says it is still verifying, stopping at the first
       // final state.
-      polling.value = true;
+      setPolling(true);
       for (;;) {
         let view: VerificationView;
         try {
           view = await getVerification(id, signal);
         } catch (err) {
           if (signal.aborted) return;
-          polling.value = false;
-          verifyError.value = verificationErrorText(err);
+          setPolling(false);
+          setVerifyError(verificationErrorText(err));
           return;
         }
         if (signal.aborted) return;
-        verification.value = view;
+        setVerification(view);
         if (isFinalVerification(view.state)) {
-          polling.value = false;
+          setPolling(false);
           // Pick up the persisted verdict and verifiedAt.
           try {
             const settled = await getReceipt(id, signal);
-            if (!signal.aborted) receipt.value = settled;
+            if (!signal.aborted) setReceipt(settled);
           } catch {
             // The verdict above is already on screen.
           }
@@ -225,23 +228,20 @@ export default function ChangeReceipt({
     return () => {
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
-      polling.value = false;
+      setPolling(false);
     };
   }, [id, attempt, msPerSecond]);
 
-  const rec = receipt.value;
-  const err = loadError.value;
-
   return (
-    <div class={ROOT_CLASS}>
-      <div class="flex flex-col gap-1">
-        <a href="/changes" class="text-xs font-medium text-accent">
+    <div className={ROOT_CLASS}>
+      <div className="flex flex-col gap-1">
+        <a href="/changes" className="text-xs font-medium text-accent">
           ← All recorded changes
         </a>
-        <h1 class="m-0 text-2xl font-bold tracking-tight text-text-primary">
+        <h1 className="m-0 text-2xl font-bold tracking-tight text-text-primary">
           Change receipt
         </h1>
-        <p class="m-0 break-all font-mono text-xs text-text-muted">{id}</p>
+        <p className="m-0 break-all font-mono text-xs text-text-muted">{id}</p>
       </div>
 
       {err && (
@@ -251,7 +251,7 @@ export default function ChangeReceipt({
       )}
 
       {!err && !rec && (
-        <p role="status" class="m-0 text-sm text-text-muted">
+        <p role="status" className="m-0 text-sm text-text-muted">
           Loading change receipt…
         </p>
       )}
@@ -259,9 +259,9 @@ export default function ChangeReceipt({
       {rec && (
         <ReceiptBody
           receipt={rec}
-          verification={verification.value}
-          polling={polling.value}
-          verifyError={verifyError.value}
+          verification={verification}
+          polling={polling}
+          verifyError={verifyError}
           onCheckAgain={() => setAttempt((n) => n + 1)}
         />
       )}
@@ -303,27 +303,27 @@ function ReceiptBody({
     <>
       <section
         aria-label="Change state"
-        class="flex flex-col gap-2 rounded-lg border border-border-subtle bg-surface p-4"
+        className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-surface p-4"
       >
         <ChangeStateBadges state={rec.state} verification={verState} />
         {explanation && (
-          <p class="m-0 text-sm text-text-secondary">{explanation}</p>
+          <p className="m-0 text-sm text-text-secondary">{explanation}</p>
         )}
         {reasons.length > 0 && (
-          <div class="text-sm text-text-secondary">
-            <p class="m-0 font-medium text-text-primary">
+          <div className="text-sm text-text-secondary">
+            <p className="m-0 font-medium text-text-primary">
               {verState === "inconclusive"
                 ? "Why verification is inconclusive:"
                 : "Why verification failed:"}
             </p>
-            <ul class="m-0 pl-5">
+            <ul className="m-0 pl-5">
               {reasons.map((r) => (
                 <li key={r}>{r}</li>
               ))}
             </ul>
           </div>
         )}
-        <p class="m-0 text-sm text-text-muted">
+        <p className="m-0 text-sm text-text-muted">
           {s.total} document{s.total === 1 ? "" : "s"}
           {counts.length > 0 ? `: ${counts.join(", ")}` : ""}
         </p>
@@ -335,35 +335,35 @@ function ReceiptBody({
 
       <section
         aria-labelledby="verification-heading"
-        class="flex flex-col gap-2"
+        className="flex flex-col gap-2"
       >
-        <div class="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <h2
             id="verification-heading"
-            class="m-0 text-base font-semibold text-text-primary"
+            className="m-0 text-base font-semibold text-text-primary"
           >
             Verification
           </h2>
           {polling && (
-            <span role="status" class="text-xs text-text-muted">
+            <span role="status" className="text-xs text-text-muted">
               Checking the live objects…
             </span>
           )}
         </div>
-        <p class="m-0 text-xs text-text-muted">
+        <p className="m-0 text-xs text-text-muted">
           Verification reads the live objects after the apply. It is separate
           from whether the API server accepted the change.
         </p>
         {verifyError && (
           <div
             role="status"
-            class="flex flex-wrap items-center gap-3 text-sm text-warning"
+            className="flex flex-wrap items-center gap-3 text-sm text-warning"
           >
             <span>{verifyError}</span>
             <button
               type="button"
               onClick={onCheckAgain}
-              class="cursor-pointer rounded-md border border-border-primary bg-transparent px-3 py-1 text-xs font-medium text-text-secondary"
+              className="cursor-pointer rounded-md border border-border-primary bg-transparent px-3 py-1 text-xs font-medium text-text-secondary"
             >
               Check again
             </button>
@@ -371,28 +371,31 @@ function ReceiptBody({
         )}
         <ChecksList checks={checks} />
         {redactedChecks > 0 && (
-          <p class="m-0 text-xs text-text-muted">
+          <p className="m-0 text-xs text-text-muted">
             {hiddenText("checks", redactedChecks)}
           </p>
         )}
       </section>
 
-      <section aria-labelledby="ownership-heading" class="flex flex-col gap-2">
+      <section
+        aria-labelledby="ownership-heading"
+        className="flex flex-col gap-2"
+      >
         <h2
           id="ownership-heading"
-          class="m-0 text-base font-semibold text-text-primary"
+          className="m-0 text-base font-semibold text-text-primary"
         >
           GitOps ownership when applied
         </h2>
         {rec.ownership.length > 0 ? (
           <OwnershipList results={rec.ownership} />
         ) : (
-          <p class="m-0 text-sm text-text-muted">
+          <p className="m-0 text-sm text-text-muted">
             No GitOps ownership was recorded for this change.
           </p>
         )}
         {rec.redactedOwnership > 0 && (
-          <p class="m-0 text-xs text-text-muted">
+          <p className="m-0 text-xs text-text-muted">
             {hiddenText("ownership", rec.redactedOwnership)}
           </p>
         )}
@@ -405,68 +408,73 @@ function ReceiptBody({
 
 function ReceiptFacts({ receipt: rec }: { receipt: ReceiptDetail }) {
   return (
-    <dl class="m-0 grid grid-cols-1 gap-x-6 gap-y-2 rounded-lg border border-border-subtle bg-surface p-4 text-sm sm:grid-cols-[max-content_1fr]">
-      <dt class="text-text-muted">Cluster</dt>
-      <dd class="m-0 text-text-primary">{clusterDisplayName(rec.clusterId)}</dd>
+    <dl className="m-0 grid grid-cols-1 gap-x-6 gap-y-2 rounded-lg border border-border-subtle bg-surface p-4 text-sm sm:grid-cols-[max-content_1fr]">
+      <dt className="text-text-muted">Cluster</dt>
+      <dd className="m-0 text-text-primary">
+        {clusterDisplayName(rec.clusterId)}
+      </dd>
 
-      <dt class="text-text-muted">Cluster registration</dt>
-      <dd class="m-0 text-text-primary">
-        <span class="font-mono">{rec.clusterGeneration}</span>
+      <dt className="text-text-muted">Cluster registration</dt>
+      <dd className="m-0 text-text-primary">
+        <span className="font-mono">{rec.clusterGeneration}</span>
         {rec.targetGenerationChanged && (
-          <span class="mt-1 block text-warning">
+          <span className="mt-1 block text-warning">
             The cluster registration changed since this apply: the cluster was
             re-registered, so it may no longer be the cluster that was changed.
           </span>
         )}
       </dd>
 
-      <dt class="text-text-muted">Content digest</dt>
-      <dd class="m-0 break-all font-mono text-text-primary">
+      <dt className="text-text-muted">Content digest</dt>
+      <dd className="m-0 break-all font-mono text-text-primary">
         {rec.contentDigest || (
-          <span class="font-sans text-text-muted">
+          <span className="font-sans text-text-muted">
             Hidden: this change includes a Secret, and only its owner sees the
             digest.
           </span>
         )}
       </dd>
 
-      <dt class="text-text-muted">Applied by</dt>
-      <dd class="m-0 text-text-primary">
+      <dt className="text-text-muted">Applied by</dt>
+      <dd className="m-0 text-text-primary">
         {rec.ownerUsername} · {ACCESS_LABEL[rec.access] ?? rec.access}
       </dd>
 
-      <dt class="text-text-muted">Documents</dt>
-      <dd class="m-0 text-text-primary">
+      <dt className="text-text-muted">Documents</dt>
+      <dd className="m-0 text-text-primary">
         {rec.documentCount}
         {rec.force && " · conflicts forced"}
         {rec.containsSecret && " · includes a Secret (content not stored)"}
       </dd>
 
-      <dt class="text-text-muted">Recorded</dt>
-      <dd class="m-0 text-text-primary">
+      <dt className="text-text-muted">Recorded</dt>
+      <dd className="m-0 text-text-primary">
         <When at={rec.createdAt} />
       </dd>
 
-      <dt class="text-text-muted">Applying started</dt>
-      <dd class="m-0 text-text-primary">
+      <dt className="text-text-muted">Applying started</dt>
+      <dd className="m-0 text-text-primary">
         <When at={rec.mutationStartedAt} />
       </dd>
 
-      <dt class="text-text-muted">Completed</dt>
-      <dd class="m-0 text-text-primary">
+      <dt className="text-text-muted">Completed</dt>
+      <dd className="m-0 text-text-primary">
         <When at={rec.completedAt} />
       </dd>
 
-      <dt class="text-text-muted">Verified</dt>
-      <dd class="m-0 text-text-primary">
+      <dt className="text-text-muted">Verified</dt>
+      <dd className="m-0 text-text-primary">
         <When at={rec.verifiedAt} />
       </dd>
 
       {rec.repairOf && (
         <>
-          <dt class="text-text-muted">Repairs</dt>
-          <dd class="m-0">
-            <a href={receiptHref(rec.repairOf)} class="font-mono text-accent">
+          <dt className="text-text-muted">Repairs</dt>
+          <dd className="m-0">
+            <a
+              href={receiptHref(rec.repairOf)}
+              className="font-mono text-accent"
+            >
               {rec.repairOf}
             </a>
           </dd>
@@ -493,32 +501,34 @@ function ObjectRow({ o }: { o: ReceiptObjectView }) {
   const n = o.index + 1;
   if (o.redacted) {
     return (
-      <tr class="border-t border-border-subtle">
-        <td class="px-3 py-2 align-top text-text-muted">{n}</td>
-        <td colSpan={4} class="px-3 py-2 text-text-muted">
+      <tr className="border-t border-border-subtle">
+        <td className="px-3 py-2 align-top text-text-muted">{n}</td>
+        <td colSpan={4} className="px-3 py-2 text-text-muted">
           Object #{n} — you no longer have access to this resource
         </td>
       </tr>
     );
   }
   return (
-    <tr class="border-t border-border-subtle">
-      <td class="px-3 py-2 align-top text-text-muted">{n}</td>
-      <td class="px-3 py-2 align-top text-text-secondary">{o.kind ?? "—"}</td>
-      <td class="px-3 py-2 align-top text-text-secondary">
+    <tr className="border-t border-border-subtle">
+      <td className="px-3 py-2 align-top text-text-muted">{n}</td>
+      <td className="px-3 py-2 align-top text-text-secondary">
+        {o.kind ?? "—"}
+      </td>
+      <td className="px-3 py-2 align-top text-text-secondary">
         {o.namespace || "—"}
       </td>
-      <td class="px-3 py-2 align-top font-mono text-text-primary">
+      <td className="px-3 py-2 align-top font-mono text-text-primary">
         {o.name ?? "—"}
       </td>
-      <td class="px-3 py-2 align-top">
-        <div class="flex flex-col gap-1">
+      <td className="px-3 py-2 align-top">
+        <div className="flex flex-col gap-1">
           {o.action ? (
             <StatusBadge label={o.action} tone={actionTone(o.action)} />
           ) : (
             <StatusBadge label="no recorded outcome" tone="neutral" />
           )}
-          {o.error && <span class="text-xs text-danger">{o.error}</span>}
+          {o.error && <span className="text-xs text-danger">{o.error}</span>}
         </div>
       </td>
     </tr>
@@ -527,32 +537,32 @@ function ObjectRow({ o }: { o: ReceiptObjectView }) {
 
 function ObjectsSection({ receipt: rec }: { receipt: ReceiptDetail }) {
   return (
-    <section aria-labelledby="objects-heading" class="flex flex-col gap-2">
+    <section aria-labelledby="objects-heading" className="flex flex-col gap-2">
       <h2
         id="objects-heading"
-        class="m-0 text-base font-semibold text-text-primary"
+        className="m-0 text-base font-semibold text-text-primary"
       >
         Objects
       </h2>
       {rec.objects.length > 0 ? (
-        <div class="overflow-x-auto rounded-lg border border-border-subtle bg-surface">
-          <table class="w-full border-collapse text-left text-sm">
-            <caption class="sr-only">Objects in this change</caption>
+        <div className="overflow-x-auto rounded-lg border border-border-subtle bg-surface">
+          <table className="w-full border-collapse text-left text-sm">
+            <caption className="sr-only">Objects in this change</caption>
             <thead>
-              <tr class="text-xs uppercase tracking-wide text-text-muted">
-                <th scope="col" class="px-3 py-2 font-semibold">
+              <tr className="text-xs uppercase tracking-wide text-text-muted">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   #
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Kind
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Namespace
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Name
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Result
                 </th>
               </tr>
@@ -565,12 +575,12 @@ function ObjectsSection({ receipt: rec }: { receipt: ReceiptDetail }) {
           </table>
         </div>
       ) : (
-        <p class="m-0 text-sm text-text-muted">
+        <p className="m-0 text-sm text-text-muted">
           No object outcome was recorded.
         </p>
       )}
       {rec.redactedObjects > 0 && (
-        <p class="m-0 text-xs text-text-muted">
+        <p className="m-0 text-xs text-text-muted">
           {hiddenText("objects", rec.redactedObjects)}
         </p>
       )}
@@ -587,7 +597,7 @@ function checkSubject(c: CheckView): string | null {
 function ChecksList({ checks }: { checks: CheckView[] }) {
   if (checks.length === 0) {
     return (
-      <p class="m-0 text-sm text-text-muted">
+      <p className="m-0 text-sm text-text-muted">
         No verification check has run yet.
       </p>
     );
@@ -595,33 +605,36 @@ function ChecksList({ checks }: { checks: CheckView[] }) {
   return (
     <ul
       aria-label="Verification checks"
-      class="m-0 list-none divide-y divide-border-subtle overflow-hidden rounded-lg border border-border-subtle bg-surface p-0"
+      className="m-0 list-none divide-y divide-border-subtle overflow-hidden rounded-lg border border-border-subtle bg-surface p-0"
     >
       {checks.map((c, i) => {
         const badge = checkStatusBadge(c.status);
         const subject = c.redacted ? null : checkSubject(c);
         return (
           <li
+            // biome-ignore lint/suspicious/noArrayIndexKey: checkId repeats across sources and redacted checks carry no source; the list is replaced wholesale, never reordered
             key={`${i}-${c.checkId}`}
-            class="flex flex-col gap-1 px-3.5 py-2.5 text-sm"
+            className="flex flex-col gap-1 px-3.5 py-2.5 text-sm"
           >
-            <div class="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <StatusBadge label={badge.label} tone={badge.tone} />
               {subject && (
-                <span class="font-mono text-text-primary">{subject}</span>
+                <span className="font-mono text-text-primary">{subject}</span>
               )}
               {c.redacted && (
-                <span class="text-text-muted">
+                <span className="text-text-muted">
                   Details hidden: you no longer have access to this resource
                 </span>
               )}
             </div>
-            <p class="m-0 text-text-secondary">{checkReasonText(c.reason)}</p>
+            <p className="m-0 text-text-secondary">
+              {checkReasonText(c.reason)}
+            </p>
             {!c.redacted && c.message && (
-              <p class="m-0 text-text-muted">{c.message}</p>
+              <p className="m-0 text-text-muted">{c.message}</p>
             )}
             {!c.redacted && c.remediation && (
-              <p class="m-0 text-text-muted">{c.remediation}</p>
+              <p className="m-0 text-text-muted">{c.remediation}</p>
             )}
           </li>
         );
@@ -634,28 +647,28 @@ function RepairSection({ receipt: rec }: { receipt: ReceiptDetail }) {
   const eligibility = repairEligibility(rec);
   if (eligibility.kind === "not-applicable") return null;
   return (
-    <section aria-labelledby="repair-heading" class="flex flex-col gap-2">
+    <section aria-labelledby="repair-heading" className="flex flex-col gap-2">
       <h2
         id="repair-heading"
-        class="m-0 text-base font-semibold text-text-primary"
+        className="m-0 text-base font-semibold text-text-primary"
       >
         Retry
       </h2>
       {eligibility.kind === "secret" ? (
-        <p class="m-0 text-sm text-text-secondary">
+        <p className="m-0 text-sm text-text-secondary">
           The original content is not stored. Re-create the Secret manifest to
           retry.
         </p>
       ) : (
         <>
-          <p class="m-0 text-sm text-text-secondary">
+          <p className="m-0 text-sm text-text-secondary">
             k8sCenter does not store applied content, so a retry starts from
             manifests you supply. YAML Apply opens linked to this change; you
             validate and apply the current content as a new change.
           </p>
           <a
             href={repairHref(rec.operationId, rec.clusterId)}
-            class="self-start rounded-md bg-accent px-4 py-2 text-sm font-semibold no-underline"
+            className="self-start rounded-md bg-accent px-4 py-2 text-sm font-semibold no-underline"
             style={{ color: "var(--bg-base)" }}
           >
             Retry failed objects

@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { notifApi } from "@/lib/api.ts";
 import type {
   NotifChannel,
@@ -34,108 +34,107 @@ function formatDate(iso: string): string {
 }
 
 export default function NotificationChannels() {
-  const channels = useSignal<NotifChannel[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
+  const [channels, setChannels] = useState<NotifChannel[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Modal state
-  const modalOpen = useSignal(false);
-  const editingId = useSignal<string | null>(null);
-  const saving = useSignal(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // Form state
-  const formName = useSignal("");
-  const formType = useSignal<NotifChannelType>("slack");
-  const formWebhookUrl = useSignal("");
-  const formRecipients = useSignal("");
-  const formSchedule = useSignal("daily");
-  const formUrl = useSignal("");
-  const formSecret = useSignal("");
+  const [formName, setFormName] = useState("");
+  const [formType, setFormType] = useState<NotifChannelType>("slack");
+  const [formWebhookUrl, setFormWebhookUrl] = useState("");
+  const [formRecipients, setFormRecipients] = useState("");
+  const [formSchedule, setFormSchedule] = useState("daily");
+  const [formUrl, setFormUrl] = useState("");
+  const [formSecret, setFormSecret] = useState("");
 
   // Delete confirmation
-  const deleteTarget = useSignal<NotifChannel | null>(null);
-  const deleteConfirmText = useSignal("");
+  const [deleteTarget, setDeleteTarget] = useState<NotifChannel | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
   // Test result: channelId -> { ok, timestamp }
-  const testResults = useSignal<Record<string, { ok: boolean; ts: number }>>(
-    {},
-  );
+  const [testResults, setTestResults] = useState<
+    Record<string, { ok: boolean; ts: number }>
+  >({});
 
-  async function fetchChannels() {
-    loading.value = true;
-    error.value = null;
+  const fetchChannels = useCallback(async () => {
+    setLoading(true);
+    setError(null);
     try {
       const res = await notifApi.listChannels();
-      channels.value = res.data ?? [];
+      setChannels(res.data ?? []);
     } catch (err) {
-      error.value =
-        err instanceof Error ? err.message : "Failed to load channels";
+      setError(err instanceof Error ? err.message : "Failed to load channels");
     } finally {
-      loading.value = false;
+      setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchChannels();
-  }, []);
+  }, [fetchChannels]);
 
   function resetForm() {
-    formName.value = "";
-    formType.value = "slack";
-    formWebhookUrl.value = "";
-    formRecipients.value = "";
-    formSchedule.value = "daily";
-    formUrl.value = "";
-    formSecret.value = "";
-    editingId.value = null;
+    setFormName("");
+    setFormType("slack");
+    setFormWebhookUrl("");
+    setFormRecipients("");
+    setFormSchedule("daily");
+    setFormUrl("");
+    setFormSecret("");
+    setEditingId(null);
   }
 
   function openCreate() {
     resetForm();
-    modalOpen.value = true;
+    setModalOpen(true);
   }
 
   function openEdit(ch: NotifChannel) {
-    editingId.value = ch.id;
-    formName.value = ch.name;
-    formType.value = ch.type;
+    setEditingId(ch.id);
+    setFormName(ch.name);
+    setFormType(ch.type);
     // Pre-fill config (values come masked from API)
     const cfg = ch.config ?? {};
-    formWebhookUrl.value = (cfg.webhookUrl as string) ?? "";
-    formRecipients.value = Array.isArray(cfg.recipients)
-      ? (cfg.recipients as string[]).join(", ")
-      : ((cfg.recipients as string) ?? "");
-    formSchedule.value = (cfg.schedule as string) ?? "daily";
-    formUrl.value = (cfg.url as string) ?? "";
-    formSecret.value = (cfg.secret as string) ?? "";
-    modalOpen.value = true;
+    setFormWebhookUrl((cfg.webhookUrl as string) ?? "");
+    setFormRecipients(
+      Array.isArray(cfg.recipients)
+        ? (cfg.recipients as string[]).join(", ")
+        : ((cfg.recipients as string) ?? ""),
+    );
+    setFormSchedule((cfg.schedule as string) ?? "daily");
+    setFormUrl((cfg.url as string) ?? "");
+    setFormSecret((cfg.secret as string) ?? "");
+    setModalOpen(true);
   }
 
   function buildInput(): NotifChannelInput {
-    const base = { name: formName.value.trim(), type: formType.value };
-    switch (formType.value) {
+    const base = { name: formName.trim(), type: formType };
+    switch (formType) {
       case "slack":
-        return { ...base, config: { webhookUrl: formWebhookUrl.value.trim() } };
+        return { ...base, config: { webhookUrl: formWebhookUrl.trim() } };
       case "email":
         return {
           ...base,
           config: {
-            recipients: formRecipients.value
+            recipients: formRecipients
               .split(",")
               .map((r) => r.trim())
               .filter(Boolean),
-            schedule: formSchedule.value,
+            schedule: formSchedule,
           },
         };
       case "webhook":
         return {
           ...base,
           config: {
-            url: formUrl.value.trim(),
-            ...(formSecret.value.trim()
-              ? { secret: formSecret.value.trim() }
-              : {}),
+            url: formUrl.trim(),
+            ...(formSecret.trim() ? { secret: formSecret.trim() } : {}),
           },
         };
     }
@@ -151,42 +150,42 @@ export default function NotificationChannels() {
   }
 
   async function handleSave() {
-    if (!formName.value.trim()) {
+    if (!formName.trim()) {
       showToast("Name is required", "error");
       return;
     }
     // Client-side URL validation for Slack and Webhook channels
-    if (formType.value === "slack") {
-      const url = formWebhookUrl.value;
+    if (formType === "slack") {
+      const url = formWebhookUrl;
       if (!url || !validateUrl(url)) {
         showToast("Valid Slack webhook URL is required", "error");
         return;
       }
     }
-    if (formType.value === "webhook") {
-      const url = formUrl.value;
+    if (formType === "webhook") {
+      const url = formUrl;
       if (!url || !validateUrl(url)) {
         showToast("Valid webhook URL is required", "error");
         return;
       }
     }
-    saving.value = true;
+    setSaving(true);
     try {
       const input = buildInput();
-      if (editingId.value) {
-        await notifApi.updateChannel(editingId.value, input);
+      if (editingId) {
+        await notifApi.updateChannel(editingId, input);
         showToast("Channel updated", "success");
       } else {
         await notifApi.createChannel(input);
         showToast("Channel created", "success");
       }
-      modalOpen.value = false;
+      setModalOpen(false);
       resetForm();
       await fetchChannels();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Save failed", "error");
     } finally {
-      saving.value = false;
+      setSaving(false);
     }
   }
 
@@ -197,41 +196,45 @@ export default function NotificationChannels() {
     if (testTimers.current[ch.id]) {
       clearTimeout(testTimers.current[ch.id]);
     }
+    // Updates use the functional form: another channel's test may settle
+    // while this one is in flight, and a captured map would drop its result.
     try {
       await notifApi.testChannel(ch.id);
-      testResults.value = {
-        ...testResults.value,
+      setTestResults((prev) => ({
+        ...prev,
         [ch.id]: { ok: true, ts: Date.now() },
-      };
+      }));
     } catch {
-      testResults.value = {
-        ...testResults.value,
+      setTestResults((prev) => ({
+        ...prev,
         [ch.id]: { ok: false, ts: Date.now() },
-      };
+      }));
     }
     // Clear after 3 seconds
     testTimers.current[ch.id] = setTimeout(() => {
-      const cur = { ...testResults.value };
-      delete cur[ch.id];
-      testResults.value = cur;
+      setTestResults((prev) => {
+        const cur = { ...prev };
+        delete cur[ch.id];
+        return cur;
+      });
       delete testTimers.current[ch.id];
     }, 3000) as unknown as number;
   }
 
   async function handleDelete() {
-    const target = deleteTarget.value;
+    const target = deleteTarget;
     if (!target) return;
-    saving.value = true;
+    setSaving(true);
     try {
       await notifApi.deleteChannel(target.id);
       showToast(`Deleted "${target.name}"`, "success");
-      deleteTarget.value = null;
-      deleteConfirmText.value = "";
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
       await fetchChannels();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Delete failed", "error");
     } finally {
-      saving.value = false;
+      setSaving(false);
     }
   }
 
@@ -241,51 +244,45 @@ export default function NotificationChannels() {
     "w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary";
 
   function renderConfigForm() {
-    switch (formType.value) {
+    switch (formType) {
       case "slack":
         return (
-          <div class="mt-3">
-            <label class="block text-xs font-medium text-text-primary mb-1">
+          <div className="mt-3">
+            <label className="block text-xs font-medium text-text-primary mb-1">
               Webhook URL
             </label>
             <input
               type="url"
-              class={inputClass}
+              className={inputClass}
               placeholder="https://hooks.slack.com/services/..."
-              value={formWebhookUrl.value}
-              onInput={(e) =>
-                (formWebhookUrl.value = (e.target as HTMLInputElement).value)
-              }
+              value={formWebhookUrl}
+              onChange={(e) => setFormWebhookUrl(e.currentTarget.value)}
             />
           </div>
         );
       case "email":
         return (
-          <div class="mt-3 space-y-3">
+          <div className="mt-3 space-y-3">
             <div>
-              <label class="block text-xs font-medium text-text-primary mb-1">
+              <label className="block text-xs font-medium text-text-primary mb-1">
                 Recipients (comma-separated)
               </label>
               <input
                 type="text"
-                class={inputClass}
+                className={inputClass}
                 placeholder="admin@example.com, ops@example.com"
-                value={formRecipients.value}
-                onInput={(e) =>
-                  (formRecipients.value = (e.target as HTMLInputElement).value)
-                }
+                value={formRecipients}
+                onChange={(e) => setFormRecipients(e.currentTarget.value)}
               />
             </div>
             <div>
-              <label class="block text-xs font-medium text-text-primary mb-1">
+              <label className="block text-xs font-medium text-text-primary mb-1">
                 Schedule
               </label>
               <select
-                class={inputClass}
-                value={formSchedule.value}
-                onChange={(e) =>
-                  (formSchedule.value = (e.target as HTMLSelectElement).value)
-                }
+                className={inputClass}
+                value={formSchedule}
+                onChange={(e) => setFormSchedule(e.currentTarget.value)}
               >
                 <option value="daily">Daily digest</option>
                 <option value="weekly">Weekly digest</option>
@@ -295,33 +292,29 @@ export default function NotificationChannels() {
         );
       case "webhook":
         return (
-          <div class="mt-3 space-y-3">
+          <div className="mt-3 space-y-3">
             <div>
-              <label class="block text-xs font-medium text-text-primary mb-1">
+              <label className="block text-xs font-medium text-text-primary mb-1">
                 URL
               </label>
               <input
                 type="url"
-                class={inputClass}
+                className={inputClass}
                 placeholder="https://example.com/webhook"
-                value={formUrl.value}
-                onInput={(e) =>
-                  (formUrl.value = (e.target as HTMLInputElement).value)
-                }
+                value={formUrl}
+                onChange={(e) => setFormUrl(e.currentTarget.value)}
               />
             </div>
             <div>
-              <label class="block text-xs font-medium text-text-primary mb-1">
+              <label className="block text-xs font-medium text-text-primary mb-1">
                 Secret (optional)
               </label>
               <input
                 type="password"
-                class={inputClass}
+                className={inputClass}
                 placeholder="HMAC signing secret"
-                value={formSecret.value}
-                onInput={(e) =>
-                  (formSecret.value = (e.target as HTMLInputElement).value)
-                }
+                value={formSecret}
+                onChange={(e) => setFormSecret(e.currentTarget.value)}
               />
             </div>
           </div>
@@ -330,14 +323,14 @@ export default function NotificationChannels() {
   }
 
   function renderTestResult(ch: NotifChannel) {
-    const result = testResults.value[ch.id];
+    const result = testResults[ch.id];
     if (!result) return null;
     return result.ok ? (
-      <span class="ml-2 text-xs" style={{ color: "var(--success)" }}>
+      <span className="ml-2 text-xs" style={{ color: "var(--success)" }}>
         {"\u2713"}
       </span>
     ) : (
-      <span class="ml-2 text-xs" style={{ color: "var(--error)" }}>
+      <span className="ml-2 text-xs" style={{ color: "var(--error)" }}>
         {"\u2717"}
       </span>
     );
@@ -345,27 +338,27 @@ export default function NotificationChannels() {
 
   // --- Main render ---
 
-  if (loading.value && channels.value.length === 0) {
+  if (loading && channels.length === 0) {
     return (
-      <div class="flex items-center justify-center py-12">
+      <div className="flex items-center justify-center py-12">
         <div
-          class="h-6 w-6 animate-spin rounded-full border-2 border-current border-t-transparent"
+          className="h-6 w-6 animate-spin rounded-full border-2 border-current border-t-transparent"
           style={{ color: "var(--accent)" }}
         />
       </div>
     );
   }
 
-  if (error.value) {
+  if (error) {
     return (
       <div
-        class="rounded-md px-4 py-3 text-sm"
+        className="rounded-md px-4 py-3 text-sm"
         style={{
           backgroundColor: "color-mix(in srgb, var(--error) 10%, transparent)",
           color: "var(--error)",
         }}
       >
-        {error.value}
+        {error}
       </div>
     );
   }
@@ -373,16 +366,16 @@ export default function NotificationChannels() {
   return (
     <div>
       {/* Header */}
-      <div class="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4">
         <h2
-          class="text-lg font-semibold"
+          className="text-lg font-semibold"
           style={{ color: "var(--text-primary)" }}
         >
           Notification Channels
         </h2>
         <button
           type="button"
-          class="rounded-md px-3 py-1.5 text-sm font-medium"
+          className="rounded-md px-3 py-1.5 text-sm font-medium"
           style={{ backgroundColor: "var(--accent)", color: "var(--bg-base)" }}
           onClick={openCreate}
         >
@@ -391,52 +384,52 @@ export default function NotificationChannels() {
       </div>
 
       {/* Table */}
-      {channels.value.length === 0 ? (
+      {channels.length === 0 ? (
         <p
-          class="py-8 text-center text-sm"
+          className="py-8 text-center text-sm"
           style={{ color: "var(--text-primary)", opacity: 0.6 }}
         >
           No channels configured yet.
         </p>
       ) : (
         <div
-          class="overflow-x-auto rounded-lg border"
+          className="overflow-x-auto rounded-lg border"
           style={{
             borderColor: "var(--border-primary)",
             backgroundColor: "var(--bg-elevated)",
           }}
         >
           <table
-            class="w-full text-sm"
+            className="w-full text-sm"
             style={{ color: "var(--text-primary)" }}
           >
             <thead>
               <tr
-                class="text-left text-xs uppercase tracking-wider"
+                className="text-left text-xs uppercase tracking-wider"
                 style={{
                   borderBottom: "1px solid var(--border-primary)",
                   color: "var(--text-primary)",
                   opacity: 0.7,
                 }}
               >
-                <th class="px-4 py-3 font-medium">Type</th>
-                <th class="px-4 py-3 font-medium">Name</th>
-                <th class="px-4 py-3 font-medium">Status</th>
-                <th class="px-4 py-3 font-medium">Config</th>
-                <th class="px-4 py-3 font-medium">Created</th>
-                <th class="px-4 py-3 font-medium text-right">Actions</th>
+                <th className="px-4 py-3 font-medium">Type</th>
+                <th className="px-4 py-3 font-medium">Name</th>
+                <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium">Config</th>
+                <th className="px-4 py-3 font-medium">Created</th>
+                <th className="px-4 py-3 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {channels.value.map((ch) => (
+              {channels.map((ch) => (
                 <tr
                   key={ch.id}
-                  class="border-t"
+                  className="border-t"
                   style={{ borderColor: "var(--border-primary)" }}
                 >
-                  <td class="px-4 py-3">
+                  <td className="px-4 py-3">
                     <span
-                      class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
+                      className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
                       style={{
                         backgroundColor:
                           "color-mix(in srgb, var(--accent) 15%, transparent)",
@@ -448,16 +441,16 @@ export default function NotificationChannels() {
                         ch.type}
                     </span>
                   </td>
-                  <td class="px-4 py-3 font-medium">{ch.name}</td>
-                  <td class="px-4 py-3">
+                  <td className="px-4 py-3 font-medium">{ch.name}</td>
+                  <td className="px-4 py-3">
                     {ch.lastError ? (
-                      <span class="inline-flex items-center gap-1.5">
+                      <span className="inline-flex items-center gap-1.5">
                         <span
-                          class="inline-block h-2 w-2 rounded-full"
+                          className="inline-block h-2 w-2 rounded-full"
                           style={{ backgroundColor: "var(--error)" }}
                         />
                         <span
-                          class="text-xs max-w-[200px] truncate"
+                          className="text-xs max-w-[200px] truncate"
                           style={{ color: "var(--error)" }}
                           title={ch.lastError}
                         >
@@ -465,34 +458,37 @@ export default function NotificationChannels() {
                         </span>
                       </span>
                     ) : (
-                      <span class="inline-flex items-center gap-1.5">
+                      <span className="inline-flex items-center gap-1.5">
                         <span
-                          class="inline-block h-2 w-2 rounded-full"
+                          className="inline-block h-2 w-2 rounded-full"
                           style={{ backgroundColor: "var(--success)" }}
                         />
-                        <span class="text-xs" style={{ opacity: 0.7 }}>
+                        <span className="text-xs" style={{ opacity: 0.7 }}>
                           OK
                         </span>
                       </span>
                     )}
                   </td>
-                  <td class="px-4 py-3">
-                    <span class="text-xs font-mono" style={{ opacity: 0.6 }}>
+                  <td className="px-4 py-3">
+                    <span
+                      className="text-xs font-mono"
+                      style={{ opacity: 0.6 }}
+                    >
                       {Object.entries(ch.config ?? {}).map(([k, v]) => (
-                        <span key={k} class="mr-2">
+                        <span key={k} className="mr-2">
                           {k}: {String(v)}
                         </span>
                       ))}
                     </span>
                   </td>
-                  <td class="px-4 py-3 text-xs" style={{ opacity: 0.7 }}>
+                  <td className="px-4 py-3 text-xs" style={{ opacity: 0.7 }}>
                     {formatDate(ch.createdAt)}
                   </td>
-                  <td class="px-4 py-3 text-right">
-                    <div class="inline-flex items-center gap-2">
+                  <td className="px-4 py-3 text-right">
+                    <div className="inline-flex items-center gap-2">
                       <button
                         type="button"
-                        class="text-xs font-medium hover:underline"
+                        className="text-xs font-medium hover:underline"
                         style={{ color: "var(--accent)" }}
                         onClick={() => openEdit(ch)}
                       >
@@ -500,7 +496,7 @@ export default function NotificationChannels() {
                       </button>
                       <button
                         type="button"
-                        class="text-xs font-medium hover:underline"
+                        className="text-xs font-medium hover:underline"
                         style={{ color: "var(--accent)" }}
                         onClick={() => handleTest(ch)}
                       >
@@ -509,11 +505,11 @@ export default function NotificationChannels() {
                       {renderTestResult(ch)}
                       <button
                         type="button"
-                        class="text-xs font-medium hover:underline"
+                        className="text-xs font-medium hover:underline"
                         style={{ color: "var(--error)" }}
                         onClick={() => {
-                          deleteTarget.value = ch;
-                          deleteConfirmText.value = "";
+                          setDeleteTarget(ch);
+                          setDeleteConfirmText("");
                         }}
                       >
                         Delete
@@ -528,56 +524,54 @@ export default function NotificationChannels() {
       )}
 
       {/* Create/Edit Modal */}
-      {modalOpen.value && (
+      {modalOpen && (
         <div
-          class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
+          className="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
           onClick={(e) => {
             if (e.target === e.currentTarget) {
-              modalOpen.value = false;
+              setModalOpen(false);
               resetForm();
             }
           }}
         >
-          <div class="w-full max-w-[480px] glass-elevated rounded-2xl p-6">
+          <div className="w-full max-w-[480px] glass-elevated rounded-2xl p-6">
             <h3
-              class="text-base font-semibold mb-4"
+              className="text-base font-semibold mb-4"
               style={{ color: "var(--text-primary)" }}
             >
-              {editingId.value ? "Edit Channel" : "Create Channel"}
+              {editingId ? "Edit Channel" : "Create Channel"}
             </h3>
 
             {/* Name */}
-            <label class="block text-xs font-medium text-text-primary mb-1">
+            <label className="block text-xs font-medium text-text-primary mb-1">
               Name
             </label>
             <input
               type="text"
-              class={inputClass}
+              className={inputClass}
               placeholder="my-slack-alerts"
-              value={formName.value}
-              onInput={(e) =>
-                (formName.value = (e.target as HTMLInputElement).value)
-              }
+              value={formName}
+              onChange={(e) => setFormName(e.currentTarget.value)}
             />
 
             {/* Type radio */}
-            <fieldset class="mt-4">
-              <legend class="text-xs font-medium text-text-primary mb-2">
+            <fieldset className="mt-4">
+              <legend className="text-xs font-medium text-text-primary mb-2">
                 Type
               </legend>
-              <div class="flex gap-4">
+              <div className="flex gap-4">
                 {CHANNEL_TYPES.map((t) => (
                   <label
                     key={t.value}
-                    class="flex items-center gap-1.5 text-sm cursor-pointer"
+                    className="flex items-center gap-1.5 text-sm cursor-pointer"
                     style={{ color: "var(--text-primary)" }}
                   >
                     <input
                       type="radio"
                       name="channel-type"
                       value={t.value}
-                      checked={formType.value === t.value}
-                      onChange={() => (formType.value = t.value)}
+                      checked={formType === t.value}
+                      onChange={() => setFormType(t.value)}
                     />
                     <span>{TYPE_ICONS[t.value]}</span>
                     {t.label}
@@ -590,17 +584,17 @@ export default function NotificationChannels() {
             {renderConfigForm()}
 
             {/* Actions */}
-            <div class="mt-6 flex justify-end gap-2">
+            <div className="mt-6 flex justify-end gap-2">
               <button
                 type="button"
-                class="rounded-md px-3 py-1.5 text-sm font-medium"
+                className="rounded-md px-3 py-1.5 text-sm font-medium"
                 style={{
                   color: "var(--text-primary)",
                   backgroundColor: "var(--surface)",
                   border: "1px solid var(--border-primary)",
                 }}
                 onClick={() => {
-                  modalOpen.value = false;
+                  setModalOpen(false);
                   resetForm();
                 }}
               >
@@ -608,15 +602,15 @@ export default function NotificationChannels() {
               </button>
               <button
                 type="button"
-                class="rounded-md px-3 py-1.5 text-sm font-medium"
+                className="rounded-md px-3 py-1.5 text-sm font-medium"
                 style={{
                   backgroundColor: "var(--accent)",
                   color: "var(--bg-base)",
                 }}
-                disabled={saving.value}
+                disabled={saving}
                 onClick={handleSave}
               >
-                {saving.value ? "Saving\u2026" : "Save"}
+                {saving ? "Saving\u2026" : "Save"}
               </button>
             </div>
           </div>
@@ -624,66 +618,64 @@ export default function NotificationChannels() {
       )}
 
       {/* Delete Confirmation Modal */}
-      {deleteTarget.value && (
+      {deleteTarget && (
         <div
-          class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
+          className="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
           onClick={(e) => {
             if (e.target === e.currentTarget) {
-              deleteTarget.value = null;
-              deleteConfirmText.value = "";
+              setDeleteTarget(null);
+              setDeleteConfirmText("");
             }
           }}
         >
-          <div class="w-full max-w-[480px] glass-elevated rounded-2xl p-6">
+          <div className="w-full max-w-[480px] glass-elevated rounded-2xl p-6">
             <h3
-              class="text-base font-semibold mb-2"
+              className="text-base font-semibold mb-2"
               style={{ color: "var(--error)" }}
             >
               Delete Channel
             </h3>
-            <p class="text-sm mb-4" style={{ color: "var(--text-primary)" }}>
+            <p
+              className="text-sm mb-4"
+              style={{ color: "var(--text-primary)" }}
+            >
               This action cannot be undone. Type{" "}
-              <strong>{deleteTarget.value.name}</strong> to confirm.
+              <strong>{deleteTarget.name}</strong> to confirm.
             </p>
             <input
               type="text"
-              class={inputClass}
-              placeholder={deleteTarget.value.name}
-              value={deleteConfirmText.value}
-              onInput={(e) =>
-                (deleteConfirmText.value = (e.target as HTMLInputElement).value)
-              }
+              className={inputClass}
+              placeholder={deleteTarget.name}
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.currentTarget.value)}
             />
-            <div class="mt-4 flex justify-end gap-2">
+            <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
-                class="rounded-md px-3 py-1.5 text-sm font-medium"
+                className="rounded-md px-3 py-1.5 text-sm font-medium"
                 style={{
                   color: "var(--text-primary)",
                   backgroundColor: "var(--surface)",
                   border: "1px solid var(--border-primary)",
                 }}
                 onClick={() => {
-                  deleteTarget.value = null;
-                  deleteConfirmText.value = "";
+                  setDeleteTarget(null);
+                  setDeleteConfirmText("");
                 }}
               >
                 Cancel
               </button>
               <button
                 type="button"
-                class="rounded-md px-3 py-1.5 text-sm font-medium"
+                className="rounded-md px-3 py-1.5 text-sm font-medium"
                 style={{
                   backgroundColor: "var(--error)",
                   color: "var(--bg-base)",
                 }}
-                disabled={
-                  saving.value ||
-                  deleteConfirmText.value !== deleteTarget.value.name
-                }
+                disabled={saving || deleteConfirmText !== deleteTarget.name}
                 onClick={handleDelete}
               >
-                {saving.value ? "Deleting\u2026" : "Delete"}
+                {saving ? "Deleting\u2026" : "Delete"}
               </button>
             </div>
           </div>

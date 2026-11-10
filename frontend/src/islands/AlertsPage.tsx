@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
@@ -10,6 +10,8 @@ import { apiGet } from "@/lib/api.ts";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 const severityTone: Record<string, Tone> = {
   critical: "crit",
@@ -18,39 +20,45 @@ const severityTone: Record<string, Tone> = {
 };
 
 export default function AlertsPage() {
-  const activeTab = useSignal<"active" | "history">("active");
-  const activeAlerts = useSignal<AlertEvent[]>([]);
-  const historyAlerts = useSignal<AlertEvent[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const continueToken = useSignal<string | null>(null);
-  const expandedRow = useSignal<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"active" | "history">("active");
+  const [activeAlerts, setActiveAlerts] = useState<AlertEvent[]>([]);
+  const [historyAlerts, setHistoryAlerts] = useState<AlertEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Read by fetchHistory, which the tab effect and Load More both call.
+  const [continueToken, setContinueToken, continueTokenRef] = useStateRef<
+    string | null
+  >(null);
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const selected = useSignalValue(selectedCluster);
   // AbortController for in-flight fetchHistory requests (Finding #28).
   const historyAbortRef = useRef<AbortController | null>(null);
 
-  function fetchActive() {
+  const fetchActive = useCallback(() => {
     apiGet<AlertEvent[]>("/v1/alerts")
       .then((res) => {
-        activeAlerts.value = res.data ?? [];
-        error.value = null;
+        setActiveAlerts(res.data ?? []);
+        setError(null);
       })
       .catch((err) => {
-        error.value = err.message ?? "Failed to fetch alerts";
+        setError(err.message ?? "Failed to fetch alerts");
       })
       .finally(() => {
-        loading.value = false;
+        setLoading(false);
       });
-  }
+  }, []);
 
-  function fetchHistory() {
+  const fetchHistory = useCallback(() => {
     // Abort any in-flight request before issuing a new one.
     historyAbortRef.current?.abort();
     const controller = new AbortController();
     historyAbortRef.current = controller;
 
-    loading.value = true;
+    setLoading(true);
     const params = new URLSearchParams({ limit: "50" });
-    if (continueToken.value) params.set("continue", continueToken.value);
+    if (continueTokenRef.current) {
+      params.set("continue", continueTokenRef.current);
+    }
 
     apiGet<{ items: AlertEvent[]; continue?: string }>(
       `/v1/alerts/history?${params}`,
@@ -59,36 +67,36 @@ export default function AlertsPage() {
       .then((res) => {
         // Guard: ignore stale response if a newer fetch has already started.
         if (controller.signal.aborted) return;
-        historyAlerts.value = res.data?.items ?? [];
-        continueToken.value = res.data?.continue ?? null;
-        error.value = null;
+        setHistoryAlerts(res.data?.items ?? []);
+        setContinueToken(res.data?.continue ?? null);
+        setError(null);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
-        error.value = err.message ?? "Failed to fetch alert history";
+        setError(err.message ?? "Failed to fetch alert history");
       })
       .finally(() => {
         if (!controller.signal.aborted) {
-          loading.value = false;
+          setLoading(false);
         }
       });
-  }
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    fetchActive();
   }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    if (activeTab.value === "history") {
+    fetchActive();
+  }, [fetchActive]);
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    if (activeTab === "history") {
       fetchHistory();
     }
     // Abort any pending history fetch when the tab changes away.
     return () => {
       historyAbortRef.current?.abort();
     };
-  }, [activeTab.value]);
+  }, [activeTab, fetchHistory]);
 
   function formatTime(ts: string): string {
     if (!ts) return "N/A";
@@ -97,7 +105,7 @@ export default function AlertsPage() {
   }
 
   function toggleExpand(id: string) {
-    expandedRow.value = expandedRow.value === id ? null : id;
+    setExpandedRow(expandedRow === id ? null : id);
   }
 
   return (
@@ -105,7 +113,7 @@ export default function AlertsPage() {
       {/* /alerts and /alerts/history always read the local Alertmanager,
           whatever cluster is selected (R-8 KTD13). Say so, or a quiet local
           feed reads as a quiet remote cluster. */}
-      {selectedCluster.value !== LOCAL_CLUSTER_ID && (
+      {selected !== LOCAL_CLUSTER_ID && (
         <Alert variant="info">
           These alerts come from the local cluster's Alertmanager, not the
           selected remote cluster. Alert rules on the remote are managed on the
@@ -129,20 +137,18 @@ export default function AlertsPage() {
                 type="button"
                 key={tab}
                 onClick={() => {
-                  activeTab.value = tab;
+                  setActiveTab(tab);
                 }}
                 style={{
                   padding: "14px 16px",
                   fontSize: "13px",
-                  fontWeight: activeTab.value === tab ? 600 : 400,
+                  fontWeight: activeTab === tab ? 600 : 400,
                   color:
-                    activeTab.value === tab
-                      ? "var(--accent)"
-                      : "var(--text-muted)",
+                    activeTab === tab ? "var(--accent)" : "var(--text-muted)",
                   background: "none",
                   border: "none",
                   borderBottom:
-                    activeTab.value === tab
+                    activeTab === tab
                       ? "2px solid var(--accent)"
                       : "2px solid transparent",
                   cursor: "pointer",
@@ -153,7 +159,7 @@ export default function AlertsPage() {
                 }}
               >
                 {tab === "active" ? "Active" : "History"}
-                {tab === "active" && activeAlerts.value.length > 0 && (
+                {tab === "active" && activeAlerts.length > 0 && (
                   <span
                     style={{
                       background: "var(--error-dim)",
@@ -164,7 +170,7 @@ export default function AlertsPage() {
                       borderRadius: "6px",
                     }}
                   >
-                    {activeAlerts.value.length}
+                    {activeAlerts.length}
                   </span>
                 )}
               </button>
@@ -173,7 +179,7 @@ export default function AlertsPage() {
           <Button
             variant="secondary"
             onClick={() => {
-              if (activeTab.value === "active") fetchActive();
+              if (activeTab === "active") fetchActive();
               else fetchHistory();
             }}
           >
@@ -183,13 +189,13 @@ export default function AlertsPage() {
 
         {/* Solid data surface — tables stay opaque */}
         <div style={{ padding: "0" }}>
-          {error.value && (
+          {error && (
             <div style={{ padding: "12px 20px" }}>
-              <ErrorBanner message={error.value} />
+              <ErrorBanner message={error} />
             </div>
           )}
 
-          {loading.value ? (
+          {loading ? (
             <div
               style={{
                 textAlign: "center",
@@ -200,8 +206,8 @@ export default function AlertsPage() {
             >
               Loading...
             </div>
-          ) : activeTab.value === "active" ? (
-            activeAlerts.value.length === 0 ? (
+          ) : activeTab === "active" ? (
+            activeAlerts.length === 0 ? (
               <div
                 style={{
                   textAlign: "center",
@@ -225,8 +231,8 @@ export default function AlertsPage() {
               </div>
             ) : (
               <AlertTable
-                alerts={activeAlerts.value}
-                expandedRow={expandedRow.value}
+                alerts={activeAlerts}
+                expandedRow={expandedRow}
                 onToggle={toggleExpand}
                 showResolvedColumn={false}
                 formatTime={formatTime}
@@ -235,13 +241,13 @@ export default function AlertsPage() {
           ) : (
             <div>
               <AlertTable
-                alerts={historyAlerts.value}
-                expandedRow={expandedRow.value}
+                alerts={historyAlerts}
+                expandedRow={expandedRow}
                 onToggle={toggleExpand}
                 showResolvedColumn
                 formatTime={formatTime}
               />
-              {continueToken.value && (
+              {continueToken && (
                 <div
                   style={{
                     display: "flex",
@@ -278,81 +284,80 @@ function AlertTable({
   if (alerts.length === 0) return null;
 
   return (
-    <div class="overflow-x-auto">
-      <table class="min-w-full divide-y divide-border-primary">
-        <thead class="bg-surface">
+    <div className="overflow-x-auto">
+      <table className="min-w-full divide-y divide-border-primary">
+        <thead className="bg-surface">
           <tr>
-            <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
+            <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
               Alert
             </th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
+            <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
               Severity
             </th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
+            <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
               Namespace
             </th>
             {showResolvedColumn && (
-              <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
                 Status
               </th>
             )}
-            <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
+            <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
               Started
             </th>
             {showResolvedColumn && (
-              <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
                 Resolved
               </th>
             )}
           </tr>
         </thead>
-        <tbody class="divide-y divide-border-primary">
+        <tbody className="divide-y divide-border-primary">
           {alerts.map((alert) => (
-            <>
+            <Fragment key={alert.id}>
               <tr
-                key={alert.id}
-                class="hover:bg-hover/50 cursor-pointer"
+                className="hover:bg-hover/50 cursor-pointer"
                 onClick={() => onToggle(alert.id)}
               >
-                <td class="px-4 py-3 text-sm font-medium text-text-primary">
+                <td className="px-4 py-3 text-sm font-medium text-text-primary">
                   {alert.alertName}
                 </td>
-                <td class="px-4 py-3">
+                <td className="px-4 py-3">
                   <StatusBadge
                     label={alert.severity || "unknown"}
                     tone={severityTone[alert.severity] ?? "neutral"}
                   />
                 </td>
-                <td class="px-4 py-3 text-sm text-text-secondary">
+                <td className="px-4 py-3 text-sm text-text-secondary">
                   {alert.namespace || "-"}
                 </td>
                 {showResolvedColumn && (
-                  <td class="px-4 py-3">
+                  <td className="px-4 py-3">
                     <StatusBadge
                       label={alert.status}
                       tone={alert.status === "firing" ? "crit" : "ok"}
                     />
                   </td>
                 )}
-                <td class="px-4 py-3 text-sm text-text-secondary">
+                <td className="px-4 py-3 text-sm text-text-secondary">
                   {formatTime(alert.startsAt)}
                 </td>
                 {showResolvedColumn && (
-                  <td class="px-4 py-3 text-sm text-text-secondary">
+                  <td className="px-4 py-3 text-sm text-text-secondary">
                     {alert.resolvedAt ? formatTime(alert.resolvedAt) : "-"}
                   </td>
                 )}
               </tr>
               {expandedRow === alert.id && (
-                <tr key={`${alert.id}-detail`}>
+                <tr>
                   <td
                     colSpan={showResolvedColumn ? 6 : 4}
-                    class="px-4 py-3 bg-surface/30"
+                    className="px-4 py-3 bg-surface/30"
                   >
-                    <div class="space-y-2 text-sm">
+                    <div className="space-y-2 text-sm">
                       {alert.annotations?.summary && (
                         <p>
-                          <span class="font-medium text-text-secondary">
+                          <span className="font-medium text-text-secondary">
                             Summary:
                           </span>
                           {""}
@@ -361,18 +366,18 @@ function AlertTable({
                       )}
                       {alert.annotations?.description && (
                         <p>
-                          <span class="font-medium text-text-secondary">
+                          <span className="font-medium text-text-secondary">
                             Description:
                           </span>
                           {""}
                           {alert.annotations.description}
                         </p>
                       )}
-                      <div class="flex flex-wrap gap-1 mt-2">
+                      <div className="flex flex-wrap gap-1 mt-2">
                         {Object.entries(alert.labels).map(([k, v]) => (
                           <span
                             key={k}
-                            class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-elevated text-text-secondary"
+                            className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-elevated text-text-secondary"
                           >
                             {k}={v}
                           </span>
@@ -382,7 +387,7 @@ function AlertTable({
                   </td>
                 </tr>
               )}
-            </>
+            </Fragment>
           ))}
         </tbody>
       </table>

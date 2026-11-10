@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { type ChangeEvent, useEffect, useState } from "react";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import { apiGet } from "@/lib/api.ts";
@@ -9,12 +9,14 @@ import type {
   CRDInfo,
 } from "@/lib/crd-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 export default function ExtensionsHub() {
-  const crds = useSignal<CRDGroupedResponse>({});
-  const counts = useSignal<CRDCountsResponse>({});
-  const loading = useSignal(true);
-  const search = useSignal("");
+  const isClient = useIsClient();
+  const [crds, setCrds] = useState<CRDGroupedResponse>({});
+  const [counts, setCounts] = useState<CRDCountsResponse>({});
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -25,25 +27,25 @@ export default function ExtensionsHub() {
           apiGet<CRDGroupedResponse>("/v1/extensions/crds"),
           apiGet<CRDCountsResponse>("/v1/extensions/crds/counts"),
         ]);
-        crds.value = crdsRes.data ?? {};
-        counts.value = countsRes.data ?? {};
+        setCrds(crdsRes.data ?? {});
+        setCounts(countsRes.data ?? {});
       } catch {
-        crds.value = {};
-        counts.value = {};
+        setCrds({});
+        setCounts({});
       } finally {
-        loading.value = false;
+        setLoading(false);
       }
     };
 
     fetchData();
   }, []);
 
-  if (!IS_BROWSER) {
+  if (!isClient) {
     return <div style={{ minHeight: "400px" }} />;
   }
 
-  const allGroups = crds.value;
-  const query = search.value.toLowerCase().trim();
+  const allGroups = crds;
+  const query = search.toLowerCase().trim();
 
   // Filter CRDs by search query
   const filteredGroups: Record<string, CRDInfo[]> = {};
@@ -73,12 +75,12 @@ export default function ExtensionsHub() {
     let total = 0;
     for (const item of items) {
       const key = `${item.group}/${item.resource}`;
-      total += counts.value[key] ?? 0;
+      total += counts[key] ?? 0;
     }
     return total;
   };
 
-  if (loading.value) {
+  if (loading) {
     return (
       <div style={{ padding: "0" }}>
         {/* Header skeleton */}
@@ -97,6 +99,7 @@ export default function ExtensionsHub() {
           }}
         >
           {Array.from({ length: 8 }).map((_, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders, never reordered
             <Skeleton key={i} className="h-20 w-full rounded-lg" />
           ))}
         </div>
@@ -136,8 +139,10 @@ export default function ExtensionsHub() {
         <input
           type="text"
           placeholder="Search CRDs by kind or resource name…"
-          value={search.value}
-          onInput={(e) => (search.value = (e.target as HTMLInputElement).value)}
+          value={search}
+          onChange={(e: ChangeEvent<HTMLInputElement>) =>
+            setSearch(e.currentTarget.value)
+          }
           style={{
             width: "100%",
             maxWidth: "400px",
@@ -216,7 +221,7 @@ export default function ExtensionsHub() {
 
                 {/* CRD card grid — GlassCard per card */}
                 <div
-                  class="stagger-in"
+                  className="stagger-in"
                   style={{
                     display: "grid",
                     gridTemplateColumns:
@@ -227,7 +232,7 @@ export default function ExtensionsHub() {
                   {items.map((info) => {
                     const fullName = `${info.resource}.${info.group}`;
                     const countKey = `${info.group}/${info.resource}`;
-                    const instanceCount = counts.value[countKey] ?? 0;
+                    const instanceCount = counts[countKey] ?? 0;
 
                     return (
                       <a

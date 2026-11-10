@@ -1,8 +1,6 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, jest, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, expect, jest, test } from "bun:test";
+import type { ReactElement } from "react";
 import { ApiError, setAccessToken } from "@/lib/api.ts";
 import type {
   Completeness,
@@ -12,6 +10,9 @@ import type {
   NoteView,
   WithheldEvidence,
 } from "@/lib/incident-types.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+
+setupDom({ browser: true });
 
 const { default: IncidentEvidenceTimeline } = await import(
   "./IncidentEvidenceTimeline.tsx"
@@ -20,9 +21,6 @@ const { default: IncidentWorkspace } = await import("./IncidentWorkspace.tsx");
 const { captureErrorText } = await import(
   "@/src/components/incidents/CapturePanel.tsx"
 );
-
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
 
 const ID = "00000000-0000-4000-8000-000000000001";
 
@@ -35,15 +33,13 @@ interface Call {
 type Route = (call: Call) => Response | Promise<Response> | undefined;
 
 let calls: Call[] = [];
-let host: HTMLElement | null = null;
+let view: ReturnType<typeof render> | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  const mounted = view;
+  if (mounted) act(() => mounted.unmount());
+  view = null;
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
   setAccessToken(null);
@@ -82,12 +78,10 @@ const flush = () =>
     for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
   });
 
-async function mount(node: preact.JSX.Element) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(node, host as HTMLElement));
+async function mount(node: ReactElement) {
+  view = render(node);
   await flush();
-  return host;
+  return view.container as HTMLElement;
 }
 
 function incident(over: Partial<IncidentView> = {}): IncidentView {
@@ -916,16 +910,12 @@ test("an unmounted timeline frees its live-link slots and drops its queued reads
   // Six reads in flight and two queued, then the timeline goes away.
   await mount(<IncidentEvidenceTimeline items={links("a", 8)} />);
   expect(calls).toHaveLength(6);
-  act(() => render(null, host as HTMLElement));
+  const mounted = view;
+  if (mounted) act(() => mounted.unmount());
   await flush();
   // Aborted in-flight reads released their slots, and the queued two never
   // ran: a new timeline gets all six slots at once.
-  act(() =>
-    render(
-      <IncidentEvidenceTimeline items={links("b", 6)} />,
-      host as HTMLElement,
-    ),
-  );
+  view = render(<IncidentEvidenceTimeline items={links("b", 6)} />);
   await flush();
   expect(calls).toHaveLength(12);
   // Every read after the remount is one of the new timeline's: the two
@@ -963,11 +953,8 @@ test("a hung live-link read times out after 10s, shows it, and frees its slot", 
         source: { ...evidence(i).source, name: `t${i}` },
       }),
     );
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    act(() =>
-      render(<IncidentEvidenceTimeline items={items} />, host as HTMLElement),
-    );
+    view = render(<IncidentEvidenceTimeline items={items} />);
+    const host = view.container as HTMLElement;
     await settle();
     expect(calls).toHaveLength(6);
     expect(host.querySelectorAll('[data-live-state="checking"]')).toHaveLength(
@@ -995,4 +982,105 @@ test("a hung live-link read times out after 10s, shows it, and frees its slot", 
   } finally {
     jest.useRealTimers();
   }
+});
+
+// --- Status errors and paging guards ------------------------------------------
+
+test("a failed status change shows the error message text and keeps the status", async () => {
+  stubFetch(routeDetail(), routeNotes(), routeGrants, (c) =>
+    c.method === "PUT"
+      ? json(403, {
+          error: {
+            code: 403,
+            message: "forbidden",
+            detail: "Only the owner can change the status.",
+          },
+        })
+      : undefined,
+  );
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  await clickButton(root, "Close incident");
+  const alert = root.querySelector("header [role='alert']");
+  expect(alert?.textContent).toContain("Only the owner can change the status.");
+  expect(root.textContent).not.toContain("[object Object]");
+  expect(findButton(root, "Close incident")).toBeDefined();
+  expect(
+    findButton(root, "Close incident")?.getAttribute("aria-disabled"),
+  ).toBe("false");
+
+  // An unexplained failure falls back to the fixed text.
+  stubFetch(routeDetail(), routeNotes(), routeGrants, (c) =>
+    c.method === "PUT"
+      ? json(500, { error: { code: 500, message: "boom" } })
+      : undefined,
+  );
+  act(() => view?.unmount());
+  const again = await mount(<IncidentWorkspace id={ID} />);
+  await clickButton(again, "Close incident");
+  expect(again.querySelector("header [role='alert']")?.textContent).toContain(
+    "The status could not be changed.",
+  );
+});
+
+test("a status error is cleared when the next change starts", async () => {
+  const second = gate();
+  let puts = 0;
+  stubFetch(routeDetail(), routeNotes(), routeGrants, (c) => {
+    if (c.method !== "PUT") return undefined;
+    puts++;
+    return puts === 1
+      ? json(500, { error: { code: 500, message: "boom" } })
+      : second.promise;
+  });
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  await clickButton(root, "Close incident");
+  expect(root.querySelector("header [role='alert']")).not.toBeNull();
+  act(() => findButton(root, "Close incident")?.click());
+  await flush();
+  expect(root.querySelector("header [role='alert']")).toBeNull();
+  second.release(
+    json(200, { data: { incident: incident({ status: "closed" }) } }),
+  );
+  await flush();
+  expect(findButton(root, "Reopen incident")).toBeDefined();
+});
+
+test("Load more appends the next page once and asks for the cursor it was given", async () => {
+  const page = gate();
+  stubFetch(
+    (c) =>
+      c.method === "GET" && c.url.startsWith(`/api/v1/incidents/${ID}?`)
+        ? json(200, {
+            data: detail({}, [evidence(2)]),
+            metadata: { continue: "c2" },
+          })
+        : undefined,
+    (c) => (c.url.includes("/evidence?") ? page.promise : undefined),
+    routeNotes(),
+    routeGrants,
+  );
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  const more = findButton(root, "Load more");
+  act(() => {
+    more?.click();
+    more?.click();
+  });
+  await flush();
+  page.release(
+    json(200, {
+      data: {
+        counts: { visible: 2, withheld: 0 },
+        evidence: [evidence(1)],
+        withheld: [],
+      },
+    }),
+  );
+  await flush();
+  const pages = calls.filter((c) => c.url.includes("/evidence?"));
+  expect(pages).toHaveLength(1);
+  expect(pages[0].url).toContain("continue=c2");
+  expect(
+    root.querySelectorAll("ol[aria-label='Evidence timeline'] > li"),
+  ).toHaveLength(2);
+  expect(root.textContent).toContain("2 visible to you, 0 withheld");
 });

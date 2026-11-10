@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import BarRow from "@/components/charts/BarRow.tsx";
 import Donut from "@/components/charts/Donut.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -35,6 +35,7 @@ import VeleroBackupWizard from "@/src/islands/VeleroBackupWizard.tsx";
 import VeleroRestoreWizard from "@/src/islands/VeleroRestoreWizard.tsx";
 import VeleroScheduleWizard from "@/src/islands/VeleroScheduleWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 type Tab = "overview" | "backups" | "restores" | "schedules";
 
@@ -47,20 +48,21 @@ interface Props {
 // ---------------------------------------------------------------------------
 
 export default function VeleroDashboard({ initialTab = "backups" }: Props) {
-  const status = useSignal<VeleroStatus | null>(null);
-  const backups = useSignal<Backup[]>([]);
-  const restores = useSignal<Restore[]>([]);
-  const schedules = useSignal<Schedule[]>([]);
-  const locations = useSignal<LocationsResponse | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const search = useSignal("");
-  const refreshing = useSignal(false);
-  const deleting = useSignal<string | null>(null);
+  const isClient = useIsClient();
+  const [status, setStatus] = useState<VeleroStatus | null>(null);
+  const [backups, setBackups] = useState<Backup[]>([]);
+  const [restores, setRestores] = useState<Restore[]>([]);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [locations, setLocations] = useState<LocationsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
-  const backupWizardOpen = useSignal(false);
-  const restoreWizardOpen = useSignal(false);
-  const scheduleWizardOpen = useSignal(false);
+  const [backupWizardOpen, setBackupWizardOpen] = useState(false);
+  const [restoreWizardOpen, setRestoreWizardOpen] = useState(false);
+  const [scheduleWizardOpen, setScheduleWizardOpen] = useState(false);
 
   async function fetchData() {
     try {
@@ -72,40 +74,40 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
           apiGet<Schedule[]>("/v1/velero/schedules"),
           apiGet<LocationsResponse>("/v1/velero/locations"),
         ]);
-      status.value = statusRes.data;
-      backups.value = Array.isArray(backupsRes.data) ? backupsRes.data : [];
-      restores.value = Array.isArray(restoresRes.data) ? restoresRes.data : [];
-      schedules.value = Array.isArray(schedulesRes.data)
-        ? schedulesRes.data
-        : [];
-      locations.value = locationsRes.data;
-      error.value = null;
+      setStatus(statusRes.data);
+      setBackups(Array.isArray(backupsRes.data) ? backupsRes.data : []);
+      setRestores(Array.isArray(restoresRes.data) ? restoresRes.data : []);
+      setSchedules(Array.isArray(schedulesRes.data) ? schedulesRes.data : []);
+      setLocations(locationsRes.data);
+      setError(null);
     } catch {
-      error.value = "Failed to load Velero data";
+      setError("Failed to load Velero data");
     }
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `fetchData` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reads the URL once on mount; `initialTab` is fixed for the page
   useEffect(() => {
     if (!IS_BROWSER) return;
     const params = new URLSearchParams(globalThis.location.search);
     if (params.get("action") === "create") {
-      if (initialTab === "backups") backupWizardOpen.value = true;
-      else if (initialTab === "restores") restoreWizardOpen.value = true;
-      else if (initialTab === "schedules") scheduleWizardOpen.value = true;
+      if (initialTab === "backups") setBackupWizardOpen(true);
+      else if (initialTab === "restores") setRestoreWizardOpen(true);
+      else if (initialTab === "schedules") setScheduleWizardOpen(true);
     }
   }, []);
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
   async function handleDeleteBackup(ns: string, name: string) {
@@ -114,49 +116,47 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
     ) {
       return;
     }
-    deleting.value = `backup-${ns}-${name}`;
+    setDeleting(`backup-${ns}-${name}`);
     try {
       await apiDelete(`/v1/velero/backups/${ns}/${name}`);
       await fetchData();
     } catch {
       alert("Failed to delete backup");
     }
-    deleting.value = null;
+    setDeleting(null);
   }
 
   async function handleDeleteSchedule(ns: string, name: string) {
     if (!confirm(`Delete schedule "${name}"?`)) return;
-    deleting.value = `schedule-${ns}-${name}`;
+    setDeleting(`schedule-${ns}-${name}`);
     try {
       await apiDelete(`/v1/velero/schedules/${ns}/${name}`);
       await fetchData();
     } catch {
       alert("Failed to delete schedule");
     }
-    deleting.value = null;
+    setDeleting(null);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const notDetected = status.value && !status.value.detected;
+  const notDetected = status && !status.detected;
 
   // Filter items by search
-  const filteredBackups = backups.value.filter(
+  const filteredBackups = backups.filter(
     (b) =>
-      !search.value ||
-      b.name.toLowerCase().includes(search.value.toLowerCase()) ||
-      (b.scheduleName ?? "").toLowerCase().includes(search.value.toLowerCase()),
+      !search ||
+      b.name.toLowerCase().includes(search.toLowerCase()) ||
+      (b.scheduleName ?? "").toLowerCase().includes(search.toLowerCase()),
   );
-  const filteredRestores = restores.value.filter(
+  const filteredRestores = restores.filter(
     (r) =>
-      !search.value ||
-      r.name.toLowerCase().includes(search.value.toLowerCase()) ||
-      (r.backupName ?? "").toLowerCase().includes(search.value.toLowerCase()),
+      !search ||
+      r.name.toLowerCase().includes(search.toLowerCase()) ||
+      (r.backupName ?? "").toLowerCase().includes(search.toLowerCase()),
   );
-  const filteredSchedules = schedules.value.filter(
-    (s) =>
-      !search.value ||
-      s.name.toLowerCase().includes(search.value.toLowerCase()),
+  const filteredSchedules = schedules.filter(
+    (s) => !search || s.name.toLowerCase().includes(search.toLowerCase()),
   );
 
   // ---------------------------------------------------------------------------
@@ -170,21 +170,15 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
   };
   const subtitles: Record<Tab, string> = {
     overview: "Velero backup and restore management",
-    backups: loading.value
+    backups: loading
       ? "Loading…"
-      : `${backups.value.length} backup${
-          backups.value.length !== 1 ? "s" : ""
-        }`,
-    restores: loading.value
+      : `${backups.length} backup${backups.length !== 1 ? "s" : ""}`,
+    restores: loading
       ? "Loading…"
-      : `${restores.value.length} restore${
-          restores.value.length !== 1 ? "s" : ""
-        }`,
-    schedules: loading.value
+      : `${restores.length} restore${restores.length !== 1 ? "s" : ""}`,
+    schedules: loading
       ? "Loading…"
-      : `${schedules.value.length} schedule${
-          schedules.value.length !== 1 ? "s" : ""
-        }`,
+      : `${schedules.length} schedule${schedules.length !== 1 ? "s" : ""}`,
   };
   const createLabels: Partial<Record<Tab, string>> = {
     backups: "New Backup",
@@ -245,16 +239,16 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
             flexShrink: 0,
           }}
         >
-          {!loading.value && createLabel && (
+          {!loading && createLabel && (
             <Button
               type="button"
               variant="primary"
               onClick={() => {
-                if (initialTab === "backups") backupWizardOpen.value = true;
+                if (initialTab === "backups") setBackupWizardOpen(true);
                 else if (initialTab === "restores") {
-                  restoreWizardOpen.value = true;
+                  setRestoreWizardOpen(true);
                 } else if (initialTab === "schedules") {
-                  scheduleWizardOpen.value = true;
+                  setScheduleWizardOpen(true);
                 }
               }}
             >
@@ -264,7 +258,7 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
                 viewBox="0 0 16 16"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="2.5"
+                strokeWidth="2.5"
                 style={{ marginRight: "4px", verticalAlign: "middle" }}
               >
                 <path d="M4 8h8M8 4v8" />
@@ -272,21 +266,21 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
               {createLabel}
             </Button>
           )}
-          {!loading.value && (
+          {!loading && (
             <Button
               type="button"
               variant="ghost"
               onClick={handleRefresh}
-              disabled={refreshing.value}
+              disabled={refreshing}
             >
-              {refreshing.value ? "Refreshing…" : "Refresh"}
+              {refreshing ? "Refreshing…" : "Refresh"}
             </Button>
           )}
         </div>
       </div>
 
       {/* ── Loading ──────────────────────────────────────────────── */}
-      {loading.value && (
+      {loading && (
         <div
           style={{
             display: "flex",
@@ -299,7 +293,7 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
       )}
 
       {/* ── Error ────────────────────────────────────────────────── */}
-      {error.value && (
+      {error && (
         <div
           style={{
             borderRadius: "9px",
@@ -311,12 +305,12 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
             color: "var(--error)",
           }}
         >
-          {error.value}
+          {error}
         </div>
       )}
 
       {/* ── Velero not detected ──────────────────────────────────── */}
-      {notDetected && !loading.value && (
+      {notDetected && !loading && (
         <WidgetShell title="Velero Not Detected">
           <div style={{ textAlign: "center", padding: "16px 0" }}>
             <p
@@ -334,7 +328,7 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
               target="_blank"
               rel="noopener noreferrer"
               style={{ fontSize: "13px", color: "var(--accent)" }}
-              class="hover:underline"
+              className="hover:underline"
             >
               View Velero Installation Docs &rarr;
             </a>
@@ -343,17 +337,17 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
       )}
 
       {/* ── Main content (Velero detected, not loading) ──────────── */}
-      {!loading.value && !error.value && status.value?.detected && (
+      {!loading && !error && status?.detected && (
         <>
           {initialTab === "overview" && <AssuranceStrip />}
 
           {initialTab === "overview" && (
             <VeleroOverview
-              backups={backups.value}
-              restores={restores.value}
-              schedules={schedules.value}
-              locations={locations.value}
-              status={status.value}
+              backups={backups}
+              restores={restores}
+              schedules={schedules}
+              locations={locations}
+              status={status}
             />
           )}
 
@@ -362,8 +356,8 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
               {/* Search bar */}
               <div style={{ maxWidth: "320px" }}>
                 <SearchBar
-                  value={search.value}
-                  onInput={(v) => (search.value = v)}
+                  value={search}
+                  onInput={setSearch}
                   placeholder="Search…"
                 />
               </div>
@@ -371,7 +365,7 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
               {initialTab === "backups" && (
                 <BackupsResourceTable
                   backups={filteredBackups}
-                  deleting={deleting.value}
+                  deleting={deleting}
                   onDelete={handleDeleteBackup}
                 />
               )}
@@ -381,7 +375,7 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
               {initialTab === "schedules" && (
                 <SchedulesResourceTable
                   schedules={filteredSchedules}
-                  deleting={deleting.value}
+                  deleting={deleting}
                   onDelete={handleDeleteSchedule}
                 />
               )}
@@ -391,18 +385,14 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
       )}
 
       {/* ── Wizard modals ─────────────────────────────────────────── */}
-      {backupWizardOpen.value && (
-        <VeleroBackupWizard onClose={() => (backupWizardOpen.value = false)} />
+      {backupWizardOpen && (
+        <VeleroBackupWizard onClose={() => setBackupWizardOpen(false)} />
       )}
-      {restoreWizardOpen.value && (
-        <VeleroRestoreWizard
-          onClose={() => (restoreWizardOpen.value = false)}
-        />
+      {restoreWizardOpen && (
+        <VeleroRestoreWizard onClose={() => setRestoreWizardOpen(false)} />
       )}
-      {scheduleWizardOpen.value && (
-        <VeleroScheduleWizard
-          onClose={() => (scheduleWizardOpen.value = false)}
-        />
+      {scheduleWizardOpen && (
+        <VeleroScheduleWizard onClose={() => setScheduleWizardOpen(false)} />
       )}
     </div>
   );
@@ -422,60 +412,63 @@ const ASSURANCE_STATUS_URL = "/v1/velero/assurance/status";
  * without counts, never a "no backups" claim.
  */
 function AssuranceStrip() {
-  const assurance = useSignal<AssuranceStatus | null>(null);
-  const httpStatus = useSignal<number | undefined>(undefined);
-  const hidden = useSignal(false);
-  const ready = useSignal(false);
+  const [assurance, setAssurance] = useState<AssuranceStatus | null>(null);
+  const [httpStatus, setHttpStatus] = useState<number | undefined>(undefined);
+  const [hidden, setHidden] = useState(false);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     apiGet<AssuranceStatus>(ASSURANCE_STATUS_URL)
       .then((res) => {
-        assurance.value = res.data;
+        setAssurance(res.data);
       })
       .catch((err) => {
-        if (err instanceof ApiError && err.status === 501) hidden.value = true;
-        httpStatus.value = err instanceof ApiError ? err.status : undefined;
+        if (err instanceof ApiError && err.status === 501) setHidden(true);
+        setHttpStatus(err instanceof ApiError ? err.status : undefined);
       })
       .finally(() => {
-        ready.value = true;
+        setReady(true);
       });
   }, []);
 
-  if (hidden.value) return null;
+  if (hidden) return null;
 
-  const state = surfaceStateFor(assurance.value, httpStatus.value);
+  const state = surfaceStateFor(assurance, httpStatus);
   const copy = surfaceStateCopy(state);
-  const current = ready.value && countsAreCurrent(state) && assurance.value;
-  const lastRun = assurance.value?.runtime?.lastRunAt;
+  const current = ready && countsAreCurrent(state) && assurance;
+  const lastRun = assurance?.runtime?.lastRunAt;
 
   return (
     <div
       data-testid="velero-assurance-strip"
-      class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-[var(--border-primary)] px-4 py-3 text-sm text-[var(--text-secondary)]"
+      className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-[var(--border-primary)] px-4 py-3 text-sm text-[var(--text-secondary)]"
     >
-      <span class="font-medium text-[var(--text-primary)]">
+      <span className="font-medium text-[var(--text-primary)]">
         Backup assurance
       </span>
-      {!ready.value && <span>Checking…</span>}
-      {ready.value && current && (
+      {!ready && <span>Checking…</span>}
+      {ready && current && (
         <span data-testid="velero-assurance-open-count">
           {current.open.total} open{" "}
           {current.open.total === 1 ? "exception" : "exceptions"}
         </span>
       )}
-      {ready.value && !current && (
+      {ready && !current && (
         <span data-testid="velero-assurance-state" data-state={state}>
           State: {copy.word}
         </span>
       )}
       {lastRun && <span>Last evaluated {age(lastRun)} ago</span>}
-      <a href="/backup/assurance" class="text-[var(--accent)] hover:underline">
+      <a
+        href="/backup/assurance"
+        className="text-[var(--accent)] hover:underline"
+      >
         View recovery readiness &rarr;
       </a>
       <span
         data-testid="velero-assurance-honesty"
-        class="basis-full text-xs text-[var(--text-muted)]"
+        className="basis-full text-xs text-[var(--text-muted)]"
       >
         Freshness is not demonstrated recoverability. {HONESTY_TEXT}
       </span>
@@ -724,7 +717,7 @@ function VeleroOverview({
             <a
               href="/backup/backups"
               style={{ fontSize: "12px", color: "var(--accent)" }}
-              class="hover:underline"
+              className="hover:underline"
             >
               View all &rarr;
             </a>

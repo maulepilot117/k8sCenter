@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { listReceipts, type ReceiptPage } from "@/lib/change-api.ts";
@@ -12,6 +12,7 @@ import {
 } from "@/lib/change-copy.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { ChangeStateBadges } from "@/src/components/changes/ChangeStateBadges.tsx";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /**
  * The caller's own change receipts, newest first (GET /v1/changes). Receipts
@@ -51,7 +52,7 @@ function PagerButton({
       onClick={() => {
         if (!inactive) onActivate();
       }}
-      class="cursor-pointer rounded-md border border-border-primary bg-transparent px-3 py-1.5 font-medium text-text-secondary aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+      className="cursor-pointer rounded-md border border-border-primary bg-transparent px-3 py-1.5 font-medium text-text-secondary aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
     >
       {label}
     </button>
@@ -68,23 +69,26 @@ function listErrorText(err: unknown): string {
 
 export default function ChangeReceiptList() {
   /** The page being requested. */
-  const page = useSignal(1);
+  const [requested, setPage, pageRef] = useStateRef(1);
   /** Bumped to re-request the same page (a retry after an error). */
-  const reload = useSignal(0);
+  const [attempt, setReload] = useState(0);
   /**
    * The last page that loaded, with the page number it is. Kept while the
    * next one loads; the pager is always labelled from it, never from the
    * requested page, so a failed load cannot relabel the old rows.
    */
-  const shown = useSignal<{ data: ReceiptPage; page: number } | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
+  const [shown, setShown] = useState<{
+    data: ReceiptPage;
+    page: number;
+  } | null>(null);
+  const [busy, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Navigation is relative to the page on screen. Asking for the page
   // already requested (after it failed) retries it.
   const goTo = (n: number) => {
-    if (n === page.peek()) reload.value++;
-    else page.value = n;
+    if (n === pageRef.current) setReload((r) => r + 1);
+    else setPage(n);
   };
 
   useEffect(() => {
@@ -94,39 +98,37 @@ export default function ChangeReceiptList() {
     };
   }, []);
 
-  const requested = page.value;
-  const attempt = reload.value;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is a retry trigger bumped by goTo, not read by the effect
   useEffect(() => {
     const controller = new AbortController();
-    loading.value = true;
+    setLoading(true);
     listReceipts({ page: requested, pageSize: PAGE_SIZE }, controller.signal)
       .then((res) => {
         if (controller.signal.aborted) return;
-        shown.value = { data: res, page: requested };
-        error.value = null;
-        loading.value = false;
+        setShown({ data: res, page: requested });
+        setError(null);
+        setLoading(false);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
-        error.value = listErrorText(err);
-        loading.value = false;
+        setError(listErrorText(err));
+        setLoading(false);
       });
     return () => controller.abort();
   }, [requested, attempt]);
 
-  const data = shown.value?.data ?? null;
-  const current = shown.value?.page ?? requested;
-  const busy = loading.value;
-  const failed = error.value !== null;
+  const data = shown?.data ?? null;
+  const current = shown?.page ?? requested;
+  const failed = error !== null;
   const pages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
   return (
-    <div class={ROOT_CLASS}>
-      <div class="flex flex-col gap-1">
-        <h1 class="m-0 text-2xl font-bold tracking-tight text-text-primary">
+    <div className={ROOT_CLASS}>
+      <div className="flex flex-col gap-1">
+        <h1 className="m-0 text-2xl font-bold tracking-tight text-text-primary">
           Recorded changes
         </h1>
-        <p class="m-0 text-sm text-text-muted">
+        <p className="m-0 text-sm text-text-muted">
           Changes you applied from YAML Apply with “Keep a record of this
           change” on. Each receipt records what the cluster accepted and,
           separately, whether the result was verified. Receipts shared with you
@@ -135,21 +137,21 @@ export default function ChangeReceiptList() {
       </div>
 
       {busy && !data && (
-        <p role="status" class="m-0 text-sm text-text-muted">
+        <p role="status" className="m-0 text-sm text-text-muted">
           Loading recorded changes…
         </p>
       )}
 
-      {error.value && (
+      {error && (
         <div role="alert">
-          <Alert variant="error">{error.value}</Alert>
+          <Alert variant="error">{error}</Alert>
         </div>
       )}
 
-      {data && !error.value && data.total === 0 && (
-        <p class="m-0 text-sm text-text-secondary">
+      {data && !error && data.total === 0 && (
+        <p className="m-0 text-sm text-text-secondary">
           No recorded changes yet.{" "}
-          <a href="/tools/yaml-apply" class="font-medium text-accent">
+          <a href="/tools/yaml-apply" className="font-medium text-accent">
             Apply YAML
           </a>{" "}
           with “Keep a record of this change” on to create one.
@@ -159,54 +161,57 @@ export default function ChangeReceiptList() {
       {data && !failed && data.items.length > 0 && (
         <div
           aria-busy={busy}
-          class="overflow-x-auto rounded-lg border border-border-subtle bg-surface"
+          className="overflow-x-auto rounded-lg border border-border-subtle bg-surface"
         >
-          <table class="w-full border-collapse text-left text-sm">
-            <caption class="sr-only">Your recorded changes</caption>
+          <table className="w-full border-collapse text-left text-sm">
+            <caption className="sr-only">Your recorded changes</caption>
             <thead>
-              <tr class="text-xs uppercase tracking-wide text-text-muted">
-                <th scope="col" class="px-3 py-2 font-semibold">
+              <tr className="text-xs uppercase tracking-wide text-text-muted">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Receipt
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   State
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Cluster
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Documents
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Recorded
                 </th>
               </tr>
             </thead>
             <tbody>
               {data.items.map((r) => (
-                <tr key={r.operationId} class="border-t border-border-subtle">
-                  <td class="px-3 py-2 align-top">
+                <tr
+                  key={r.operationId}
+                  className="border-t border-border-subtle"
+                >
+                  <td className="px-3 py-2 align-top">
                     <a
                       href={receiptHref(r.operationId)}
-                      class="font-mono text-accent"
+                      className="font-mono text-accent"
                       aria-label={`Change receipt ${r.operationId}`}
                     >
                       {shortId(r.operationId)}
                     </a>
                   </td>
-                  <td class="px-3 py-2 align-top">
+                  <td className="px-3 py-2 align-top">
                     <ChangeStateBadges
                       state={r.state}
                       verification={r.verification.state}
                     />
                   </td>
-                  <td class="px-3 py-2 align-top text-text-secondary">
+                  <td className="px-3 py-2 align-top text-text-secondary">
                     {clusterDisplayName(r.clusterId)}
                   </td>
-                  <td class="px-3 py-2 align-top text-text-secondary">
+                  <td className="px-3 py-2 align-top text-text-secondary">
                     {r.documentCount}
                   </td>
-                  <td class="px-3 py-2 align-top text-text-secondary">
+                  <td className="px-3 py-2 align-top text-text-secondary">
                     <time dateTime={r.createdAt} title={r.createdAt}>
                       {timeAgo(r.createdAt)}
                     </time>
@@ -221,14 +226,14 @@ export default function ChangeReceiptList() {
       {data && data.total > PAGE_SIZE && (
         <nav
           aria-label="Recorded changes pages"
-          class="flex items-center justify-between gap-3 text-sm"
+          className="flex items-center justify-between gap-3 text-sm"
         >
           <PagerButton
             label="Previous"
             inactive={busy || current <= 1}
             onActivate={() => goTo(current - 1)}
           />
-          <span role="status" class="text-text-muted">
+          <span role="status" className="text-text-muted">
             {busy
               ? `Loading page ${requested}…`
               : failed

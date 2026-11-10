@@ -1,4 +1,5 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 
 export interface DonutSegment {
   value: number;
@@ -11,7 +12,7 @@ interface DonutProps {
   size?: number;
   thickness?: number;
   /** content rendered in the hole (count + caption) */
-  center?: ComponentChildren;
+  center?: ReactNode;
 }
 
 /** Status donut via conic-gradient (cheap, no SVG arcs). Pod/workload status. */

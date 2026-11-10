@@ -169,7 +169,7 @@ export default function LogExplorer() {
   const isClient = useIsClient();
   const clusterId = useSignalValue(selectedCluster);
   const local = clusterId === LOCAL_CLUSTER_ID;
-  const names = useSignalValue(useClusterNames([clusterId]));
+  const names = useClusterNames([clusterId]);
   const label = clusterLabel(clusterId, names);
   const [lokiStatus, setLokiStatus] = useState<LokiStatus | null>(null);
   const [searchResults, setSearchResults] = useState<LogLine[]>([]);

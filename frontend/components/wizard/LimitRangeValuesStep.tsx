@@ -1,16 +1,14 @@
 /** @jsxImportSource react */
-import type { Signal } from "@preact/signals-core";
 import { useState } from "react";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type {
   LimitConfig,
   ResourcePair,
 } from "@/src/islands/NamespaceLimitsWizard.tsx";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface LimitRangeValuesStepProps {
   limits: LimitConfig;
-  errors: Signal<Record<string, string>>;
+  errors: Record<string, string>;
   onUpdateLimits: <K extends keyof LimitConfig>(
     field: K,
     value: LimitConfig[K],
@@ -28,7 +26,6 @@ export function LimitRangeValuesStep({
   onUpdateLimits,
   onUpdateResourcePair,
 }: LimitRangeValuesStepProps) {
-  const errorMap = useSignalValue(errors);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   return (
@@ -125,7 +122,7 @@ export function LimitRangeValuesStep({
                   className={WIZARD_INPUT_CLASS}
                   placeholder="e.g. 250m"
                 />
-                {key === "containerDefault" && errorMap.containerDefaultCpu && (
+                {key === "containerDefault" && errors.containerDefaultCpu && (
                   <p
                     style={{
                       marginTop: "3px",
@@ -133,7 +130,7 @@ export function LimitRangeValuesStep({
                       color: "var(--error)",
                     }}
                   >
-                    {errorMap.containerDefaultCpu}
+                    {errors.containerDefaultCpu}
                   </p>
                 )}
               </div>
@@ -160,7 +157,7 @@ export function LimitRangeValuesStep({
                   placeholder="e.g. 256Mi"
                 />
                 {key === "containerDefault" &&
-                  errorMap.containerDefaultMemory && (
+                  errors.containerDefaultMemory && (
                     <p
                       style={{
                         marginTop: "3px",
@@ -168,7 +165,7 @@ export function LimitRangeValuesStep({
                         color: "var(--error)",
                       }}
                     >
-                      {errorMap.containerDefaultMemory}
+                      {errors.containerDefaultMemory}
                     </p>
                   )}
               </div>

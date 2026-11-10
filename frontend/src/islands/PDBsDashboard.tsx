@@ -1,14 +1,13 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import PDBWizard from "@/src/islands/PDBWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export default function PDBsDashboard() {
-  const _ns = selectedNamespace.value;
-  const wizardOpen = useSignal(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
   useEffect(() => {
@@ -16,24 +15,22 @@ export default function PDBsDashboard() {
     if (
       new URL(globalThis.location.href).searchParams.get("action") === "create"
     ) {
-      wizardOpen.value = true;
+      setWizardOpen(true);
       const url = new URL(globalThis.location.href);
       url.searchParams.delete("action");
       globalThis.history.replaceState({}, "", url.toString());
     }
   }, []);
 
-  const countsReady = resourceCounts.value !== null;
+  const countsReady = useSignalValue(resourceCounts) !== null;
   const subtitle = countsReady
     ? `${formatCount("poddisruptionbudgets") ?? 0} pod disruption budgets`
     : "Loading pod disruption budgets…";
 
   return (
-    <div class="flex flex-col h-full">
+    <div className="flex flex-col h-full">
       {/* Floating wizard modal */}
-      {wizardOpen.value && (
-        <PDBWizard onClose={() => (wizardOpen.value = false)} />
-      )}
+      {wizardOpen && <PDBWizard onClose={() => setWizardOpen(false)} />}
 
       {/* Page header */}
       <div
@@ -70,7 +67,7 @@ export default function PDBsDashboard() {
         </div>
         <button
           type="button"
-          onClick={() => (wizardOpen.value = true)}
+          onClick={() => setWizardOpen(true)}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -94,7 +91,7 @@ export default function PDBsDashboard() {
             viewBox="0 0 16 16"
             fill="none"
             stroke="currentColor"
-            stroke-width="2.5"
+            strokeWidth="2.5"
           >
             <path d="M4 8h8M8 4v8" />
           </svg>

@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { LOCAL_CLUSTER_ID } from "@/lib/cluster.ts";
 import {
@@ -45,16 +45,16 @@ import {
 
 function ModeBadge({ mode }: { mode: EvidenceMode }) {
   return mode === "live_link" ? (
-    <span class={BADGE_CLASS.accentOutline}>Live link</span>
+    <span className={BADGE_CLASS.accentOutline}>Live link</span>
   ) : (
-    <span class={BADGE_CLASS.accent}>Snapshot</span>
+    <span className={BADGE_CLASS.accent}>Snapshot</span>
   );
 }
 
 function Stamp({ label, at }: { label: string; at: string | null }) {
   return (
-    <span class="text-xs text-text-muted">
-      <span class="font-medium text-text-secondary">{label}</span>{" "}
+    <span className="text-xs text-text-muted">
+      <span className="font-medium text-text-secondary">{label}</span>{" "}
       {at ? (
         <time dateTime={at} title={at}>
           {new Date(at).toLocaleString()} ({timeAgo(at)})
@@ -131,10 +131,11 @@ function withLiveSlot<T>(
 function LiveLink({ source }: { source: SourceRef }) {
   const target = liveLinkTarget(source);
   const local = source.clusterId === LOCAL_CLUSTER_ID;
-  const state = useSignal<LiveState>(
+  const [state, setState] = useState<LiveState>(
     target && local ? "checking" : "unchecked",
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `target` and `local` derive from `source`; `target` is a new object every render, so its `apiPath` is the dependency
   useEffect(() => {
     if (!target || !local) return;
     const controller = new AbortController();
@@ -157,29 +158,30 @@ function LiveLink({ source }: { source: SourceRef }) {
         if (controller.signal.aborted) return;
         const uid = res.data?.metadata?.uid;
         // Same name, different object: the captured one is gone.
-        state.value =
-          source.uid && uid && uid !== source.uid ? "replaced" : "present";
+        setState(
+          source.uid && uid && uid !== source.uid ? "replaced" : "present",
+        );
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
         if (err instanceof ApiError && err.status === 404) {
-          state.value = "gone";
+          setState("gone");
         } else if (err instanceof ApiError && err.status === 403) {
-          state.value = "unauthorized";
+          setState("unauthorized");
         } else {
-          state.value = "error";
+          setState("error");
         }
       });
     return () => controller.abort();
   }, [target?.apiPath, source.clusterId, source.uid]);
 
   const link = target && (
-    <a href={target.href} class={LINK}>
+    <a href={target.href} className={LINK}>
       Open the live object
     </a>
   );
   let text: string;
-  switch (state.value) {
+  switch (state) {
     case "checking":
       text = "Checking the live object…";
       break;
@@ -204,11 +206,10 @@ function LiveLink({ source }: { source: SourceRef }) {
         ? "This kind has no detail page to link to."
         : "Live objects are checked on the local cluster only.";
   }
-  const showLink =
-    state.value === "present" || state.value === "error" ? link : null;
+  const showLink = state === "present" || state === "error" ? link : null;
   return (
-    <p class="m-0 flex flex-wrap items-center gap-2 text-sm text-text-secondary">
-      <span data-live-state={state.value}>{text}</span>
+    <p className="m-0 flex flex-wrap items-center gap-2 text-sm text-text-secondary">
+      <span data-live-state={state}>{text}</span>
       {showLink}
     </p>
   );
@@ -226,39 +227,39 @@ function EvidenceRow({ item }: { item: Evidence }) {
   const { observed, captured } = evidenceTimestamps(item);
   const notes = redactionNotes(item.redaction);
   return (
-    <li class="flex flex-col gap-2 rounded-lg border border-border-subtle bg-surface p-3">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="text-sm font-semibold text-text-primary">
+    <li className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-surface p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold text-text-primary">
           {evidenceKindLabel(item.evidenceKind)}
         </span>
         <ModeBadge mode={item.mode} />
         <CompletenessBadge value={item.completeness} />
-        <span class="text-sm text-text-secondary">
+        <span className="text-sm text-text-secondary">
           {sourceLabel(item.source)}
         </span>
       </div>
-      <div class="flex flex-wrap gap-x-4 gap-y-1">
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
         <Stamp label="Observed" at={observed} />
         <Stamp label="Captured" at={captured} />
       </div>
       {item.completenessDetail && (
-        <p class="m-0 text-xs text-text-muted">{item.completenessDetail}</p>
+        <p className="m-0 text-xs text-text-muted">{item.completenessDetail}</p>
       )}
       {item.source.identityWeak && (
-        <p class="m-0 text-xs text-text-muted">
+        <p className="m-0 text-xs text-text-muted">
           Identified by name only: no UID was observed, so this may not be the
           same object that exists under this name now.
         </p>
       )}
       {notes.length > 0 && (
         <ul
-          class="m-0 flex list-none flex-wrap gap-2 p-0"
+          className="m-0 flex list-none flex-wrap gap-2 p-0"
           aria-label="Redaction"
         >
           {notes.map((n) => (
             <li
               key={n}
-              class="rounded-md border border-border-subtle px-2 py-0.5 text-xs text-text-secondary"
+              className="rounded-md border border-border-subtle px-2 py-0.5 text-xs text-text-secondary"
             >
               {n}
             </li>
@@ -269,13 +270,13 @@ function EvidenceRow({ item }: { item: Evidence }) {
         <LiveLink source={item.source} />
       ) : (
         item.payload !== undefined && (
-          <details class="text-sm">
+          <details className="text-sm">
             <summary
-              class={`cursor-pointer rounded-sm text-text-secondary ${FOCUS_RING}`}
+              className={`cursor-pointer rounded-sm text-text-secondary ${FOCUS_RING}`}
             >
               Captured data ({item.payloadBytes} bytes)
             </summary>
-            <pre class="mt-2 max-h-80 overflow-auto rounded-md border border-border-subtle bg-base p-3 text-xs text-text-primary">
+            <pre className="mt-2 max-h-80 overflow-auto rounded-md border border-border-subtle bg-base p-3 text-xs text-text-primary">
               {payloadText(item.payload)}
             </pre>
           </details>
@@ -289,16 +290,16 @@ function WithheldRow({ item }: { item: WithheldEvidence }) {
   return (
     <li
       data-withheld="true"
-      class="flex flex-col gap-1 rounded-lg border border-dashed border-border-primary bg-surface p-3"
+      className="flex flex-col gap-1 rounded-lg border border-dashed border-border-primary bg-surface p-3"
     >
-      <div class="flex flex-wrap items-center gap-2">
-        <span class={BADGE_CLASS.muted}>Withheld</span>
-        <span class="text-sm text-text-secondary">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={BADGE_CLASS.muted}>Withheld</span>
+        <span className="text-sm text-text-secondary">
           {evidenceKindLabel(item.evidenceKind)}
         </span>
       </div>
       <Stamp label="Captured" at={item.collectedAt} />
-      <p class="m-0 text-sm text-text-secondary">
+      <p className="m-0 text-sm text-text-secondary">
         {withheldReasonText(item.withheldReason)}
       </p>
     </li>
@@ -313,7 +314,7 @@ export default function IncidentEvidenceTimeline({
   return (
     <ol
       aria-label="Evidence timeline"
-      class="m-0 flex list-none flex-col gap-3 p-0"
+      className="m-0 flex list-none flex-col gap-3 p-0"
     >
       {items.map((item) =>
         isWithheld(item) ? (

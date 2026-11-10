@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import BarRow from "@/components/charts/BarRow.tsx";
 import Donut from "@/components/charts/Donut.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
@@ -7,8 +7,8 @@ import PVCWizard from "@/src/islands/PVCWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import SnapshotList from "@/src/islands/SnapshotList.tsx";
 import StorageClassWizard from "@/src/islands/StorageClassWizard.tsx";
-import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 function resolveTab(currentPath: string): {
   kind: string;
@@ -82,21 +82,18 @@ export default function StorageDashboard({
 }: {
   currentPath: string;
 }) {
-  // Reading selectedNamespace.value here wires reactivity — the shared
-  // resource-counts store re-fetches when namespace changes.
-  const _ns = selectedNamespace.value;
-
-  const pvcWizardOpen = useSignal(false);
-  const scWizardOpen = useSignal(false);
+  const [pvcWizardOpen, setPvcWizardOpen] = useState(false);
+  const [scWizardOpen, setScWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reads the URL once on mount; `currentPath` is fixed for the page
   useEffect(() => {
     const params = new URLSearchParams(globalThis.location?.search ?? "");
     if (params.get("action") === "create") {
       if (currentPath.includes("storageclasses")) {
-        scWizardOpen.value = true;
+        setScWizardOpen(true);
       } else {
-        pvcWizardOpen.value = true;
+        setPvcWizardOpen(true);
       }
     }
   }, []);
@@ -105,7 +102,7 @@ export default function StorageDashboard({
     resolveTab(currentPath);
 
   // Derive counts from shared store — no separate fetch needed.
-  const counts = resourceCounts.value;
+  const counts = useSignalValue(resourceCounts);
   const countsReady = counts !== null;
 
   const totalPVCs = counts?.persistentvolumeclaims ?? counts?.pvcs ?? 0;
@@ -174,7 +171,7 @@ export default function StorageDashboard({
         <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
           <button
             type="button"
-            onClick={() => (pvcWizardOpen.value = true)}
+            onClick={() => setPvcWizardOpen(true)}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -197,7 +194,7 @@ export default function StorageDashboard({
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2.5"
+              strokeWidth="2.5"
             >
               <path d="M4 8h8M8 4v8" />
             </svg>
@@ -205,7 +202,7 @@ export default function StorageDashboard({
           </button>
           <button
             type="button"
-            onClick={() => (scWizardOpen.value = true)}
+            onClick={() => setScWizardOpen(true)}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -228,7 +225,7 @@ export default function StorageDashboard({
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="1.5"
+              strokeWidth="1.5"
             >
               <path d="M4 8h8M8 4v8" />
             </svg>
@@ -236,11 +233,9 @@ export default function StorageDashboard({
           </button>
         </div>
 
-        {pvcWizardOpen.value && (
-          <PVCWizard onClose={() => (pvcWizardOpen.value = false)} />
-        )}
-        {scWizardOpen.value && (
-          <StorageClassWizard onClose={() => (scWizardOpen.value = false)} />
+        {pvcWizardOpen && <PVCWizard onClose={() => setPvcWizardOpen(false)} />}
+        {scWizardOpen && (
+          <StorageClassWizard onClose={() => setScWizardOpen(false)} />
         )}
       </div>
 

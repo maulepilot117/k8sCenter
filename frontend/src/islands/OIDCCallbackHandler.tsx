@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { handleOIDCCallback } from "@/lib/auth.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -10,8 +10,7 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  * stores it in memory, and redirects to the dashboard.
  */
 export default function OIDCCallbackHandler() {
-  const error = useSignal("");
-  const processing = useSignal(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -20,21 +19,20 @@ export default function OIDCCallbackHandler() {
       if (success) {
         globalThis.location.href = "/";
       } else {
-        error.value = "Authentication failed. Please try again.";
-        processing.value = false;
+        setError("Authentication failed. Please try again.");
       }
     });
   }, []);
 
-  if (error.value) {
+  if (error) {
     return (
       <div>
-        <div class="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
-          {error.value}
+        <div className="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
+          {error}
         </div>
         <a
           href="/login"
-          class="mt-4 inline-block text-sm text-accent hover:text-accent"
+          className="mt-4 inline-block text-sm text-accent hover:text-accent"
         >
           Back to login
         </a>
@@ -43,9 +41,9 @@ export default function OIDCCallbackHandler() {
   }
 
   return (
-    <div class="space-y-4">
+    <div className="space-y-4">
       <Spinner className="mx-auto text-accent" />
-      <p class="text-sm text-text-muted">Completing sign in...</p>
+      <p className="text-sm text-text-muted">Completing sign in...</p>
     </div>
   );
 }

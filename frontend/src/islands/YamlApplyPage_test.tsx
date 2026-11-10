@@ -1,11 +1,9 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import type { Capability, ReasonCode } from "@/lib/capability-types.ts";
 import { LOCAL_CLUSTER_ID, switchCluster } from "@/src/lib/cluster.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * Render-level coverage for the YAML Apply page: what the operator sees for
@@ -34,9 +32,11 @@ const { default: YamlApplyPage } = await import("./YamlApplyPage.tsx");
 
 // A real origin, so the page can read ?repairOf= and rewrite its own URL.
 const PAGE_URL = "http://localhost/tools/yaml-apply";
-beforeAll(() => GlobalRegistrator.register({ url: PAGE_URL }));
+setupDom({ browser: true });
+(
+  window as unknown as { happyDOM: { setURL(url: string): void } }
+).happyDOM.setURL(PAGE_URL);
 afterAll(() => {
-  GlobalRegistrator.unregister();
   mock.module("./YamlEditor.tsx", () => realYamlEditor);
 });
 
@@ -46,14 +46,13 @@ interface Call {
 }
 
 let calls: Call[] = [];
-let host: HTMLElement | null = null;
+let mounted: ReturnType<typeof render> | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
+  if (mounted) {
+    mounted.unmount();
+    mounted = null;
   }
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
@@ -134,11 +133,9 @@ const flush = () =>
   });
 
 async function mount() {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<YamlApplyPage />, host as HTMLElement));
+  mounted = render(<YamlApplyPage />);
   await flush();
-  return host;
+  return mounted.container as HTMLElement;
 }
 
 function button(root: HTMLElement, label: string): HTMLButtonElement {
@@ -192,9 +189,8 @@ test("blocked, unsupported and unknown render as three different notices", async
       tone: notice?.getAttribute("data-tone") ?? null,
       text: notice?.textContent ?? "",
     });
-    act(() => render(null, root));
-    root.remove();
-    host = null;
+    mounted?.unmount();
+    mounted = null;
     if (originalFetch) globalThis.fetch = originalFetch;
   }
 
@@ -855,9 +851,8 @@ test("a record naming a different operation id is flagged; case alone is not", a
   expect(root.textContent).toContain(
     "This record names a different operation id than this apply sent.",
   );
-  act(() => render(null, root));
-  root.remove();
-  host = null;
+  mounted?.unmount();
+  mounted = null;
   if (originalFetch) globalThis.fetch = originalFetch;
 
   // Same id, upper-cased by the server: the same operation.

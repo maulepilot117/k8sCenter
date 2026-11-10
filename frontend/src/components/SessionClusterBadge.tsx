@@ -1,6 +1,5 @@
 /** @jsxImportSource react */
 import { clusterLabel, useClusterNames } from "@/src/lib/cluster-label.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
  * Names the cluster a live session (a log tail, a shell) is connected to.
@@ -10,7 +9,7 @@ import { useSignalValue } from "@/src/lib/use-signal-value.ts";
  */
 export function SessionClusterBadge({ clusterId }: { clusterId: string }) {
   const names = useClusterNames([clusterId]);
-  const label = clusterLabel(clusterId, useSignalValue(names));
+  const label = clusterLabel(clusterId, names);
   return (
     <span
       className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-text-secondary bg-elevated"

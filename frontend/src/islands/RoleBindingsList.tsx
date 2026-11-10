@@ -1,8 +1,9 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { apiGet } from "@/lib/api.ts";
 import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface Binding {
   metadata: { name: string; namespace?: string };
@@ -25,8 +26,9 @@ export default function RoleBindingsList({
   roleKind,
   namespace,
 }: Props) {
-  const bindings = useSignal<Binding[]>([]);
-  const loading = useSignal(true);
+  const isClient = useIsClient();
+  const [bindings, setBindings] = useState<Binding[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -53,26 +55,28 @@ export default function RoleBindingsList({
         }
 
         // Filter to bindings that reference this role
-        bindings.value = results.filter(
-          (b) => b.roleRef.name === roleName && b.roleRef.kind === roleKind,
+        setBindings(
+          results.filter(
+            (b) => b.roleRef.name === roleName && b.roleRef.kind === roleKind,
+          ),
         );
       } catch {
         // Silently fail — this is a supplementary section
       }
-      loading.value = false;
+      setLoading(false);
     }
 
     fetch();
   }, [roleName, roleKind, namespace]);
 
-  if (!IS_BROWSER || loading.value) return null;
-  if (bindings.value.length === 0) {
+  if (!isClient || loading) return null;
+  if (bindings.length === 0) {
     return (
-      <div class="mt-4">
-        <h3 class="text-sm font-semibold text-text-primary mb-2">
+      <div className="mt-4">
+        <h3 className="text-sm font-semibold text-text-primary mb-2">
           Bindings Using This {roleKind}
         </h3>
-        <p class="text-sm text-text-muted">
+        <p className="text-sm text-text-muted">
           No bindings reference this {roleKind.toLowerCase()}.
         </p>
       </div>
@@ -80,27 +84,27 @@ export default function RoleBindingsList({
   }
 
   return (
-    <div class="mt-4">
-      <h3 class="text-sm font-semibold text-text-primary mb-2">
-        Bindings Using This {roleKind} ({bindings.value.length})
+    <div className="mt-4">
+      <h3 className="text-sm font-semibold text-text-primary mb-2">
+        Bindings Using This {roleKind} ({bindings.length})
       </h3>
-      <div class="overflow-x-auto rounded-md border border-border-primary">
-        <table class="w-full text-sm">
+      <div className="overflow-x-auto rounded-md border border-border-primary">
+        <table className="w-full text-sm">
           <thead>
-            <tr class="border-b border-border-primary">
-              <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+            <tr className="border-b border-border-primary">
+              <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                 Binding
               </th>
-              <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+              <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                 Kind
               </th>
-              <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+              <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                 Subjects
               </th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-border-subtle">
-            {bindings.value.map((b) => {
+          <tbody className="divide-y divide-border-subtle">
+            {bindings.map((b) => {
               const isClusterScoped = !b.metadata.namespace;
               const bindingKind = isClusterScoped
                 ? "clusterrolebindings"
@@ -112,23 +116,23 @@ export default function RoleBindingsList({
 
               return (
                 <tr key={b.metadata.name + (b.metadata.namespace ?? "")}>
-                  <td class="px-3 py-1.5">
+                  <td className="px-3 py-1.5">
                     <a
                       href={href}
-                      class="text-brand hover:underline font-medium"
+                      className="text-brand hover:underline font-medium"
                     >
                       {b.metadata.name}
                     </a>
                     {b.metadata.namespace && (
-                      <span class="ml-1 text-xs text-text-muted">
+                      <span className="ml-1 text-xs text-text-muted">
                         ({b.metadata.namespace})
                       </span>
                     )}
                   </td>
-                  <td class="px-3 py-1.5 text-text-secondary">
+                  <td className="px-3 py-1.5 text-text-secondary">
                     {isClusterScoped ? "ClusterRoleBinding" : "RoleBinding"}
                   </td>
-                  <td class="px-3 py-1.5 text-text-secondary">
+                  <td className="px-3 py-1.5 text-text-secondary">
                     {b.subjects?.map((s) => `${s.kind}:${s.name}`).join(",") ??
                       "-"}
                   </td>

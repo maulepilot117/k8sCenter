@@ -1,15 +1,13 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { type ComponentType, useEffect, useState } from "react";
 import ConfigMapWizard from "@/src/islands/ConfigMapWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import SecretWizard from "@/src/islands/SecretWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
-type WizardComponent =
-  | (({ onClose }: { onClose: () => void }) => preact.JSX.Element)
-  | null;
+type WizardComponent = ComponentType<{ onClose: () => void }> | null;
 
 const WIZARD_MAP: Record<string, WizardComponent> = {
   configmaps: ConfigMapWizard,
@@ -51,15 +49,10 @@ export default function ConfigDashboard({
 }: {
   currentPath: string;
 }) {
-  // Reading selectedNamespace.value here wires reactivity — the shared
-  // resource-counts store re-fetches when namespace changes.
-  const _ns = selectedNamespace.value;
-
   const { kind, title } = resolveTab(currentPath);
   const WizardComponent = WIZARD_MAP[kind] ?? null;
 
-  // Wizard modal signal — open=true shows the floating WizardShell
-  const wizardOpen = useSignal(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
   useEffect(() => {
@@ -69,17 +62,17 @@ export default function ConfigDashboard({
         "create" &&
       WizardComponent
     ) {
-      wizardOpen.value = true;
+      setWizardOpen(true);
       const url = new URL(globalThis.location.href);
       url.searchParams.delete("action");
       globalThis.history.replaceState({}, "", url.toString());
     }
-  }, []);
+  }, [WizardComponent]);
 
   // Subtitle derived from live counts — no invented data. Secrets are never
   // counted (they stay out of the informer cache), so their count is unknown
   // and the subtitle is left out rather than reading "0 secrets".
-  const countsReady = resourceCounts.value !== null;
+  const countsReady = useSignalValue(resourceCounts) !== null;
   const count = formatCount(kind);
 
   const subtitle = !countsReady
@@ -91,8 +84,8 @@ export default function ConfigDashboard({
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Floating wizard modal — rendered above everything when open */}
-      {wizardOpen.value && WizardComponent && (
-        <WizardComponent onClose={() => (wizardOpen.value = false)} />
+      {wizardOpen && WizardComponent && (
+        <WizardComponent onClose={() => setWizardOpen(false)} />
       )}
 
       {/* Page header — 24/700 per archetype spec */}
@@ -133,7 +126,7 @@ export default function ConfigDashboard({
         {WizardComponent && (
           <button
             type="button"
-            onClick={() => (wizardOpen.value = true)}
+            onClick={() => setWizardOpen(true)}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -157,7 +150,7 @@ export default function ConfigDashboard({
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2.5"
+              strokeWidth="2.5"
             >
               <path d="M4 8h8M8 4v8" />
             </svg>
