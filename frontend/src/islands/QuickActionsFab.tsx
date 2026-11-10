@@ -38,7 +38,9 @@ export default function QuickActionsFab() {
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   // Close like the other chrome menus do: on a press outside the FAB, or on
-  // Escape, which also hands focus back to the button that opened the menu.
+  // Escape. Focus goes back to the button only when it was inside the FAB, so
+  // an Escape that dismisses another component (the command palette, a
+  // dialog) leaves that component's focus handling alone.
   useEffect(() => {
     if (!expanded) return;
     const onPointerDown = (e: MouseEvent) => {
@@ -46,8 +48,9 @@ export default function QuickActionsFab() {
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      const hadFocus = rootRef.current?.contains(document.activeElement);
       setExpanded(false);
-      buttonRef.current?.focus();
+      if (hadFocus) buttonRef.current?.focus();
     };
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
