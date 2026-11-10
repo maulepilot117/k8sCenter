@@ -1,9 +1,10 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ApiError, apiDelete, apiGet, apiPut } from "@/lib/api.ts";
 import { sameOrigin } from "@/lib/origin.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 /**
  * GET and PUT /v1/clusters/{id}/metrics. The tokens themselves are never
@@ -54,22 +55,25 @@ function metricsErrorMessage(err: unknown, fallback: string): string {
 }
 
 export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
-  const busy = useSignal(true);
-  const configured = useSignal(false);
-  const promUrl = useSignal("");
-  const promToken = useSignal("");
-  const hasPromToken = useSignal(false);
+  const [busy, setBusy] = useState(true);
+  const [configured, setConfigured] = useState(false);
+  const [promUrl, setPromUrl] = useState("");
+  const [promToken, setPromToken] = useState("");
+  const [hasPromToken, setHasPromToken] = useState(false);
   // A blank token field keeps the stored token; the clear box sends the
   // explicit empty token. A typed token still wins.
-  const clearPromToken = useSignal(false);
-  const amUrl = useSignal("");
-  const amToken = useSignal("");
-  const hasAmToken = useSignal(false);
-  const clearAmToken = useSignal(false);
-  const amStale = useSignal(false);
+  const [clearPromToken, setClearPromToken] = useState(false);
+  const [amUrl, setAmUrl] = useState("");
+  const [amToken, setAmToken] = useState("");
+  const [hasAmToken, setHasAmToken] = useState(false);
+  const [clearAmToken, setClearAmToken] = useState(false);
+  const [amStale, setAmStale] = useState(false);
   // The Alertmanager URL as stored, to tell an edit to another host.
-  const storedAmUrl = useSignal("");
-  const baseId = useRef(`mb-${Math.random().toString(36).slice(2, 8)}`).current;
+  const [storedAmUrl, setStoredAmUrl] = useState("");
+  const [baseId] = useState(
+    () => `mb-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  const onBindingRef = useLatest(onBinding);
 
   // Bumped by every load/save/remove and when the form unmounts (closed or
   // moved to another cluster). A response writes the form only while its
@@ -78,18 +82,18 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
   // landed is true of its cluster whatever the form shows now.
   const gen = useRef(0);
 
-  function applyBinding(b: MetricsBinding) {
-    promUrl.value = b.prometheusUrl;
-    amUrl.value = b.alertmanagerUrl ?? "";
-    storedAmUrl.value = b.alertmanagerUrl ?? "";
-    hasPromToken.value = b.hasToken;
-    hasAmToken.value = b.hasAlertmanagerToken ?? false;
-    amStale.value = b.alertmanagerTokenStale ?? false;
-    promToken.value = "";
-    amToken.value = "";
-    clearPromToken.value = false;
-    clearAmToken.value = false;
-  }
+  const applyBinding = useCallback((b: MetricsBinding) => {
+    setPromUrl(b.prometheusUrl);
+    setAmUrl(b.alertmanagerUrl ?? "");
+    setStoredAmUrl(b.alertmanagerUrl ?? "");
+    setHasPromToken(b.hasToken);
+    setHasAmToken(b.hasAlertmanagerToken ?? false);
+    setAmStale(b.alertmanagerTokenStale ?? false);
+    setPromToken("");
+    setAmToken("");
+    setClearPromToken(false);
+    setClearAmToken(false);
+  }, []);
 
   useEffect(() => {
     const g = ++gen.current;
@@ -100,15 +104,15 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
         );
         if (gen.current !== g) return;
         applyBinding(res.data);
-        configured.value = true;
-        onBinding(clusterId, "configured");
+        setConfigured(true);
+        onBindingRef.current(clusterId, "configured");
       } catch (err) {
         if (gen.current !== g) return;
         if (
           err instanceof ApiError &&
           err.reason === "metrics_not_configured"
         ) {
-          onBinding(clusterId, "not-configured");
+          onBindingRef.current(clusterId, "not-configured");
         } else {
           showToast(
             metricsErrorMessage(err, "Could not load the binding"),
@@ -116,27 +120,27 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
           );
         }
       } finally {
-        if (gen.current === g) busy.value = false;
+        if (gen.current === g) setBusy(false);
       }
     })();
     return () => {
       gen.current++;
     };
-  }, [clusterId]);
+  }, [clusterId, applyBinding]);
 
   async function save() {
     const g = ++gen.current;
-    busy.value = true;
+    setBusy(true);
     try {
       const body: Record<string, string> = {
-        prometheusUrl: promUrl.value.trim(),
+        prometheusUrl: promUrl.trim(),
       };
       // Omitted keeps the stored token, "" clears it, a value replaces it.
-      if (promToken.value !== "") body.token = promToken.value;
-      else if (clearPromToken.value) body.token = "";
-      if (amUrl.value.trim() !== "") body.alertmanagerUrl = amUrl.value.trim();
-      if (amToken.value !== "") body.alertmanagerToken = amToken.value;
-      else if (clearAmToken.value) body.alertmanagerToken = "";
+      if (promToken !== "") body.token = promToken;
+      else if (clearPromToken) body.token = "";
+      if (amUrl.trim() !== "") body.alertmanagerUrl = amUrl.trim();
+      if (amToken !== "") body.alertmanagerToken = amToken;
+      else if (clearAmToken) body.alertmanagerToken = "";
       const res = await apiPut<MetricsBinding>(
         `/v1/clusters/${clusterId}/metrics`,
         body,
@@ -144,7 +148,7 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
       onBinding(clusterId, "configured");
       if (gen.current !== g) return;
       applyBinding(res.data);
-      configured.value = true;
+      setConfigured(true);
       showToast("Metrics binding saved", "success");
     } catch (err) {
       if (gen.current !== g) return;
@@ -153,7 +157,7 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
         "error",
       );
     } finally {
-      if (gen.current === g) busy.value = false;
+      if (gen.current === g) setBusy(false);
     }
   }
 
@@ -166,7 +170,7 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
       return;
     }
     const g = ++gen.current;
-    busy.value = true;
+    setBusy(true);
     try {
       await apiDelete(`/v1/clusters/${clusterId}/metrics`);
       onBinding(clusterId, "not-configured");
@@ -178,7 +182,7 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
         alertmanagerUrl: "",
         updatedAt: "",
       });
-      configured.value = false;
+      setConfigured(false);
       showToast("Metrics binding removed", "success");
     } catch (err) {
       if (gen.current !== g) return;
@@ -187,74 +191,64 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
         "error",
       );
     } finally {
-      if (gen.current === g) busy.value = false;
+      if (gen.current === g) setBusy(false);
     }
   }
 
   // The same origin rule the server applies (lib/origin.ts), so an explicit
   // default port counts as a move just as it does there.
   const amUrlMoved =
-    hasAmToken.value &&
-    amUrl.value.trim() !== "" &&
-    !sameOrigin(storedAmUrl.value, amUrl.value);
+    hasAmToken && amUrl.trim() !== "" && !sameOrigin(storedAmUrl, amUrl);
   // A stale token is reported with hasAlertmanagerToken false (the store
   // withholds a token whose origin no longer matches), so staleness alone
   // must prompt. Removing the Alertmanager URL clears the token server-side.
-  const amNeedsEntry =
-    amUrlMoved || (amStale.value && amUrl.value.trim() !== "");
-  const amTokenMissing =
-    amNeedsEntry && amToken.value === "" && !clearAmToken.value;
+  const amNeedsEntry = amUrlMoved || (amStale && amUrl.trim() !== "");
+  const amTokenMissing = amNeedsEntry && amToken === "" && !clearAmToken;
   const amMessageId = `${baseId}-am-token-msg`;
 
   return (
     <div
       data-testid="metrics-form"
-      class="mt-2.5 flex max-w-[520px] flex-col gap-2.5"
+      className="mt-2.5 flex max-w-[520px] flex-col gap-2.5"
     >
       <div>
-        <label class={LABEL_CLASS} for={`${baseId}-prom-url`}>
+        <label className={LABEL_CLASS} htmlFor={`${baseId}-prom-url`}>
           Prometheus URL
         </label>
         <input
           id={`${baseId}-prom-url`}
           type="text"
-          class={INPUT_CLASS}
-          value={promUrl.value}
-          autocomplete="off"
+          className={INPUT_CLASS}
+          value={promUrl}
+          autoComplete="off"
           placeholder="https://prometheus.example.com"
-          onInput={(e) => {
-            promUrl.value = e.currentTarget.value;
-          }}
+          onChange={(e) => setPromUrl(e.currentTarget.value)}
         />
       </div>
       <div>
-        <label class={LABEL_CLASS} for={`${baseId}-prom-token`}>
+        <label className={LABEL_CLASS} htmlFor={`${baseId}-prom-token`}>
           Prometheus bearer token (optional)
         </label>
         <input
           id={`${baseId}-prom-token`}
           type="password"
-          class={INPUT_CLASS}
-          value={promToken.value}
-          autocomplete="new-password"
+          className={INPUT_CLASS}
+          value={promToken}
+          autoComplete="new-password"
           placeholder="leave blank to keep the stored token"
-          onInput={(e) => {
-            promToken.value = e.currentTarget.value;
-          }}
+          onChange={(e) => setPromToken(e.currentTarget.value)}
         />
-        {hasPromToken.value && (
-          <div class="mt-1.5 flex flex-col gap-1">
-            <span class="text-xs text-text-muted">
+        {hasPromToken && (
+          <div className="mt-1.5 flex flex-col gap-1">
+            <span className="text-xs text-text-muted">
               A token is stored for this binding.
             </span>
-            <label class={CHECK_CLASS}>
+            <label className={CHECK_CLASS}>
               <input
                 type="checkbox"
-                checked={clearPromToken.value}
-                disabled={promToken.value !== ""}
-                onChange={(ev) => {
-                  clearPromToken.value = ev.currentTarget.checked;
-                }}
+                checked={clearPromToken}
+                disabled={promToken !== ""}
+                onChange={(ev) => setClearPromToken(ev.currentTarget.checked)}
               />
               Clear the stored Prometheus token on save
             </label>
@@ -262,33 +256,31 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
         )}
       </div>
       <div>
-        <label class={LABEL_CLASS} for={`${baseId}-am-url`}>
+        <label className={LABEL_CLASS} htmlFor={`${baseId}-am-url`}>
           Alertmanager URL (optional)
         </label>
         <input
           id={`${baseId}-am-url`}
           type="text"
-          class={INPUT_CLASS}
-          value={amUrl.value}
-          autocomplete="off"
+          className={INPUT_CLASS}
+          value={amUrl}
+          autoComplete="off"
           placeholder="https://alertmanager.example.com"
-          onInput={(e) => {
-            amUrl.value = e.currentTarget.value;
-          }}
+          onChange={(e) => setAmUrl(e.currentTarget.value)}
         />
       </div>
       <div>
-        <label class={LABEL_CLASS} for={`${baseId}-am-token`}>
+        <label className={LABEL_CLASS} htmlFor={`${baseId}-am-token`}>
           Alertmanager bearer token (optional)
         </label>
         <input
           id={`${baseId}-am-token`}
           type="password"
-          class={INPUT_CLASS}
-          value={amToken.value}
-          autocomplete="new-password"
-          required={amNeedsEntry && !clearAmToken.value}
-          aria-required={amNeedsEntry && !clearAmToken.value}
+          className={INPUT_CLASS}
+          value={amToken}
+          autoComplete="new-password"
+          required={amNeedsEntry && !clearAmToken}
+          aria-required={amNeedsEntry && !clearAmToken}
           aria-invalid={amTokenMissing}
           aria-describedby={amNeedsEntry ? amMessageId : undefined}
           placeholder={
@@ -296,57 +288,53 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
               ? "enter the token for this Alertmanager"
               : "leave blank to keep the stored token"
           }
-          onInput={(e) => {
-            amToken.value = e.currentTarget.value;
-          }}
+          onChange={(e) => setAmToken(e.currentTarget.value)}
         />
         {amNeedsEntry && (
-          <p id={amMessageId} class="mt-1.5 text-xs text-warning">
+          <p id={amMessageId} className="mt-1.5 text-xs text-warning">
             A different Alertmanager host needs its token entered again. The
             stored token will not be sent there.
           </p>
         )}
-        {(hasAmToken.value || amStale.value) && (
-          <div class="mt-1.5 flex flex-col gap-1">
+        {(hasAmToken || amStale) && (
+          <div className="mt-1.5 flex flex-col gap-1">
             {!amNeedsEntry && (
-              <span class="text-xs text-text-muted">
+              <span className="text-xs text-text-muted">
                 An Alertmanager token is stored for this binding.
               </span>
             )}
-            <label class={CHECK_CLASS}>
+            <label className={CHECK_CLASS}>
               <input
                 type="checkbox"
-                checked={clearAmToken.value}
-                disabled={amToken.value !== ""}
-                onChange={(ev) => {
-                  clearAmToken.value = ev.currentTarget.checked;
-                }}
+                checked={clearAmToken}
+                disabled={amToken !== ""}
+                onChange={(ev) => setClearAmToken(ev.currentTarget.checked)}
               />
               Clear the stored Alertmanager token on save
             </label>
           </div>
         )}
-        <p class="mt-1.5 text-[11.5px] text-text-muted">
+        <p className="mt-1.5 text-[11.5px] text-text-muted">
           A token shared by Prometheus and Alertmanager must be entered in both
           fields.
         </p>
       </div>
-      <div class="flex gap-1.5">
+      <div className="flex gap-1.5">
         <Button
           type="button"
           variant="primary"
           size="sm"
-          disabled={busy.value || promUrl.value.trim() === "" || amTokenMissing}
+          disabled={busy || promUrl.trim() === "" || amTokenMissing}
           onClick={save}
         >
           Save
         </Button>
-        {configured.value && (
+        {configured && (
           <Button
             type="button"
             variant="danger"
             size="sm"
-            disabled={busy.value}
+            disabled={busy}
             onClick={remove}
           >
             Remove binding

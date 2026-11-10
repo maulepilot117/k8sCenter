@@ -1,11 +1,15 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
 import { setAccessToken } from "@/lib/api.ts";
+import {
+  act,
+  fireEvent,
+  render,
+  settle,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
-GlobalRegistrator.register({ url: "http://localhost/" });
+setupDom({ browser: true });
 
 const toasts: Array<{ message: string; type: string }> = [];
 // bun shares modules across test files, so the real module is kept and put
@@ -24,7 +28,6 @@ const { default: LokiBindingForm } = await import("./LokiBindingForm.tsx");
 
 afterAll(() => {
   mock.module("@/src/lib/toast-store.ts", () => realToastStore);
-  GlobalRegistrator.unregister();
 });
 
 interface Call {
@@ -41,9 +44,10 @@ type Reply = { status: number; body?: unknown };
 // one its cluster was given.
 let putGate: Promise<void> | null = null;
 let getGates: Array<Promise<void>> = [];
+let deleteGate: Promise<void> | null = null;
 const originalConfirm = globalThis.confirm;
 
-let host: HTMLElement | null = null;
+let view: ReturnType<typeof render> | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 let calls: Call[] = [];
 let replies: Record<string, Reply> = {};
@@ -76,6 +80,8 @@ beforeEach(() => {
   badges = [];
   putGate = null;
   getGates = [];
+  deleteGate = null;
+  view = null;
   originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -86,6 +92,7 @@ beforeEach(() => {
     });
     const reply = replies[method] ?? { status: 500, body: {} };
     if (method === "PUT" && putGate) await putGate;
+    if (method === "DELETE" && deleteGate) await deleteGate;
     const gate = method === "GET" ? getGates.shift() : undefined;
     if (gate) await gate;
     if (reply.status === 204) return new Response(null, { status: 204 });
@@ -98,42 +105,29 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   if (originalFetch) globalThis.fetch = originalFetch;
   globalThis.confirm = originalConfirm;
   setAccessToken(null);
 });
 
-async function settle() {
-  for (let i = 0; i < 5; i++) {
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-  }
-}
-
-function renderForm(clusterId: string) {
-  act(() =>
-    render(
-      <LokiBindingForm
-        clusterId={clusterId}
-        onBinding={(id, state) => badges.push([id, state])}
-      />,
-      host as HTMLElement,
-    ),
+function form(clusterId: string) {
+  return (
+    <LokiBindingForm
+      clusterId={clusterId}
+      onBinding={(id, state) => badges.push([id, state])}
+    />
   );
 }
 
+function renderForm(clusterId: string) {
+  if (view) view.rerender(form(clusterId));
+  else view = render(form(clusterId));
+}
+
 async function mount() {
-  host = document.createElement("div");
-  document.body.appendChild(host);
   renderForm("c1");
   await settle();
-  return host;
+  return (view as ReturnType<typeof render>).container;
 }
 
 /** The control a visible label names, through the label's `for`. */
@@ -164,8 +158,7 @@ async function click(el: HTMLElement) {
 
 async function type(el: HTMLInputElement, value: string) {
   await act(async () => {
-    el.value = value;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    fireEvent.input(el, { target: { value } });
   });
   await settle();
 }
@@ -451,8 +444,6 @@ test("a load that answers after the form moved to another cluster leaves the new
     }),
   ];
   replies.GET = { status: 200, body: { data: BINDING } };
-  host = document.createElement("div");
-  document.body.appendChild(host);
   renderForm("c1");
   await settle();
 
@@ -469,12 +460,16 @@ test("a load that answers after the form moved to another cluster leaves the new
   };
   renderForm("c2");
   await settle();
-  expect(byLabel(host, URL_FIELD).value).toBe("https://loki-c2.example.com");
+  expect(byLabel(view?.container as HTMLElement, URL_FIELD).value).toBe(
+    "https://loki-c2.example.com",
+  );
 
   releaseFirst();
   await settle();
-  expect(byLabel(host, URL_FIELD).value).toBe("https://loki-c2.example.com");
-  expect(byLabel(host, TENANT).value).toBe("team-c2");
+  expect(byLabel(view?.container as HTMLElement, URL_FIELD).value).toBe(
+    "https://loki-c2.example.com",
+  );
+  expect(byLabel(view?.container as HTMLElement, TENANT).value).toBe("team-c2");
   // Only c2's load reported: c1's answer arrived for a form no longer shown.
   expect(badges).toEqual([["c2", "configured"]]);
 });
@@ -523,4 +518,58 @@ test("a failed remove keeps the form and its badge as they were", async () => {
   expect(badges).toEqual([["c1", "configured"]]);
   expect(byLabel(root, URL_FIELD).value).toBe("https://loki.example.com");
   expect(button(root, "Remove binding").disabled).toBe(false);
+});
+
+test("a remove that finishes after the form moved to another cluster badges its own cluster and leaves the new form alone", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  globalThis.confirm = () => true;
+  const root = await mount();
+
+  let release = () => {};
+  deleteGate = new Promise<void>((r) => {
+    release = r;
+  });
+  replies.DELETE = { status: 204 };
+  await click(button(root, "Remove binding"));
+
+  replies.GET = {
+    status: 200,
+    body: {
+      data: { ...BINDING, clusterId: "c2", url: "https://loki-c2.example.com" },
+    },
+  };
+  renderForm("c2");
+  await settle();
+
+  toasts.length = 0;
+  const before = badges.length;
+  release();
+  await settle();
+
+  expect(badges.slice(before)).toEqual([["c1", "not-configured"]]);
+  expect(byLabel(root, URL_FIELD).value).toBe("https://loki-c2.example.com");
+  expect(toasts).toEqual([]);
+});
+
+test("a failed save the form moved away from shows no toast", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+
+  let release = () => {};
+  putGate = new Promise<void>((r) => {
+    release = r;
+  });
+  replies.PUT = {
+    status: 500,
+    body: { error: { code: 500, message: "internal detail" } },
+  };
+  await click(button(root, "Save"));
+  renderForm("c2");
+  await settle();
+
+  toasts.length = 0;
+  release();
+  await settle();
+  expect(toasts).toEqual([]);
+  expect(button(root, "Save").disabled).toBe(false);
 });
