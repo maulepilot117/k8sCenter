@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { afterEach, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import {
   act,
   fireEvent,
@@ -16,24 +16,6 @@ const END = new Date(2026, 10, 10, 14, 0).getTime();
 
 const series = (n: number, base: number) =>
   Array.from({ length: n }, (_, i) => base + i);
-
-// Leave the prototype exactly as found, so stubs in other files survive.
-const ownRect = Object.getOwnPropertyDescriptor(
-  HTMLElement.prototype,
-  "getBoundingClientRect",
-);
-afterEach(() => {
-  if (ownRect) {
-    Object.defineProperty(
-      HTMLElement.prototype,
-      "getBoundingClientRect",
-      ownRect,
-    );
-  } else {
-    delete (HTMLElement.prototype as Partial<HTMLElement>)
-      .getBoundingClientRect;
-  }
-});
 
 async function openTooltip(container: HTMLElement) {
   const chart = container.querySelector('[tabindex="0"]') as Element;
@@ -171,8 +153,8 @@ test("without window and step it uses the one hour, two minute grid", async () =
   expect(tip.textContent).toContain("13:02");
 });
 
-test("a window given as 24h on a 48m step labels the whole day", async () => {
-  const { getByRole } = render(
+test("a window given as 24h on a 48m step spans the day in 48-minute steps", async () => {
+  const { container, getByRole } = render(
     <ResourceAreaChart
       cpuData={series(31, 10)}
       memData={null}
@@ -185,4 +167,14 @@ test("a window given as 24h on a 48m step labels the whole day", async () => {
   expect(getByRole("figure").getAttribute("aria-label")).toBe(
     "CPU and memory utilization over the last 24 hours",
   );
+  // The oldest of 31 samples is a day before the newest, and the next is
+  // one 48-minute step after it.
+  const { chart, tip } = await openTooltip(container);
+  expect(tip.textContent).toContain("14:00");
+  expect(tip.textContent).toContain("10%");
+  await act(async () => {
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+  });
+  expect(tip.textContent).toContain("14:48");
+  expect(tip.textContent).toContain("11%");
 });

@@ -269,6 +269,23 @@ describe("resource-utilization", () => {
     expect(container.textContent).toContain("Resource Utilization");
   });
 
+  test("hands the response's window to the chart", () => {
+    seed(
+      "dashboard-trends",
+      {
+        cpu: [10, 20, 30],
+        memory: [30, 40, 50],
+        window: "24h0m0s",
+        step: "48m0s",
+      },
+      "24h",
+    );
+    const { getByRole } = mount("resource-utilization");
+    expect(getByRole("figure").getAttribute("aria-label")).toBe(
+      "CPU and memory utilization over the last 24 hours",
+    );
+  });
+
   test("redraws the chart when the trends change", () => {
     seed("dashboard-trends", { cpu: null, memory: null });
     const { container } = mount("resource-utilization");

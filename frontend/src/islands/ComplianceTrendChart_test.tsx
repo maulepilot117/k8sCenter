@@ -293,25 +293,6 @@ test("choosing a range refetches that many days", async () => {
 
 const { settle } = await import("@/src/test-utils/render.tsx");
 
-// Put the prototype back exactly as it was: leaving an own property behind
-// would shadow stubs other test files set on Element.prototype.
-const ownRect = Object.getOwnPropertyDescriptor(
-  HTMLElement.prototype,
-  "getBoundingClientRect",
-);
-afterEach(() => {
-  if (ownRect) {
-    Object.defineProperty(
-      HTMLElement.prototype,
-      "getBoundingClientRect",
-      ownRect,
-    );
-  } else {
-    delete (HTMLElement.prototype as Partial<HTMLElement>)
-      .getBoundingClientRect;
-  }
-});
-
 async function mountChart(body: unknown): Promise<HTMLElement> {
   serve(200, body);
   const root = (await mountUntil("Current:")) as HTMLElement;
