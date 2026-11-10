@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 /** Backup assurance — recovery readiness page (Release F U36).
  *
  * Reads the U35 API under /v1/velero/assurance: the collector's status, the
@@ -26,8 +27,7 @@
  * exception list, the policy editor/table, and their shared chips.
  */
 
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -68,6 +68,8 @@ import {
 } from "@/lib/backup-assurance-types.ts";
 import type { VeleroStatus } from "@/lib/velero-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 // Full literals, one per mounted route: e2e/tests/api-routes.spec.ts reads
 // every quoted "/v1/..." literal and asserts the backend mounts it, so each
@@ -119,33 +121,41 @@ interface DeleteTarget {
 }
 
 export default function BackupAssurance() {
-  const loading = useSignal(true);
-  const status = useSignal<AssuranceStatus | null>(null);
-  const statusFailure = useSignal<RequestFailure | null>(null);
-  const veleroDetected = useSignal<boolean | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<AssuranceStatus | null>(null);
+  const [statusFailure, setStatusFailure] = useState<RequestFailure | null>(
+    null,
+  );
+  const [veleroDetected, setVeleroDetected] = useState<boolean | null>(null);
 
-  const exState = useSignal<AssuranceExceptionState>("open");
-  const exOffset = useSignal(0);
-  const exceptions = useSignal<AssuranceException[]>([]);
-  const exTotal = useSignal(0);
-  const exFailure = useSignal<RequestFailure | null>(null);
-  const exLoading = useSignal(false);
+  const [exState, setExState, exStateRef] =
+    useStateRef<AssuranceExceptionState>("open");
+  const [exOffset, setExOffset, exOffsetRef] = useStateRef(0);
+  const [exceptions, setExceptions] = useState<AssuranceException[]>([]);
+  const [exTotal, setExTotal] = useState(0);
+  const [exFailure, setExFailure] = useState<RequestFailure | null>(null);
+  const [exLoading, setExLoading] = useState(false);
 
-  const policies = useSignal<AssurancePolicy[] | null>(null);
-  const policiesFailure = useSignal<RequestFailure | null>(null);
+  const [policies, setPolicies, policiesRef] = useStateRef<
+    AssurancePolicy[] | null
+  >(null);
+  const [policiesFailure, setPoliciesFailure] = useState<RequestFailure | null>(
+    null,
+  );
 
-  const editorOpen = useSignal(false);
-  const editing = useSignal<AssurancePolicy | null>(null);
-  const form = useSignal<PolicyForm>(emptyForm());
-  const fieldErrors = useSignal<Record<string, string>>({});
-  const formError = useSignal<string | null>(null);
-  const conflict = useSignal(false);
-  const saving = useSignal(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editing, setEditing] = useState<AssurancePolicy | null>(null);
+  const [form, setForm] = useState<PolicyForm>(emptyForm());
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const deleteTarget = useSignal<DeleteTarget | null>(null);
-  const deleting = useSignal(false);
-  const deleteError = useSignal<string | null>(null);
-  const notice = useSignal<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const isClient = useIsClient();
 
   /**
    * One counter per request stream. Each call takes the next ticket and
@@ -159,12 +169,12 @@ export default function BackupAssurance() {
 
   async function loadExceptions(): Promise<void> {
     const ticket = ++exTicket.current;
-    exLoading.value = true;
+    setExLoading(true);
     try {
       const qs = new URLSearchParams({
-        state: exState.value,
+        state: exStateRef.current,
         limit: String(EXCEPTION_PAGE_SIZE),
-        offset: String(exOffset.value),
+        offset: String(exOffsetRef.current),
       });
       const res = await apiGet<AssuranceException[]>(
         `${EXCEPTIONS_URL}?${qs.toString()}`,
@@ -172,25 +182,26 @@ export default function BackupAssurance() {
       if (ticket !== exTicket.current) return;
       const rows = Array.isArray(res.data) ? res.data : [];
       const total = res.metadata?.total ?? rows.length;
-      if (rows.length === 0 && total > 0 && exOffset.value > 0) {
+      if (rows.length === 0 && total > 0 && exOffsetRef.current > 0) {
         // The list shrank below the page being shown (a refresh, a resolved
         // exception or a deleted policy). Move to the last page that exists
         // instead of rendering an empty page as "no exceptions".
-        exOffset.value =
-          Math.floor((total - 1) / EXCEPTION_PAGE_SIZE) * EXCEPTION_PAGE_SIZE;
+        setExOffset(
+          Math.floor((total - 1) / EXCEPTION_PAGE_SIZE) * EXCEPTION_PAGE_SIZE,
+        );
         await loadExceptions();
         return;
       }
-      exceptions.value = rows;
-      exTotal.value = total;
-      exFailure.value = null;
+      setExceptions(rows);
+      setExTotal(total);
+      setExFailure(null);
     } catch (err) {
       if (ticket !== exTicket.current) return;
-      exceptions.value = [];
-      exTotal.value = 0;
-      exFailure.value = toFailure(err);
+      setExceptions([]);
+      setExTotal(0);
+      setExFailure(toFailure(err));
     } finally {
-      if (ticket === exTicket.current) exLoading.value = false;
+      if (ticket === exTicket.current) setExLoading(false);
     }
   }
 
@@ -199,133 +210,138 @@ export default function BackupAssurance() {
     try {
       const res = await apiGet<AssurancePolicy[]>(POLICIES_URL);
       if (ticket !== policyTicket.current) return;
-      policies.value = Array.isArray(res.data) ? res.data : [];
-      policiesFailure.value = null;
+      setPolicies(Array.isArray(res.data) ? res.data : []);
+      setPoliciesFailure(null);
     } catch (err) {
       if (ticket !== policyTicket.current) return;
-      policies.value = null;
-      policiesFailure.value = toFailure(err);
+      setPolicies(null);
+      setPoliciesFailure(toFailure(err));
     }
   }
 
   async function loadAll(): Promise<void> {
     const ticket = ++statusTicket.current;
-    loading.value = true;
+    setLoading(true);
     const [statusRes, veleroRes] = await Promise.allSettled([
       apiGet<AssuranceStatus>(STATUS_URL),
       apiGet<VeleroStatus>("/v1/velero/status"),
     ]);
     if (ticket !== statusTicket.current) return;
 
-    veleroDetected.value =
+    setVeleroDetected(
       veleroRes.status === "fulfilled" &&
-      typeof veleroRes.value.data?.detected === "boolean"
+        typeof veleroRes.value.data?.detected === "boolean"
         ? veleroRes.value.data.detected
-        : null;
+        : null,
+    );
 
     if (statusRes.status === "rejected") {
-      status.value = null;
-      statusFailure.value = toFailure(statusRes.reason);
+      setStatus(null);
+      setStatusFailure(toFailure(statusRes.reason));
       // Invalidate any list request still in flight: nothing below the
       // failed status is shown, and none of it may land later.
       exTicket.current++;
       policyTicket.current++;
-      exceptions.value = [];
-      exTotal.value = 0;
-      exLoading.value = false;
-      policies.value = null;
-      loading.value = false;
+      setExceptions([]);
+      setExTotal(0);
+      setExLoading(false);
+      setPolicies(null);
+      setLoading(false);
       return;
     }
-    status.value = statusRes.value.data;
-    statusFailure.value = null;
+    setStatus(statusRes.value.data);
+    setStatusFailure(null);
 
     // `runtime` is projected for admins only, so its presence is the
     // server's own answer to "may this caller manage policies".
-    const admin = status.value?.runtime !== undefined;
+    const admin = statusRes.value.data?.runtime !== undefined;
     await Promise.all([
       loadExceptions(),
       admin ? loadPolicies() : Promise.resolve(),
     ]);
-    if (ticket === statusTicket.current) loading.value = false;
+    if (ticket === statusTicket.current) setLoading(false);
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `loadAll` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
     loadAll();
   }, []);
 
-  // The SSR placeholder and the hydrated root share their attributes: Preact
+  // The SSR placeholder and the hydrated root share their attributes:
   // hydration never re-applies the root's own props (see
   // server/check-placeholder-root-parity.ts).
-  if (!IS_BROWSER) return <div class={ROOT_CLASS} data-testid={ROOT_TEST_ID} />;
+  if (!isClient) {
+    return <div className={ROOT_CLASS} data-testid={ROOT_TEST_ID} />;
+  }
 
-  const failure = statusFailure.value;
-  const isAdmin = status.value?.runtime !== undefined;
-  const state = surfaceStateFor(status.value, failure?.status);
+  const failure = statusFailure;
+  const isAdmin = status?.runtime !== undefined;
+  const state = surfaceStateFor(status, failure?.status);
 
   function changePage(delta: number) {
-    exOffset.value = Math.max(0, exOffset.value + delta * EXCEPTION_PAGE_SIZE);
+    setExOffset(Math.max(0, exOffsetRef.current + delta * EXCEPTION_PAGE_SIZE));
     loadExceptions();
   }
 
   function switchExState(next: AssuranceExceptionState) {
-    if (exState.value === next) return;
-    exState.value = next;
-    exOffset.value = 0;
+    if (exStateRef.current === next) return;
+    setExState(next);
+    setExOffset(0);
     loadExceptions();
   }
 
   function openCreate() {
-    editing.value = null;
-    form.value = emptyForm();
-    fieldErrors.value = {};
-    formError.value = null;
-    conflict.value = false;
-    editorOpen.value = true;
-    notice.value = null;
+    setEditing(null);
+    setForm(emptyForm());
+    setFieldErrors({});
+    setFormError(null);
+    setConflict(false);
+    setEditorOpen(true);
+    setNotice(null);
   }
 
   function openEdit(p: AssurancePolicy) {
-    editing.value = p;
-    form.value = formFromPolicy(p);
-    fieldErrors.value = {};
-    formError.value = null;
-    conflict.value = false;
-    editorOpen.value = true;
-    notice.value = null;
+    setEditing(p);
+    setForm(formFromPolicy(p));
+    setFieldErrors({});
+    setFormError(null);
+    setConflict(false);
+    setEditorOpen(true);
+    setNotice(null);
   }
 
   function closeEditor() {
-    editorOpen.value = false;
-    editing.value = null;
+    setEditorOpen(false);
+    setEditing(null);
   }
 
   async function reloadEditedPolicy() {
-    const current = editing.value;
+    const current = editing;
     await loadPolicies();
-    const fresh = policies.value?.find((p) => p.id === current?.id);
+    const fresh = policiesRef.current?.find((p) => p.id === current?.id);
     if (fresh) {
       openEdit(fresh);
-      notice.value =
-        "Reloaded the current values. Re-apply your changes and save again.";
+      setNotice(
+        "Reloaded the current values. Re-apply your changes and save again.",
+      );
     } else {
       closeEditor();
-      notice.value = "That policy no longer exists.";
+      setNotice("That policy no longer exists.");
     }
   }
 
   async function submitPolicy() {
-    const f = form.value;
-    const creating = editing.value === null;
+    const f = form;
+    const creating = editing === null;
     const local = localFieldErrors(f, creating);
-    fieldErrors.value = local;
-    formError.value = null;
+    setFieldErrors(local);
+    setFormError(null);
     if (Object.keys(local).length > 0) return;
 
     const maxAgeSeconds = minutesToSeconds(f.maxAgeMinutes) ?? 0;
     const graceSeconds = minutesToSeconds(f.graceMinutes) ?? 0;
-    saving.value = true;
+    setSaving(true);
     try {
       if (creating) {
         const body: AssurancePolicyCreate = {
@@ -340,10 +356,11 @@ export default function BackupAssurance() {
           enabled: f.enabled,
         };
         await apiPost<AssurancePolicy>(POLICIES_URL, body);
-        notice.value =
-          "Policy created. It is evaluated on the collector's next pass, within about a minute.";
+        setNotice(
+          "Policy created. It is evaluated on the collector's next pass, within about a minute.",
+        );
       } else {
-        const p = editing.value as AssurancePolicy;
+        const p = editing as AssurancePolicy;
         const body: AssurancePolicyUpdate = {
           revision: p.revision,
           maxAgeSeconds,
@@ -353,7 +370,7 @@ export default function BackupAssurance() {
           enabled: f.enabled,
         };
         await apiPut<AssurancePolicy>(`${POLICIES_URL}/${p.id}`, body);
-        notice.value = "Policy saved.";
+        setNotice("Policy saved.");
       }
       closeEditor();
       await loadAll();
@@ -372,40 +389,45 @@ export default function BackupAssurance() {
               );
             }
           }
-          fieldErrors.value = errs;
-          formError.value =
+          setFieldErrors(errs);
+          setFormError(
             unplaced.length > 0
               ? unplaced.join("; ")
               : Object.keys(errs).length > 0
                 ? "Correct the highlighted fields."
-                : fail.message;
+                : fail.message,
+          );
           break;
         }
         case ASSURANCE_REASONS.revisionConflict:
-          conflict.value = true;
-          formError.value =
-            "Someone else changed this policy since you opened it. Reload it to see the current values; your edits were not saved.";
+          setConflict(true);
+          setFormError(
+            "Someone else changed this policy since you opened it. Reload it to see the current values; your edits were not saved.",
+          );
           break;
         case ASSURANCE_REASONS.policyExists:
-          formError.value =
-            "A policy already exists for this scope. Edit that policy instead.";
+          setFormError(
+            "A policy already exists for this scope. Edit that policy instead.",
+          );
           break;
         case ASSURANCE_REASONS.policyNotFound:
-          formError.value = "This policy no longer exists.";
+          setFormError("This policy no longer exists.");
           await loadPolicies();
           break;
         case ASSURANCE_REASONS.scopeImmutable:
-          formError.value =
-            "A policy's scope cannot be changed. Create a new policy for a different scope.";
+          setFormError(
+            "A policy's scope cannot be changed. Create a new policy for a different scope.",
+          );
           break;
         default:
-          formError.value =
+          setFormError(
             fail.status === 403
               ? "Only administrators can change freshness policies."
-              : fail.message;
+              : fail.message,
+          );
       }
     } finally {
-      saving.value = false;
+      setSaving(false);
     }
   }
 
@@ -415,119 +437,117 @@ export default function BackupAssurance() {
    * confirmation_required with extra.openExceptions.
    */
   async function requestDelete(p: AssurancePolicy) {
-    deleteError.value = null;
-    notice.value = null;
+    setDeleteError(null);
+    setNotice(null);
     try {
       await api<AssurancePolicyDeleted>(`${POLICIES_URL}/${p.id}`, {
         method: "DELETE",
       });
       // A server that deleted without confirmation would be a contract
       // break; refresh so the page shows the truth either way.
-      notice.value = "Policy deleted.";
+      setNotice("Policy deleted.");
       await loadAll();
     } catch (err) {
       const fail = toFailure(err);
       if (fail.reason === ASSURANCE_REASONS.confirmationRequired) {
-        deleteTarget.value = {
+        setDeleteTarget({
           policy: p,
           openExceptions: numberExtra(err, "openExceptions") ?? 0,
-        };
+        });
       } else if (fail.reason === ASSURANCE_REASONS.policyNotFound) {
-        notice.value = "That policy no longer exists.";
+        setNotice("That policy no longer exists.");
         await loadPolicies();
       } else {
-        notice.value = fail.message;
+        setNotice(fail.message);
       }
     }
   }
 
   async function confirmDelete() {
-    const target = deleteTarget.value;
+    const target = deleteTarget;
     if (!target) return;
-    deleting.value = true;
-    deleteError.value = null;
+    setDeleting(true);
+    setDeleteError(null);
     try {
       const res = await api<AssurancePolicyDeleted>(
         `${POLICIES_URL}/${target.policy.id}?confirm=true`,
         { method: "DELETE" },
       );
       const n = res.data?.discardedOpenExceptions ?? target.openExceptions;
-      deleteTarget.value = null;
-      notice.value = `Policy deleted. ${n} open ${
-        n === 1 ? "exception was" : "exceptions were"
-      } discarded with its history.`;
+      setDeleteTarget(null);
+      setNotice(
+        `Policy deleted. ${n} open ${
+          n === 1 ? "exception was" : "exceptions were"
+        } discarded with its history.`,
+      );
       await loadAll();
     } catch (err) {
       const fail = toFailure(err);
       if (fail.reason === ASSURANCE_REASONS.policyNotFound) {
-        deleteTarget.value = null;
-        notice.value = "That policy no longer exists.";
+        setDeleteTarget(null);
+        setNotice("That policy no longer exists.");
         await loadPolicies();
       } else {
-        deleteError.value = fail.message;
+        setDeleteError(fail.message);
       }
     } finally {
-      deleting.value = false;
+      setDeleting(false);
     }
   }
 
-  const st = status.value;
+  const st = status;
 
   return (
-    <div class={ROOT_CLASS} data-testid={ROOT_TEST_ID}>
+    <div className={ROOT_CLASS} data-testid={ROOT_TEST_ID}>
       {/* Honesty banner — first element, persistent, non-dismissible. */}
       <div
-        class="glass-bar rounded-2xl px-5 py-3 text-sm text-text-primary"
+        className="glass-bar rounded-2xl px-5 py-3 text-sm text-text-primary"
         role="note"
         data-testid="assurance-honesty-banner"
       >
         {HONESTY_TEXT}
       </div>
 
-      <header class="glass-bar flex flex-wrap items-start justify-between gap-4 rounded-2xl px-5 py-4">
+      <header className="glass-bar flex flex-wrap items-start justify-between gap-4 rounded-2xl px-5 py-4">
         <div>
-          <h1 class="text-2xl font-bold tracking-tight text-text-primary">
+          <h1 className="text-2xl font-bold tracking-tight text-text-primary">
             Backup Assurance
           </h1>
-          <p class="mt-1 text-sm text-text-muted">
+          <p className="mt-1 text-sm text-text-muted">
             Freshness of what Velero reported for the local cluster, judged
             against the policies below. Freshness is not demonstrated
             recoverability and is not a recovery-point or recovery-time
             objective.
           </p>
         </div>
-        <Button
-          variant="secondary"
-          onClick={() => loadAll()}
-          loading={loading.value}
-        >
+        <Button variant="secondary" onClick={() => loadAll()} loading={loading}>
           Refresh
         </Button>
       </header>
 
-      {notice.value && (
+      {notice && (
         <div
-          class="rounded-md border border-border-subtle bg-surface px-4 py-2 text-sm text-text-secondary"
+          className="rounded-md border border-border-subtle bg-surface px-4 py-2 text-sm text-text-secondary"
           role="status"
           data-testid="assurance-notice"
         >
-          {notice.value}
+          {notice}
         </div>
       )}
 
-      {loading.value && !st && !failure ? (
-        <div class="flex justify-center py-12">
+      {loading && !st && !failure ? (
+        <div className="flex justify-center py-12">
           <Spinner />
         </div>
       ) : failure?.reason === ASSURANCE_REASONS.remote ? (
         <section
-          class="rounded-lg border border-border-subtle bg-surface p-6"
+          className="rounded-lg border border-border-subtle bg-surface p-6"
           data-testid="assurance-remote-unsupported"
         >
-          <h2 class="text-base font-semibold text-text-primary">
+          <h2 className="text-base font-semibold text-text-primary">
             Local cluster only
           </h2>
-          <p class="mt-2 text-sm text-text-secondary">
+          <p className="mt-2 text-sm text-text-secondary">
             Backup assurance is collected by the k8sCenter instance running in
             each cluster, for that cluster. The selected cluster is a remote
             cluster, so nothing is shown here — this does not mean it has no
@@ -540,11 +560,11 @@ export default function BackupAssurance() {
           <FreshnessRow
             state={state}
             status={null}
-            veleroDetected={veleroDetected.value}
+            veleroDetected={veleroDetected}
           />
           {state !== "forbidden" && state !== "unavailable" && (
             <div
-              class="rounded-md bg-error-dim px-4 py-3 text-sm text-error"
+              className="rounded-md bg-error-dim px-4 py-3 text-sm text-error"
               role="alert"
               data-testid="assurance-error"
             >
@@ -558,15 +578,15 @@ export default function BackupAssurance() {
           <FreshnessRow
             state={state}
             status={st}
-            veleroDetected={veleroDetected.value}
+            veleroDetected={veleroDetected}
           />
 
           {st.policyCount === 0 && (
             <section
-              class="rounded-lg border border-border-subtle bg-surface p-6"
+              className="rounded-lg border border-border-subtle bg-surface p-6"
               data-testid="assurance-empty-policies"
             >
-              <p class="text-sm text-text-primary">
+              <p className="text-sm text-text-primary">
                 {isAdmin
                   ? "No freshness policies configured. Backup assurance evaluates nothing until you add one."
                   : "No freshness policies apply to namespaces you can see. Backup assurance evaluates nothing for you until an administrator adds one."}
@@ -579,12 +599,12 @@ export default function BackupAssurance() {
           {st.runtime && <RuntimePanel runtime={st.runtime} />}
 
           <ExceptionList
-            exState={exState.value}
-            exceptions={exceptions.value}
-            total={exTotal.value}
-            offset={exOffset.value}
-            loading={exLoading.value}
-            failure={exFailure.value}
+            exState={exState}
+            exceptions={exceptions}
+            total={exTotal}
+            offset={exOffset}
+            loading={exLoading}
+            failure={exFailure}
             state={state}
             policyCount={st.policyCount}
             onSwitchState={switchExState}
@@ -593,14 +613,14 @@ export default function BackupAssurance() {
 
           <section
             aria-label="Freshness policies"
-            class="flex flex-col gap-3"
+            className="flex flex-col gap-3"
             data-testid="assurance-policies"
           >
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <h2 class="text-sm font-semibold text-text-primary">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold text-text-primary">
                 Freshness policies
               </h2>
-              {isAdmin && !editorOpen.value && (
+              {isAdmin && !editorOpen && (
                 <Button size="sm" onClick={openCreate}>
                   Add policy
                 </Button>
@@ -608,7 +628,7 @@ export default function BackupAssurance() {
             </div>
             {!isAdmin ? (
               <p
-                class="rounded-lg border border-border-subtle bg-surface p-4 text-sm text-text-secondary"
+                className="rounded-lg border border-border-subtle bg-surface p-4 text-sm text-text-secondary"
                 data-testid="assurance-policies-readonly"
               >
                 Freshness policies are managed by administrators.{" "}
@@ -619,34 +639,33 @@ export default function BackupAssurance() {
               </p>
             ) : (
               <>
-                {editorOpen.value && (
+                {editorOpen && (
                   <PolicyEditor
-                    editing={editing.value}
-                    form={form.value}
-                    fieldErrors={fieldErrors.value}
-                    formError={formError.value}
-                    conflict={conflict.value}
-                    saving={saving.value}
+                    editing={editing}
+                    form={form}
+                    fieldErrors={fieldErrors}
+                    formError={formError}
+                    conflict={conflict}
+                    saving={saving}
                     onChange={(patch) => {
-                      form.value = { ...form.value, ...patch };
+                      setForm((prev) => ({ ...prev, ...patch }));
                     }}
                     onSubmit={submitPolicy}
                     onCancel={closeEditor}
                     onReload={reloadEditedPolicy}
                   />
                 )}
-                {policiesFailure.value ? (
+                {policiesFailure ? (
                   <p
-                    class="rounded-md bg-error-dim px-4 py-3 text-sm text-error"
+                    className="rounded-md bg-error-dim px-4 py-3 text-sm text-error"
                     role="alert"
                   >
-                    Policies could not be loaded:{" "}
-                    {policiesFailure.value.message}
+                    Policies could not be loaded: {policiesFailure.message}
                   </p>
-                ) : policies.value && policies.value.length > 0 ? (
+                ) : policies && policies.length > 0 ? (
                   <PolicyTable
-                    policies={policies.value}
-                    busy={saving.value || deleting.value}
+                    policies={policies}
+                    busy={saving || deleting}
                     onEdit={openEdit}
                     onDelete={requestDelete}
                   />
@@ -657,41 +676,41 @@ export default function BackupAssurance() {
         </>
       ) : null}
 
-      {deleteTarget.value && (
+      {deleteTarget && (
         <ConfirmDialog
           title="Delete freshness policy"
           danger
           confirmLabel="Delete policy"
-          loading={deleting.value}
+          loading={deleting}
           typeToConfirm={
-            deleteTarget.value.policy.scopeName ||
-            deleteTarget.value.policy.scopeNamespace ||
+            deleteTarget.policy.scopeName ||
+            deleteTarget.policy.scopeNamespace ||
             "cluster"
           }
           message={
             <>
               Deleting the policy for{" "}
               {scopeLabel(
-                deleteTarget.value.policy.scopeKind,
-                deleteTarget.value.policy.scopeNamespace,
-                deleteTarget.value.policy.scopeName,
+                deleteTarget.policy.scopeKind,
+                deleteTarget.policy.scopeNamespace,
+                deleteTarget.policy.scopeName,
               )}{" "}
               discards every exception it opened, open and resolved, with their
               history.{" "}
-              {deleteTarget.value.openExceptions === 1
+              {deleteTarget.openExceptions === 1
                 ? "1 open exception will be discarded."
-                : `${deleteTarget.value.openExceptions} open exceptions will be discarded.`}
-              {deleteError.value && (
-                <span class="mt-2 block text-error" role="alert">
-                  {deleteError.value}
+                : `${deleteTarget.openExceptions} open exceptions will be discarded.`}
+              {deleteError && (
+                <span className="mt-2 block text-error" role="alert">
+                  {deleteError}
                 </span>
               )}
             </>
           }
           onConfirm={confirmDelete}
           onCancel={() => {
-            deleteTarget.value = null;
-            deleteError.value = null;
+            setDeleteTarget(null);
+            setDeleteError(null);
           }}
         />
       )}

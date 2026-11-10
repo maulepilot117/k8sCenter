@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { Input } from "@/components/ui/Input.tsx";
@@ -8,6 +8,7 @@ import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { api } from "@/lib/api.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface AuditEntry {
   timestamp: string;
@@ -23,66 +24,67 @@ interface AuditEntry {
 }
 
 export default function AuditLogViewer() {
-  const entries = useSignal<AuditEntry[]>([]);
-  const total = useSignal(0);
-  const page = useSignal(1);
-  const loading = useSignal(true);
+  const [entries, setEntries] = useState<AuditEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage, pageRef] = useStateRef(1);
+  const [loading, setLoading] = useState(true);
 
   // Filters
-  const filterUser = useSignal("");
-  const filterAction = useSignal("");
-  const filterKind = useSignal("");
+  const [filterUser, setFilterUser] = useState("");
+  const [filterAction, setFilterAction] = useState("");
+  const [filterKind, setFilterKind] = useState("");
 
   const pageSize = 50;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `fetchLogs` is recreated every render
   useEffect(() => {
     if (!IS_BROWSER) return;
-    fetchLogs();
+    fetchLogs(pageRef.current);
   }, []);
 
-  async function fetchLogs() {
-    loading.value = true;
+  async function fetchLogs(forPage: number) {
+    setLoading(true);
     try {
       const params = new URLSearchParams();
-      params.set("page", String(page.value));
+      params.set("page", String(forPage));
       params.set("pageSize", String(pageSize));
-      if (filterUser.value) params.set("user", filterUser.value);
-      if (filterAction.value) params.set("action", filterAction.value);
-      if (filterKind.value) params.set("kind", filterKind.value);
+      if (filterUser) params.set("user", filterUser);
+      if (filterAction) params.set("action", filterAction);
+      if (filterKind) params.set("kind", filterKind);
 
       const res = await api<AuditEntry[]>(
         `/v1/audit/logs?${params.toString()}`,
         { method: "GET" },
       );
-      entries.value = res.data ?? [];
-      total.value = res.metadata?.total ?? 0;
+      setEntries(res.data ?? []);
+      setTotal(res.metadata?.total ?? 0);
     } catch {
-      entries.value = [];
+      setEntries([]);
     } finally {
-      loading.value = false;
+      setLoading(false);
     }
   }
 
   function applyFilters() {
-    page.value = 1;
-    fetchLogs();
+    setPage(1);
+    fetchLogs(1);
   }
 
   function nextPage() {
-    if (page.value * pageSize < total.value) {
-      page.value++;
-      fetchLogs();
+    if (pageRef.current * pageSize < total) {
+      setPage(pageRef.current + 1);
+      fetchLogs(pageRef.current);
     }
   }
 
   function prevPage() {
-    if (page.value > 1) {
-      page.value--;
-      fetchLogs();
+    if (pageRef.current > 1) {
+      setPage(pageRef.current - 1);
+      fetchLogs(pageRef.current);
     }
   }
 
-  const totalPages = Math.ceil(total.value / pageSize) || 1;
+  const totalPages = Math.ceil(total / pageSize) || 1;
 
   const columns: Column[] = [
     { key: "time", label: "Time", width: "160px" },
@@ -94,7 +96,7 @@ export default function AuditLogViewer() {
   ];
 
   const buildRows = (): Row[] => {
-    if (loading.value && entries.value.length === 0) {
+    if (loading && entries.length === 0) {
       return [
         {
           id: "__loading__",
@@ -113,7 +115,7 @@ export default function AuditLogViewer() {
         },
       ];
     }
-    if (entries.value.length === 0) {
+    if (entries.length === 0) {
       return [
         {
           id: "__empty__",
@@ -132,7 +134,7 @@ export default function AuditLogViewer() {
         },
       ];
     }
-    return entries.value.map((e, i) => ({
+    return entries.map((e, i) => ({
       id: `${e.timestamp}-${i}`,
       cells: {
         time: (
@@ -225,41 +227,41 @@ export default function AuditLogViewer() {
           label="User"
           type="text"
           placeholder="admin"
-          value={filterUser.value}
-          onInput={(e) => {
-            filterUser.value = (e.target as HTMLInputElement).value;
+          value={filterUser}
+          onChange={(e) => {
+            setFilterUser(e.currentTarget.value);
           }}
         />
         <Input
           label="Action"
           type="text"
           placeholder="create, login, reveal…"
-          value={filterAction.value}
-          onInput={(e) => {
-            filterAction.value = (e.target as HTMLInputElement).value;
+          value={filterAction}
+          onChange={(e) => {
+            setFilterAction(e.currentTarget.value);
           }}
         />
         <Input
           label="Resource Kind"
           type="text"
           placeholder="deployment, secret…"
-          value={filterKind.value}
-          onInput={(e) => {
-            filterKind.value = (e.target as HTMLInputElement).value;
+          value={filterKind}
+          onChange={(e) => {
+            setFilterKind(e.currentTarget.value);
           }}
         />
         <Button
           type="button"
           variant="secondary"
           onClick={applyFilters}
-          loading={loading.value}
+          loading={loading}
         >
           Filter
         </Button>
       </div>
 
       {/* Results */}
-      {loading.value && entries.value.length === 0 ? (
+      {loading && entries.length === 0 ? (
         <div
           style={{
             display: "flex",
@@ -282,14 +284,14 @@ export default function AuditLogViewer() {
         }}
       >
         <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-          {total.value} entries · Page {page.value} of {totalPages}
+          {total} entries · Page {page} of {totalPages}
         </span>
         <div style={{ display: "flex", gap: "8px" }}>
           <Button
             type="button"
             variant="ghost"
             onClick={prevPage}
-            disabled={page.value <= 1}
+            disabled={page <= 1}
           >
             Previous
           </Button>
@@ -297,7 +299,7 @@ export default function AuditLogViewer() {
             type="button"
             variant="ghost"
             onClick={nextPage}
-            disabled={page.value >= totalPages}
+            disabled={page >= totalPages}
           >
             Next
           </Button>

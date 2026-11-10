@@ -1,26 +1,17 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import type { ReceiptView } from "@/lib/change-types.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+
+setupDom({ browser: true });
 
 const { default: ChangeReceiptList } = await import("./ChangeReceiptList.tsx");
 
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
-
 let urls: string[] = [];
-let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
   setAccessToken(null);
@@ -66,11 +57,9 @@ const flush = () =>
   });
 
 async function mount() {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<ChangeReceiptList />, host as HTMLElement));
+  const view = render(<ChangeReceiptList />);
   await flush();
-  return host;
+  return view.container as HTMLElement;
 }
 
 test("lists receipts with both badges and a link per receipt", async () => {
