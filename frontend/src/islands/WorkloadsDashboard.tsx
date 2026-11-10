@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { type ComponentType, useEffect, useState } from "react";
 import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
 import CronJobWizard from "@/src/islands/CronJobWizard.tsx";
 import DaemonSetWizard from "@/src/islands/DaemonSetWizard.tsx";
@@ -10,13 +10,14 @@ import StatefulSetWizard from "@/src/islands/StatefulSetWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const workloadsSection = DOMAIN_SECTIONS.find((s) => s.id === "workloads")!;
 
 /** Map from resource kind to a wizard component. Only kinds that have wizards. */
 const WIZARD_MAP: Record<
   string,
-  (({ onClose }: { onClose: () => void }) => preact.JSX.Element) | null
+  ComponentType<{ onClose: () => void }> | null
 > = {
   deployments: DeploymentWizard,
   statefulsets: StatefulSetWizard,
@@ -57,16 +58,15 @@ export default function WorkloadsDashboard({
 }: {
   currentPath: string;
 }) {
-  // Trigger the shared counts fetch on mount/namespace change.
-  // The actual fetch lives in resource-counts.ts (reactive effect);
-  // reading selectedNamespace.value here is enough to wire the dependency.
-  const _ns = selectedNamespace.value;
+  // The counts fetch lives in resource-counts.ts (reactive effect); reading
+  // the namespace here re-renders the subtitle as it changes.
+  useSignalValue(selectedNamespace);
 
   const { kind, title, createHref } = resolveKind(currentPath);
   const WizardComponent = WIZARD_MAP[kind] ?? null;
 
-  // Wizard modal signal — open=true shows the floating WizardShell
-  const wizardOpen = useSignal(false);
+  // Wizard modal — open shows the floating WizardShell
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
   useEffect(() => {
@@ -76,16 +76,16 @@ export default function WorkloadsDashboard({
         "create" &&
       WizardComponent
     ) {
-      wizardOpen.value = true;
+      setWizardOpen(true);
       // Clean the query param so back-navigation doesn't re-open
       const url = new URL(globalThis.location.href);
       url.searchParams.delete("action");
       globalThis.history.replaceState({}, "", url.toString());
     }
-  }, []);
+  }, [WizardComponent]);
 
   // Derive subtitle from live counts in the shared store.
-  const countsReady = resourceCounts.value !== null;
+  const countsReady = useSignalValue(resourceCounts) !== null;
 
   // Build subtitle: "N deployments" — omit degraded clause until we have
   // real degraded data (not invented). The resource table itself shows status.
@@ -94,10 +94,10 @@ export default function WorkloadsDashboard({
     : `Loading ${title.toLowerCase()}…`;
 
   return (
-    <div class="flex flex-col h-full">
+    <div className="flex flex-col h-full">
       {/* Floating wizard modal — rendered above everything when open */}
-      {wizardOpen.value && WizardComponent && (
-        <WizardComponent onClose={() => (wizardOpen.value = false)} />
+      {wizardOpen && WizardComponent && (
+        <WizardComponent onClose={() => setWizardOpen(false)} />
       )}
 
       {/* Page header — 24/700 per archetype spec */}
@@ -137,7 +137,7 @@ export default function WorkloadsDashboard({
         {WizardComponent ? (
           <button
             type="button"
-            onClick={() => (wizardOpen.value = true)}
+            onClick={() => setWizardOpen(true)}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -162,7 +162,7 @@ export default function WorkloadsDashboard({
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2.5"
+              strokeWidth="2.5"
             >
               <path d="M4 8h8M8 4v8" />
             </svg>
@@ -194,7 +194,7 @@ export default function WorkloadsDashboard({
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2.5"
+              strokeWidth="2.5"
             >
               <path d="M4 8h8M8 4v8" />
             </svg>

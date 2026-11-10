@@ -1,14 +1,16 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import HPAWizard from "@/src/islands/HPAWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export default function HPAsDashboard() {
-  const _ns = selectedNamespace.value;
-  const wizardOpen = useSignal(false);
+  // Re-render the subtitle as the namespace (and so the count) changes.
+  useSignalValue(selectedNamespace);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
   useEffect(() => {
@@ -16,24 +18,22 @@ export default function HPAsDashboard() {
     if (
       new URL(globalThis.location.href).searchParams.get("action") === "create"
     ) {
-      wizardOpen.value = true;
+      setWizardOpen(true);
       const url = new URL(globalThis.location.href);
       url.searchParams.delete("action");
       globalThis.history.replaceState({}, "", url.toString());
     }
   }, []);
 
-  const countsReady = resourceCounts.value !== null;
+  const countsReady = useSignalValue(resourceCounts) !== null;
   const subtitle = countsReady
     ? `${formatCount("hpas") ?? 0} horizontal pod autoscalers`
     : "Loading horizontal pod autoscalers…";
 
   return (
-    <div class="flex flex-col h-full">
+    <div className="flex flex-col h-full">
       {/* Floating wizard modal */}
-      {wizardOpen.value && (
-        <HPAWizard onClose={() => (wizardOpen.value = false)} />
-      )}
+      {wizardOpen && <HPAWizard onClose={() => setWizardOpen(false)} />}
 
       {/* Page header */}
       <div
@@ -70,7 +70,7 @@ export default function HPAsDashboard() {
         </div>
         <button
           type="button"
-          onClick={() => (wizardOpen.value = true)}
+          onClick={() => setWizardOpen(true)}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -94,7 +94,7 @@ export default function HPAsDashboard() {
             viewBox="0 0 16 16"
             fill="none"
             stroke="currentColor"
-            stroke-width="2.5"
+            strokeWidth="2.5"
           >
             <path d="M4 8h8M8 4v8" />
           </svg>
