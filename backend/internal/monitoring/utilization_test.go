@@ -63,7 +63,9 @@ func TestUtilizationAdapter_RemoteReadsOnlyTheBoundPrometheus(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DashboardTrends: %v", err)
 		}
-		if len(got.CPU) != 2 || got.CPU[0] != 42 {
+		// One hour at a two-minute step is 31 grid entries; the fake fills
+		// the first two.
+		if len(got.CPU) != 31 || got.CPU[0] != 42 || got.CPU[1] != 42 {
 			t.Fatalf("CPU series = %v, want the remote Prometheus's values", got.CPU)
 		}
 		if n := int(f.remote.hits.Load()); n != len(trendQueries) {

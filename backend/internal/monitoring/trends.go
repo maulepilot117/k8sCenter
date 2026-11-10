@@ -36,19 +36,19 @@ import (
 // so it is impossible to add a query and silently drop its result.
 var trendQueries = []struct {
 	query  string
-	assign func(*resources.DashboardTrends, []float64)
+	assign func(*resources.DashboardTrends, resources.TrendSeries)
 }{
-	{`count(kube_node_info)`, func(t *resources.DashboardTrends, v []float64) { t.Nodes = v }},
-	{`count(kube_pod_info)`, func(t *resources.DashboardTrends, v []float64) { t.Pods = v }},
-	{`count(kube_service_info)`, func(t *resources.DashboardTrends, v []float64) { t.Services = v }},
-	{`100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`, func(t *resources.DashboardTrends, v []float64) { t.CPU = v }},
-	{`(1 - (avg(node_memory_MemAvailable_bytes) / avg(node_memory_MemTotal_bytes))) * 100`, func(t *resources.DashboardTrends, v []float64) { t.Memory = v }},
+	{`count(kube_node_info)`, func(t *resources.DashboardTrends, v resources.TrendSeries) { t.Nodes = v }},
+	{`count(kube_pod_info)`, func(t *resources.DashboardTrends, v resources.TrendSeries) { t.Pods = v }},
+	{`count(kube_service_info)`, func(t *resources.DashboardTrends, v resources.TrendSeries) { t.Services = v }},
+	{`100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`, func(t *resources.DashboardTrends, v resources.TrendSeries) { t.CPU = v }},
+	{`(1 - (avg(node_memory_MemAvailable_bytes) / avg(node_memory_MemTotal_bytes))) * 100`, func(t *resources.DashboardTrends, v resources.TrendSeries) { t.Memory = v }},
 	// Cluster-wide network throughput in Mbps (bytes/s * 8 / 1e6). Virtual
 	// interfaces (veth/cali/lxc/cilium) are excluded so pod-to-pod traffic
 	// isn't double-counted against physical NIC throughput — same device
 	// filter the per-node network queries in query_registry.go use.
-	{`sum(rate(node_network_receive_bytes_total{device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) * 8 / 1e6`, func(t *resources.DashboardTrends, v []float64) { t.NetworkRx = v }},
-	{`sum(rate(node_network_transmit_bytes_total{device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) * 8 / 1e6`, func(t *resources.DashboardTrends, v []float64) { t.NetworkTx = v }},
+	{`sum(rate(node_network_receive_bytes_total{device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) * 8 / 1e6`, func(t *resources.DashboardTrends, v resources.TrendSeries) { t.NetworkRx = v }},
+	{`sum(rate(node_network_transmit_bytes_total{device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) * 8 / 1e6`, func(t *resources.DashboardTrends, v resources.TrendSeries) { t.NetworkTx = v }},
 }
 
 // ErrAllTrendQueriesFailed means every trend range query against a remote
@@ -96,10 +96,15 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, clusterID stri
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	end := time.Now()
+	// Prometheus evaluates a range query at start, start+step, ... up to end,
+	// with millisecond timestamps. Truncating to the millisecond first keeps
+	// end - start exactly one window on the wire, so the last step lands on end
+	// rather than being lost to rounding.
+	end := time.Now().Truncate(time.Millisecond)
 	start := end.Add(-window)
+	steps := trendGridSteps(window, step)
 
-	series := make([][]float64, len(trendQueries))
+	series := make([]resources.TrendSeries, len(trendQueries))
 	errs := make([]error, len(trendQueries))
 	var wg sync.WaitGroup
 	wg.Add(len(trendQueries))
@@ -111,9 +116,9 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, clusterID stri
 				if err != nil {
 					errs[i] = err
 					logger.Warn("dashboard trend query failed", "cluster", clusterID, "query", i, "error", err)
-					return // leave series[i] nil → empty slice in JSON
+					return // leave series[i] nil → null in JSON
 				}
-				series[i] = parseMatrixSeries(val)
+				series[i] = parseMatrixSeries(val, start, step, steps)
 			})
 		}(i, q.query)
 	}
@@ -137,37 +142,63 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, clusterID stri
 	for i, q := range trendQueries {
 		q.assign(&out, series[i])
 	}
+	out.End = end.UTC()
 
 	return out, nil
 }
 
-// parseMatrixSeries extracts the sample values of the first series from a range
-// query result. Our trend queries are scalar aggregates, so there is exactly
+// trendGridSteps is how many grid steps a window holds: start, start+step,
+// ..., up to and including end. Every window/step pair the handler uses
+// divides evenly, giving window/step + 1 entries (31 for each tab).
+func trendGridSteps(window, step time.Duration) int {
+	if step <= 0 || window < 0 {
+		return 0
+	}
+	return int(window/step) + 1
+}
+
+// parseMatrixSeries places the samples of the first series from a range query
+// result onto the query's time grid: entry k is the sample taken at
+// start + k*step. Our trend queries are scalar aggregates, so there is exactly
 // one series; anything else (empty matrix, wrong type) yields nil.
 //
-// Non-finite samples (NaN/±Inf) are dropped: Prometheus emits them from
-// division-by-zero (e.g. the memory query during a scrape gap) and counter
-// resets, and encoding/json fails on NaN/±Inf — which, because writeJSON has
-// already sent the 200 header, would truncate the body and silently blank
-// every sparkline. Dropping the bad points keeps the response valid JSON.
-func parseMatrixSeries(val model.Value) []float64 {
+// Each sample goes in by its own timestamp, never by its position in the
+// result. Prometheus leaves out a step that has no value (a scrape gap, a
+// target that was down), and rate() and an instant selector lose different
+// steps, so position would move every older sample later and put CPU and
+// memory out of step with each other. A step with no sample stays NaN, as
+// does a NaN or ±Inf sample (division by zero on the memory query during a
+// scrape gap, counter resets); TrendSeries encodes both as null.
+//
+// A series with no finite sample anywhere on the grid yields nil, so the
+// frontend renders no sparkline rather than a row of gaps.
+func parseMatrixSeries(val model.Value, start time.Time, step time.Duration, steps int) resources.TrendSeries {
 	matrix, ok := val.(model.Matrix)
-	if !ok || len(matrix) == 0 {
+	if !ok || len(matrix) == 0 || step <= 0 || steps <= 0 {
 		return nil
 	}
-	pairs := matrix[0].Values
-	if len(pairs) == 0 {
-		return nil
+	values := make(resources.TrendSeries, steps)
+	for i := range values {
+		values[i] = math.NaN()
 	}
-	values := make([]float64, 0, len(pairs))
-	for _, p := range pairs {
+	startMs := start.UnixMilli()
+	stepMs := float64(step.Milliseconds())
+	found := false
+	for _, p := range matrix[0].Values {
 		f := float64(p.Value)
 		if math.IsNaN(f) || math.IsInf(f, 0) {
 			continue
 		}
-		values = append(values, f)
+		// Round to the nearest step: Prometheus timestamps are milliseconds,
+		// so a sample can sit a millisecond off the grid it was taken on.
+		k := int(math.Round(float64(int64(p.Timestamp)-startMs) / stepMs))
+		if k < 0 || k >= steps {
+			continue
+		}
+		values[k] = f
+		found = true
 	}
-	if len(values) == 0 {
+	if !found {
 		return nil
 	}
 	return values

@@ -1,7 +1,7 @@
 import Sparkline from "@/components/charts/Sparkline.tsx";
 
 interface SparklineChartProps {
-  data: number[];
+  data: ReadonlyArray<number | null>;
   color: string;
   /** What the series is, read out with its latest value, e.g. "Memory". */
   name?: string;
