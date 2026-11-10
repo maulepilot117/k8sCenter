@@ -274,8 +274,8 @@ export default function CertificateDetailIsland({ namespace, name }: Props) {
                       className="ml-2 rounded px-1.5 py-0.5 text-xs font-medium"
                       style={{
                         backgroundColor:
-                          "color-mix(in srgb, var(--status-warning) 15%, transparent)",
-                        color: "var(--status-warning)",
+                          "color-mix(in srgb, var(--warning) 15%, transparent)",
+                        color: "var(--warning)",
                       }}
                       title="Resolved threshold pair would have violated critical < warning. Using package defaults until you fix one of the annotations."
                     >

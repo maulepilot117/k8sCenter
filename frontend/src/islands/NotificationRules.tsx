@@ -179,7 +179,7 @@ export default function NotificationRules() {
     padding: "6px 14px",
     borderRadius: "6px",
     border: "1px solid var(--border-primary)",
-    background: "var(--surface)",
+    background: "var(--bg-surface)",
     color: "var(--text-primary)",
     fontSize: "13px",
     cursor: "pointer",
@@ -290,7 +290,7 @@ export default function NotificationRules() {
             <thead>
               <tr
                 style={{
-                  background: "var(--surface)",
+                  background: "var(--bg-surface)",
                   borderBottom: "1px solid var(--border-primary)",
                 }}
               >
@@ -524,7 +524,7 @@ export default function NotificationRules() {
                   padding: "8px 10px",
                   borderRadius: "6px",
                   border: "1px solid var(--border-primary)",
-                  background: "var(--surface)",
+                  background: "var(--bg-surface)",
                   color: "var(--text-primary)",
                   fontSize: "13px",
                   boxSizing: "border-box",
@@ -661,7 +661,7 @@ export default function NotificationRules() {
                   padding: "8px 10px",
                   borderRadius: "6px",
                   border: "1px solid var(--border-primary)",
-                  background: "var(--surface)",
+                  background: "var(--bg-surface)",
                   color: "var(--text-primary)",
                   fontSize: "13px",
                   boxSizing: "border-box",

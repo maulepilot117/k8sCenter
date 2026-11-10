@@ -105,6 +105,12 @@ test("a kind's card opens its list with every row", async () => {
   expect(globalThis.location.search).toBe("?kind=gateways");
 });
 
+test("a row's name link is drawn in the accent colour", async () => {
+  await openGateways();
+  const link = body().getByText("edge").closest("a") as HTMLAnchorElement;
+  expect(link.style.color).toBe("var(--accent)");
+});
+
 test("the search box narrows the rows by name or namespace", async () => {
   await openGateways();
   const box = body().getByPlaceholderText("Filter by name or namespace...");

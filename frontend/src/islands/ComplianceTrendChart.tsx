@@ -227,8 +227,8 @@ function TrendChart({
     >
       <defs>
         <linearGradient id="trend-grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--brand)" stopOpacity="0.3" />
-          <stop offset="100%" stopColor="var(--brand)" stopOpacity="0" />
+          <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.3" />
+          <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
         </linearGradient>
       </defs>
       <g transform={`translate(${PAD.left},${PAD.top})`}>
@@ -272,7 +272,7 @@ function TrendChart({
               <polyline
                 points={seg.map((p) => `${p.x},${p.y}`).join(" ")}
                 fill="none"
-                stroke="var(--brand)"
+                stroke="var(--accent)"
                 strokeWidth="2"
                 strokeLinejoin="round"
               />
@@ -306,7 +306,7 @@ function TrendChart({
               cx={xAt(i)}
               cy={chartH - (p.score / 100) * chartH}
               r={4}
-              fill="var(--surface)"
+              fill="var(--bg-surface)"
               stroke="var(--warning)"
               strokeWidth="2"
             >
@@ -357,8 +357,8 @@ function TrendChart({
               cx={hoveredX}
               cy={hoveredY}
               r={4}
-              fill="var(--brand)"
-              stroke="var(--surface)"
+              fill="var(--accent)"
+              stroke="var(--bg-surface)"
               strokeWidth="2"
             />
             <rect
@@ -367,7 +367,7 @@ function TrendChart({
               width={100}
               height={24}
               rx={4}
-              fill="var(--elevated)"
+              fill="var(--bg-elevated)"
               stroke="var(--border-primary)"
               strokeWidth="1"
             />

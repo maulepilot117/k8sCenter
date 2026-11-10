@@ -169,8 +169,8 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
             className="rounded px-1.5 py-0.5 text-xs font-normal"
             style={{
               backgroundColor:
-                "color-mix(in srgb, var(--status-warning) 15%, transparent)",
-              color: "var(--status-warning)",
+                "color-mix(in srgb, var(--warning) 15%, transparent)",
+              color: "var(--warning)",
             }}
             title={`Prometheus didn't answer: ${missing.join(
               ", ",
@@ -248,9 +248,9 @@ function Metric({
   }
   const valueColor =
     tone === "error"
-      ? "var(--status-error)"
+      ? "var(--error)"
       : tone === "warning"
-        ? "var(--status-warning)"
+        ? "var(--warning)"
         : "var(--text-primary)";
   return (
     <div className="rounded-md border border-border-primary bg-surface p-3">

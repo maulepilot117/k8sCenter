@@ -101,7 +101,7 @@ export function connectionStatusColor(status: string | undefined): string {
       return "var(--warning)";
     case "disconnected":
     case "error":
-      return "var(--danger)";
+      return "var(--error)";
     default:
       return "var(--text-muted)";
   }

@@ -590,7 +590,7 @@ export default function NotificationChannels() {
                 className="rounded-md px-3 py-1.5 text-sm font-medium"
                 style={{
                   color: "var(--text-primary)",
-                  backgroundColor: "var(--surface)",
+                  backgroundColor: "var(--bg-surface)",
                   border: "1px solid var(--border-primary)",
                 }}
                 onClick={() => {
@@ -655,7 +655,7 @@ export default function NotificationChannels() {
                 className="rounded-md px-3 py-1.5 text-sm font-medium"
                 style={{
                   color: "var(--text-primary)",
-                  backgroundColor: "var(--surface)",
+                  backgroundColor: "var(--bg-surface)",
                   border: "1px solid var(--border-primary)",
                 }}
                 onClick={() => {
