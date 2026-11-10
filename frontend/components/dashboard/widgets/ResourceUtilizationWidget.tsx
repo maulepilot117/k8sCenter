@@ -39,6 +39,15 @@ function LegendKey({ color, label }: { color: string; label: string }) {
 }
 
 /**
+ * When the payload's newest grid step was taken, in epoch milliseconds: the
+ * backend's `end`, or now when it sent none or one that does not parse.
+ */
+function trendsEnd(t: DashboardTrends | null | undefined): number {
+  const end = t?.end ? Date.parse(t.end) : Number.NaN;
+  return Number.isFinite(end) ? end : Date.now();
+}
+
+/**
  * CPU and memory utilisation over the selected window, as an area
  * chart with a two-key legend in the shell's action slot.
  *
@@ -47,10 +56,12 @@ function LegendKey({ color, label }: { color: string; label: string }) {
  */
 function ResourceUtilization() {
   const t = useSourceState<DashboardTrends>("dashboard-trends").data;
-  // The series end at the moment they were fetched, so the time axis is
-  // anchored to when this payload arrived and moves only when new data does.
+  // The series end when the backend ran the query, which it reports as `end`.
+  // A backend that does not report it ran the query just before the payload
+  // arrived, so the axis falls back to the arrival time; either way it moves
+  // only when new data does.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-anchor on each new payload
-  const end = useMemo(() => Date.now(), [t]);
+  const end = useMemo(() => trendsEnd(t), [t]);
 
   return (
     <WidgetShell

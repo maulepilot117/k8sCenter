@@ -8,8 +8,8 @@ export interface NetworkTileProps {
   rxP95: number;
   /** 95th-percentile transmit throughput over the period, in Mbps. */
   txP95: number;
-  rxData?: number[] | null;
-  txData?: number[] | null;
+  rxData?: ReadonlyArray<number | null> | null;
+  txData?: ReadonlyArray<number | null> | null;
   /** Time-range label (e.g. "1h") shown next to the "p95" qualifier. */
   period: string;
   href?: string;
@@ -28,7 +28,7 @@ function Row({
   /** Full name of the series, read out with its latest value. */
   name: string;
   value: number;
-  data?: number[] | null;
+  data?: ReadonlyArray<number | null> | null;
   color: string;
 }) {
   return (

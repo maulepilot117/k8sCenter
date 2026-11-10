@@ -123,6 +123,48 @@ test("the newest sample lands on now", async () => {
   expect(tip.textContent).toContain("66%");
 });
 
+test("a null in the middle of a series keeps the samples before it on their steps", async () => {
+  // Four steps on the 2m grid: 13:54, 13:56, 13:58, 14:00. CPU has a gap at
+  // 13:56 and memory one at 13:58. Compacting the gaps out would put CPU's 10
+  // at 13:56 and memory's 50 at 13:56 too; kept in place, each sample sits on
+  // its own step and the two series line up.
+  const { container } = render(
+    <ResourceAreaChart
+      cpuData={[10, null, 30, 40]}
+      memData={[50, 60, null, 80]}
+      window="1h0m0s"
+      step="2m0s"
+      end={END}
+    />,
+  );
+  await settle();
+  const { chart, tip } = await openTooltip(container);
+  expect(tip.textContent).toContain("13:54");
+  expect(tip.textContent).toContain("10%");
+  expect(tip.textContent).toContain("50%");
+
+  await act(async () => {
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+  });
+  expect(tip.textContent).toContain("13:56");
+  expect(tip.textContent).toContain("60%");
+  expect(tip.textContent).not.toContain("10%");
+
+  await act(async () => {
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+  });
+  expect(tip.textContent).toContain("13:58");
+  expect(tip.textContent).toContain("30%");
+  expect(tip.textContent).not.toContain("60%");
+
+  await act(async () => {
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+  });
+  expect(tip.textContent).toContain("14:00");
+  expect(tip.textContent).toContain("40%");
+  expect(tip.textContent).toContain("80%");
+});
+
 test("a missing memory series draws CPU alone", async () => {
   const { container } = render(
     <ResourceAreaChart

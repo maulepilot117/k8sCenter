@@ -65,29 +65,37 @@ type Utilization struct {
 	Limits     string  `json:"limits"`
 }
 
-// DashboardTrends holds short historical series (one value per sample step) that
-// back the sparklines on the dashboard metric cards. Each slice is ordered
-// oldest→newest. A slice may be empty when Prometheus or kube-state-metrics is
-// unavailable; the frontend renders no sparkline in that case rather than a
-// misleading flat line. Window and Step describe the range that produced the
-// series (e.g. "1h" / "2m").
+// DashboardTrends holds short historical series that back the sparklines and
+// the utilisation chart on the dashboard. Every non-null series sits on one
+// time grid: entry k was sampled at End - Window + k*Step, so all series have
+// the same length and entry k of one lines up with entry k of every other. A
+// step Prometheus had no finite value for is a JSON null, not a dropped entry;
+// dropping it would move every older sample one step later.
+//
+// A series is null (not an array of nulls) when Prometheus or
+// kube-state-metrics is unavailable or never had a value in the window; the
+// frontend renders no sparkline in that case rather than a misleading flat
+// line. Window and Step describe the range that produced the series (e.g.
+// "1h0m0s" / "2m0s"); End is when the newest grid step was taken, omitted when
+// no query ran.
 type DashboardTrends struct {
-	Nodes    []float64 `json:"nodes"`
-	Pods     []float64 `json:"pods"`
-	Services []float64 `json:"services"`
+	Nodes    TrendSeries `json:"nodes"`
+	Pods     TrendSeries `json:"pods"`
+	Services TrendSeries `json:"services"`
 	// CPU and Memory are cluster-wide utilization percentages (0–100), one
 	// value per step — the historical companions to the instant percentages
 	// in DashboardSummary.CPU/Memory.
-	CPU    []float64 `json:"cpu"`
-	Memory []float64 `json:"memory"`
+	CPU    TrendSeries `json:"cpu"`
+	Memory TrendSeries `json:"memory"`
 	// NetworkRx and NetworkTx are cluster-wide network throughput in Mbps
 	// (megabits/sec), one value per step. They back the Network I/O metric
 	// tile's RX/TX sparklines; the frontend derives the displayed p95 from
 	// these series so it tracks the selected time window automatically.
-	NetworkRx []float64 `json:"networkRx"`
-	NetworkTx []float64 `json:"networkTx"`
-	Window    string    `json:"window"`
-	Step      string    `json:"step"`
+	NetworkRx TrendSeries `json:"networkRx"`
+	NetworkTx TrendSeries `json:"networkTx"`
+	Window    string      `json:"window"`
+	Step      string      `json:"step"`
+	End       time.Time   `json:"end,omitzero"`
 }
 
 // gatherHealthInputs is the local health mapper: it turns informer reads and

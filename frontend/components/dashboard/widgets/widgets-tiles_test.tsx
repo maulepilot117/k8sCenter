@@ -1,6 +1,12 @@
 /** @jsxImportSource react */
 import { afterEach, describe, expect, test } from "bun:test";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import {
+  act,
+  fireEvent,
+  render,
+  settle,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 
@@ -284,6 +290,28 @@ describe("resource-utilization", () => {
     expect(getByRole("figure").getAttribute("aria-label")).toBe(
       "CPU and memory utilization over the last 24 hours",
     );
+  });
+
+  test("anchors the time axis on the response's end, not on when it arrived", async () => {
+    // 14:00 local on a day long past, so "now" cannot be mistaken for it.
+    const end = new Date(2026, 0, 5, 14, 0);
+    seed("dashboard-trends", {
+      cpu: [10, 20, 30],
+      memory: [30, 40, 50],
+      window: "1h0m0s",
+      step: "2m0s",
+      end: end.toISOString(),
+    });
+    const { container } = mount("resource-utilization");
+    await settle();
+    const chart = container.querySelector('[tabindex="0"]') as Element;
+    expect(chart).not.toBeNull();
+    await act(async () => {
+      fireEvent.focus(chart);
+    });
+    // The oldest of three samples on the 2m grid is four minutes before end.
+    const tip = container.querySelector('[role="status"]') as HTMLElement;
+    expect(tip.textContent).toContain("13:56");
   });
 
   test("redraws the chart when the trends change", () => {

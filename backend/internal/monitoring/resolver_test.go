@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,7 +70,17 @@ func newFakePrometheus(t *testing.T, value string) *fakePrometheus {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/api/v1/query_range"):
-			fmt.Fprintf(w, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[[1700000000,%q],[1700000060,%q]]}]}}`, value, value)
+			// Two samples on the first two steps of the requested grid, the
+			// way Prometheus stamps them, so trend parsing places them.
+			_ = r.ParseForm()
+			start, step := r.Form.Get("start"), r.Form.Get("step")
+			second := start
+			if s, err := strconv.ParseFloat(start, 64); err == nil {
+				if d, err := strconv.ParseFloat(step, 64); err == nil {
+					second = strconv.FormatFloat(s+d, 'f', -1, 64)
+				}
+			}
+			fmt.Fprintf(w, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[[%s,%q],[%s,%q]]}]}}`, start, value, second, value)
 		case strings.HasSuffix(r.URL.Path, "/api/v1/status/buildinfo"):
 			fmt.Fprint(w, `{"status":"success","data":{"version":"2.53.0"}}`)
 		default:
