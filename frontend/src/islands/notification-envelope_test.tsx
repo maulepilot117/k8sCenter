@@ -1,8 +1,7 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, afterEach, expect, test } from "bun:test";
+import type { ReactElement } from "react";
+import { render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * Every notification endpoint answers with one envelope, `{ data: ... }`,
@@ -14,8 +13,9 @@ import { act } from "preact/test-utils";
  * fetch answers with the backend's real response shapes. IS_BROWSER is
  * stubbed to true and put back afterwards.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+const realFetch = globalThis.fetch;
+const realWebSocket = globalThis.WebSocket;
+setupDom({ browser: true });
 
 const CHANNEL = {
   id: "ch-1",
@@ -61,7 +61,6 @@ function body(path: string): unknown {
   return { data: null };
 }
 
-const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: RequestInfo | URL) => {
   const url = new URL(
     typeof input === "string"
@@ -85,7 +84,6 @@ class InertSocket {
   send() {}
   close() {}
 }
-const realWebSocket = globalThis.WebSocket;
 globalThis.WebSocket = InertSocket as unknown as typeof WebSocket;
 
 const { default: NotificationChannels } = await import(
@@ -101,33 +99,17 @@ afterAll(async () => {
   disconnectWS();
   globalThis.fetch = realFetch;
   globalThis.WebSocket = realWebSocket;
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
 });
 
-let host: HTMLElement | null = null;
 afterEach(() => {
   emptyChannels = false;
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
 });
 
-async function mount(node: preact.ComponentChild): Promise<HTMLElement> {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  await act(async () => {
-    render(node, host as HTMLElement);
-  });
+async function mount(node: ReactElement): Promise<HTMLElement> {
+  const view = render(node);
   // Let the mount fetches resolve and the islands re-render.
-  for (let i = 0; i < 5; i++) {
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-  }
-  return host;
+  await settle();
+  return view.container as HTMLElement;
 }
 
 test("channels list the backend's channels", async () => {

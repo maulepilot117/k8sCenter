@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
@@ -7,6 +7,7 @@ import GlassCard from "@/components/ui/GlassCard.tsx";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface RuleSummary {
   name: string;
@@ -51,86 +52,87 @@ const DEFAULT_RULE_JSON = JSON.stringify(
 );
 
 export default function AlertRulesPage() {
-  const rules = useSignal<RuleSummary[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const editing = useSignal<string | null>(null); //"new" or"{namespace}/{name}"
-  const editorContent = useSignal("");
-  const editorNamespace = useSignal("default");
-  const saving = useSignal(false);
+  const [rules, setRules] = useState<RuleSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null); // "new" or "{namespace}/{name}"
+  const [editorContent, setEditorContent] = useState("");
+  const [editorNamespace, setEditorNamespace] = useState("default");
+  const [saving, setSaving] = useState(false);
+  const selected = useSignalValue(selectedCluster);
 
-  function fetchRules() {
-    loading.value = true;
+  const fetchRules = useCallback(() => {
+    setLoading(true);
     apiGet<RuleSummary[]>("/v1/alerts/rules")
       .then((res) => {
-        rules.value = res.data ?? [];
-        error.value = null;
+        setRules(res.data ?? []);
+        setError(null);
       })
       .catch((err) => {
-        error.value = err.message ?? "Failed to fetch alert rules";
+        setError(err.message ?? "Failed to fetch alert rules");
       })
       .finally(() => {
-        loading.value = false;
+        setLoading(false);
       });
-  }
+  }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchRules();
-  }, []);
+  }, [fetchRules]);
 
   function handleNew() {
-    editing.value = "new";
-    editorContent.value = DEFAULT_RULE_JSON;
+    setEditing("new");
+    setEditorContent(DEFAULT_RULE_JSON);
   }
 
   function handleEdit(ns: string, name: string) {
-    loading.value = true;
+    setLoading(true);
     apiGet<Record<string, unknown>>(`/v1/alerts/rules/${ns}/${name}`)
       .then((res) => {
-        editorContent.value = JSON.stringify(res.data, null, 2);
-        editing.value = `${ns}/${name}`;
-        editorNamespace.value = ns;
+        setEditorContent(JSON.stringify(res.data, null, 2));
+        setEditing(`${ns}/${name}`);
+        setEditorNamespace(ns);
       })
       .catch((err) => {
-        error.value = err.message ?? "Failed to fetch rule";
+        setError(err.message ?? "Failed to fetch rule");
       })
       .finally(() => {
-        loading.value = false;
+        setLoading(false);
       });
   }
 
   function handleSave() {
-    saving.value = true;
-    error.value = null;
+    setSaving(true);
+    setError(null);
 
     let content: Record<string, unknown>;
     try {
-      content = JSON.parse(editorContent.value);
+      content = JSON.parse(editorContent);
     } catch {
-      error.value = "Invalid JSON content";
-      saving.value = false;
+      setError("Invalid JSON content");
+      setSaving(false);
       return;
     }
 
-    const isNew = editing.value === "new";
+    const isNew = editing === "new";
     const promise = isNew
       ? apiPost("/v1/alerts/rules", {
-          namespace: editorNamespace.value,
+          namespace: editorNamespace,
           content,
         })
-      : apiPut(`/v1/alerts/rules/${editing.value}`, content);
+      : apiPut(`/v1/alerts/rules/${editing}`, content);
 
     promise
       .then(() => {
-        editing.value = null;
+        setEditing(null);
         fetchRules();
       })
       .catch((err) => {
-        error.value = err.message ?? "Failed to save rule";
+        setError(err.message ?? "Failed to save rule");
       })
       .finally(() => {
-        saving.value = false;
+        setSaving(false);
       });
   }
 
@@ -140,11 +142,11 @@ export default function AlertRulesPage() {
     apiDelete(`/v1/alerts/rules/${ns}/${name}`)
       .then(() => fetchRules())
       .catch((err) => {
-        error.value = err.message ?? "Failed to delete rule";
+        setError(err.message ?? "Failed to delete rule");
       });
   }
 
-  if (editing.value) {
+  if (editing) {
     return (
       <GlassCard padding={24}>
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -164,16 +166,14 @@ export default function AlertRulesPage() {
                 color: "var(--text-primary)",
               }}
             >
-              {editing.value === "new"
-                ? "Create Alert Rule"
-                : `Edit ${editing.value}`}
+              {editing === "new" ? "Create Alert Rule" : `Edit ${editing}`}
             </h2>
-            <Button variant="ghost" onClick={() => (editing.value = null)}>
+            <Button variant="ghost" onClick={() => setEditing(null)}>
               Cancel
             </Button>
           </div>
 
-          {editing.value === "new" && (
+          {editing === "new" && (
             <div>
               <label
                 style={{
@@ -190,10 +190,8 @@ export default function AlertRulesPage() {
               </label>
               <input
                 type="text"
-                value={editorNamespace.value}
-                onInput={(e) =>
-                  (editorNamespace.value = (e.target as HTMLInputElement).value)
-                }
+                value={editorNamespace}
+                onChange={(e) => setEditorNamespace(e.currentTarget.value)}
                 style={{
                   width: "256px",
                   padding: "7px 10px",
@@ -208,14 +206,14 @@ export default function AlertRulesPage() {
             </div>
           )}
 
-          {error.value && <ErrorBanner message={error.value} />}
+          {error && <ErrorBanner message={error} />}
 
           {/* Solid surface for the code editor */}
           <textarea
-            value={editorContent.value}
-            onInput={(e) =>
-              (editorContent.value = (e.target as HTMLTextAreaElement).value)
-            }
+            value={editorContent}
+            onChange={(e) => setEditorContent(e.currentTarget.value)}
+            // Preact's JSX types, in force until the runtime switch, only know
+            // the lowercase name; rename to spellCheck when React's arrive.
             spellcheck={false}
             style={{
               width: "100%",
@@ -240,11 +238,11 @@ export default function AlertRulesPage() {
               gap: "8px",
             }}
           >
-            <Button variant="secondary" onClick={() => (editing.value = null)}>
+            <Button variant="secondary" onClick={() => setEditing(null)}>
               Cancel
             </Button>
-            <Button onClick={handleSave} disabled={saving.value}>
-              {saving.value ? "Saving..." : "Save"}
+            <Button onClick={handleSave} disabled={saving}>
+              {saving ? "Saving..." : "Save"}
             </Button>
           </div>
         </div>
@@ -258,7 +256,7 @@ export default function AlertRulesPage() {
           the firing and history feeds always read the local Alertmanager
           (R-8 KTD13). Say so, or a quiet local feed reads as remote rules
           that are not firing. */}
-      {selectedCluster.value !== LOCAL_CLUSTER_ID && (
+      {selected !== LOCAL_CLUSTER_ID && (
         <Alert variant="info">
           These are the selected remote cluster's alert rules. Whether they fire
           depends on that cluster running prometheus-operator; the firing alerts
@@ -269,11 +267,11 @@ export default function AlertRulesPage() {
         <Button onClick={handleNew}>Create Rule</Button>
       </div>
 
-      {error.value && <ErrorBanner message={error.value} />}
+      {error && <ErrorBanner message={error} />}
 
       {/* Solid data surface wrapping the list */}
       <GlassCard padding={0}>
-        {loading.value ? (
+        {loading ? (
           <div
             style={{
               textAlign: "center",
@@ -284,7 +282,7 @@ export default function AlertRulesPage() {
           >
             Loading...
           </div>
-        ) : rules.value.length === 0 ? (
+        ) : rules.length === 0 ? (
           <div
             style={{
               textAlign: "center",
@@ -325,7 +323,7 @@ export default function AlertRulesPage() {
                 >
                   {["Name", "Namespace", "Rules", "Created", ""].map((h, i) => (
                     <th
-                      key={h + i}
+                      key={h || "actions"}
                       style={{
                         padding: "10px 16px",
                         textAlign: i === 4 ? "right" : "left",
@@ -342,7 +340,7 @@ export default function AlertRulesPage() {
                 </tr>
               </thead>
               <tbody>
-                {rules.value.map((rule) => (
+                {rules.map((rule) => (
                   <tr
                     key={`${rule.namespace}/${rule.name}`}
                     style={{ borderBottom: "1px solid var(--border-subtle)" }}

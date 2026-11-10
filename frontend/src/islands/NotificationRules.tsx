@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { notifApi } from "@/lib/api.ts";
 import type {
   NotifChannel,
@@ -14,6 +14,7 @@ import {
   SOURCE_LABELS,
 } from "@/lib/notif-center-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /** Capitalize first letter of a severity for display. */
 function capFirst(s: string): string {
@@ -21,104 +22,108 @@ function capFirst(s: string): string {
 }
 
 export default function NotificationRules() {
-  const rules = useSignal<NotifRule[]>([]);
-  const channels = useSignal<NotifChannel[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal("");
+  const [rules, setRules] = useState<NotifRule[]>([]);
+  const [channels, setChannels] = useState<NotifChannel[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   // Modal state
-  const showModal = useSignal(false);
-  const editingId = useSignal<string | null>(null);
-  const formName = useSignal("");
-  const formSources = useSignal<NotifSource[]>([]);
-  const formSeverities = useSignal<NotifSeverity[]>([]);
-  const formChannelId = useSignal("");
-  const formEnabled = useSignal(true);
-  const saving = useSignal(false);
+  const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formName, setFormName] = useState("");
+  const [formSources, setFormSources] = useState<NotifSource[]>([]);
+  const [formSeverities, setFormSeverities] = useState<NotifSeverity[]>([]);
+  const [formChannelId, setFormChannelId] = useState("");
+  const [formEnabled, setFormEnabled] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   // Delete confirmation
-  const confirmDeleteId = useSignal<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  const fetchRules = async () => {
+  const fetchRules = useCallback(async () => {
     try {
       const res = await notifApi.listRules();
-      rules.value = res.data ?? [];
+      setRules(res.data ?? []);
     } catch {
-      error.value = "Failed to load rules";
+      setError("Failed to load rules");
     }
-    loading.value = false;
-  };
+    setLoading(false);
+  }, []);
 
-  const fetchChannels = async () => {
+  const fetchChannels = useCallback(async () => {
     try {
       const res = await notifApi.listChannels();
-      channels.value = res.data ?? [];
+      setChannels(res.data ?? []);
     } catch {
       // channels will be empty — dropdown shows nothing
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchRules();
     fetchChannels();
-  }, []);
+  }, [fetchRules, fetchChannels]);
 
   const openCreate = () => {
-    editingId.value = null;
-    formName.value = "";
-    formSources.value = [];
-    formSeverities.value = [];
-    formChannelId.value = channels.value.length > 0 ? channels.value[0].id : "";
-    formEnabled.value = true;
-    showModal.value = true;
+    setEditingId(null);
+    setFormName("");
+    setFormSources([]);
+    setFormSeverities([]);
+    setFormChannelId(channels.length > 0 ? channels[0].id : "");
+    setFormEnabled(true);
+    setShowModal(true);
   };
 
   const openEdit = (rule: NotifRule) => {
-    editingId.value = rule.id;
-    formName.value = rule.name;
-    formSources.value = [...rule.sourceFilter];
-    formSeverities.value = [...rule.severityFilter];
-    formChannelId.value = rule.channelId;
-    formEnabled.value = rule.enabled;
-    showModal.value = true;
+    setEditingId(rule.id);
+    setFormName(rule.name);
+    setFormSources([...rule.sourceFilter]);
+    setFormSeverities([...rule.severityFilter]);
+    setFormChannelId(rule.channelId);
+    setFormEnabled(rule.enabled);
+    setShowModal(true);
   };
 
   const closeModal = () => {
-    showModal.value = false;
-    editingId.value = null;
+    setShowModal(false);
+    setEditingId(null);
   };
 
   const handleSave = async () => {
-    if (!formName.value.trim() || !formChannelId.value) return;
-    saving.value = true;
+    if (!formName.trim() || !formChannelId) return;
+    setSaving(true);
     const input: NotifRuleInput = {
-      name: formName.value.trim(),
-      sourceFilter: formSources.value,
-      severityFilter: formSeverities.value,
-      channelId: formChannelId.value,
-      enabled: formEnabled.value,
+      name: formName.trim(),
+      sourceFilter: formSources,
+      severityFilter: formSeverities,
+      channelId: formChannelId,
+      enabled: formEnabled,
     };
     try {
-      if (editingId.value) {
-        await notifApi.updateRule(editingId.value, input);
+      if (editingId) {
+        await notifApi.updateRule(editingId, input);
       } else {
         await notifApi.createRule(input);
       }
       closeModal();
-      loading.value = true;
+      setLoading(true);
       await fetchRules();
     } catch {
-      error.value = "Failed to save rule";
+      setError("Failed to save rule");
     }
-    saving.value = false;
+    setSaving(false);
   };
 
-  const togglingIds = useSignal<Set<string>>(new Set());
+  // The in-flight set is read after awaits and by a second press that lands
+  // before the next render, so it lives in a ref as well as state.
+  const [, setTogglingIds, togglingIdsRef] = useStateRef<Set<string>>(
+    new Set(),
+  );
 
   const handleToggle = async (rule: NotifRule) => {
-    if (togglingIds.value.has(rule.id)) return; // prevent rapid-fire
-    togglingIds.value = new Set([...togglingIds.value, rule.id]);
+    if (togglingIdsRef.current.has(rule.id)) return; // prevent rapid-fire
+    setTogglingIds(new Set([...togglingIdsRef.current, rule.id]));
     try {
       await notifApi.updateRule(rule.id, {
         name: rule.name,
@@ -129,36 +134,34 @@ export default function NotificationRules() {
       });
       await fetchRules();
     } catch {
-      error.value = "Failed to toggle rule";
+      setError("Failed to toggle rule");
     }
-    const next = new Set(togglingIds.value);
+    const next = new Set(togglingIdsRef.current);
     next.delete(rule.id);
-    togglingIds.value = next;
+    setTogglingIds(next);
   };
 
   const handleDelete = async (id: string) => {
     try {
       await notifApi.deleteRule(id);
-      confirmDeleteId.value = null;
-      loading.value = true;
+      setConfirmDeleteId(null);
+      setLoading(true);
       await fetchRules();
     } catch {
-      error.value = "Failed to delete rule";
+      setError("Failed to delete rule");
     }
   };
 
   const toggleSource = (src: NotifSource) => {
-    const cur = formSources.value;
-    formSources.value = cur.includes(src)
-      ? cur.filter((s) => s !== src)
-      : [...cur, src];
+    setFormSources((cur) =>
+      cur.includes(src) ? cur.filter((s) => s !== src) : [...cur, src],
+    );
   };
 
   const toggleSeverity = (sev: NotifSeverity) => {
-    const cur = formSeverities.value;
-    formSeverities.value = cur.includes(sev)
-      ? cur.filter((s) => s !== sev)
-      : [...cur, sev];
+    setFormSeverities((cur) =>
+      cur.includes(sev) ? cur.filter((s) => s !== sev) : [...cur, sev],
+    );
   };
 
   // --- Styles ---
@@ -201,7 +204,7 @@ export default function NotificationRules() {
 
   // --- Render ---
 
-  if (loading.value) {
+  if (loading) {
     return (
       <div
         style={{
@@ -242,7 +245,7 @@ export default function NotificationRules() {
       </div>
 
       {/* Error banner */}
-      {error.value && (
+      {error && (
         <div
           style={{
             padding: "8px 12px",
@@ -253,12 +256,12 @@ export default function NotificationRules() {
             fontSize: "13px",
           }}
         >
-          {error.value}
+          {error}
         </div>
       )}
 
       {/* Empty state */}
-      {rules.value.length === 0 ? (
+      {rules.length === 0 ? (
         <div
           style={{
             padding: "32px",
@@ -318,7 +321,7 @@ export default function NotificationRules() {
               </tr>
             </thead>
             <tbody>
-              {rules.value.map((rule) => (
+              {rules.map((rule) => (
                 <tr
                   key={rule.id}
                   style={{
@@ -422,7 +425,7 @@ export default function NotificationRules() {
                     >
                       Edit
                     </button>
-                    {confirmDeleteId.value === rule.id ? (
+                    {confirmDeleteId === rule.id ? (
                       <>
                         <button
                           type="button"
@@ -438,7 +441,7 @@ export default function NotificationRules() {
                         <button
                           type="button"
                           style={{ ...btnStyle, padding: "4px 10px" }}
-                          onClick={() => (confirmDeleteId.value = null)}
+                          onClick={() => setConfirmDeleteId(null)}
                         >
                           Cancel
                         </button>
@@ -451,7 +454,7 @@ export default function NotificationRules() {
                           padding: "4px 10px",
                           color: "var(--error)",
                         }}
-                        onClick={() => (confirmDeleteId.value = rule.id)}
+                        onClick={() => setConfirmDeleteId(rule.id)}
                       >
                         Delete
                       </button>
@@ -465,9 +468,9 @@ export default function NotificationRules() {
       )}
 
       {/* Modal overlay */}
-      {showModal.value && (
+      {showModal && (
         <div
-          class="glass-scrim"
+          className="glass-scrim"
           style={{
             position: "fixed",
             inset: 0,
@@ -481,7 +484,7 @@ export default function NotificationRules() {
           }}
         >
           <div
-            class="glass-elevated rounded-2xl"
+            className="glass-elevated rounded-2xl"
             style={{
               padding: "24px",
               width: "100%",
@@ -498,7 +501,7 @@ export default function NotificationRules() {
                 color: "var(--text-primary)",
               }}
             >
-              {editingId.value ? "Edit Rule" : "Create Rule"}
+              {editingId ? "Edit Rule" : "Create Rule"}
             </h3>
 
             {/* Name */}
@@ -516,10 +519,8 @@ export default function NotificationRules() {
               </label>
               <input
                 type="text"
-                value={formName.value}
-                onInput={(e) =>
-                  (formName.value = (e.target as HTMLInputElement).value)
-                }
+                value={formName}
+                onChange={(e) => setFormName(e.currentTarget.value)}
                 placeholder="e.g. Critical alerts to Slack"
                 style={{
                   width: "100%",
@@ -590,7 +591,7 @@ export default function NotificationRules() {
                         >
                           <input
                             type="checkbox"
-                            checked={formSources.value.includes(src)}
+                            checked={formSources.includes(src)}
                             onChange={() => toggleSource(src)}
                           />
                           {SOURCE_LABELS[src]}
@@ -633,7 +634,7 @@ export default function NotificationRules() {
                   >
                     <input
                       type="checkbox"
-                      checked={formSeverities.value.includes(sev)}
+                      checked={formSeverities.includes(sev)}
                       onChange={() => toggleSeverity(sev)}
                     />
                     {capFirst(sev)}
@@ -656,10 +657,8 @@ export default function NotificationRules() {
                 Channel
               </label>
               <select
-                value={formChannelId.value}
-                onChange={(e) =>
-                  (formChannelId.value = (e.target as HTMLSelectElement).value)
-                }
+                value={formChannelId}
+                onChange={(e) => setFormChannelId(e.currentTarget.value)}
                 style={{
                   width: "100%",
                   padding: "8px 10px",
@@ -671,10 +670,10 @@ export default function NotificationRules() {
                   boxSizing: "border-box",
                 }}
               >
-                {channels.value.length === 0 && (
+                {channels.length === 0 && (
                   <option value="">No channels available</option>
                 )}
-                {channels.value.map((ch) => (
+                {channels.map((ch) => (
                   <option key={ch.id} value={ch.id}>
                     {ch.name} ({ch.type})
                   </option>
@@ -696,8 +695,8 @@ export default function NotificationRules() {
               >
                 <input
                   type="checkbox"
-                  checked={formEnabled.value}
-                  onChange={() => (formEnabled.value = !formEnabled.value)}
+                  checked={formEnabled}
+                  onChange={() => setFormEnabled(!formEnabled)}
                 />
                 Enabled
               </label>
@@ -718,18 +717,12 @@ export default function NotificationRules() {
                 type="button"
                 style={{
                   ...primaryBtnStyle,
-                  opacity: saving.value ? 0.6 : 1,
+                  opacity: saving ? 0.6 : 1,
                 }}
-                disabled={
-                  saving.value || !formName.value.trim() || !formChannelId.value
-                }
+                disabled={saving || !formName.trim() || !formChannelId}
                 onClick={handleSave}
               >
-                {saving.value
-                  ? "Saving..."
-                  : editingId.value
-                    ? "Update"
-                    : "Create"}
+                {saving ? "Saving..." : editingId ? "Update" : "Create"}
               </button>
             </div>
           </div>
