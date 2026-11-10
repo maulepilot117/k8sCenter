@@ -272,7 +272,14 @@ export default function StorageDashboard({
                   <Donut
                     segments={
                       !countsReady
-                        ? [{ value: 1, color: "var(--bg-elevated)" }]
+                        ? [
+                            {
+                              value: 1,
+                              color: "var(--bg-elevated)",
+                              label: "Loading",
+                              placeholder: true,
+                            },
+                          ]
                         : pvcDonutSegments
                     }
                     size={96}

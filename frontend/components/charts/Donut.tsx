@@ -1,10 +1,15 @@
-/** @jsxImportSource react */
 import type { ReactNode } from "react";
+import { Pie, PieChart } from "recharts";
+import ChartFrame from "./ChartFrame.tsx";
+import { BARE_CHART_PROPS } from "./chart-theme.ts";
 
 export interface DonutSegment {
   value: number;
   color: string;
+  /** Names the segment in the donut's accessible label. */
   label?: string;
+  /** Fills the ring when there is nothing to plot: named without its value. */
+  placeholder?: boolean;
 }
 
 interface DonutProps {
@@ -15,41 +20,52 @@ interface DonutProps {
   center?: ReactNode;
 }
 
-/** Status donut via conic-gradient (cheap, no SVG arcs). Pod/workload status. */
+/** The label names every labelled segment with its value, drawn or not. */
+function donutLabel(segments: DonutSegment[]): string {
+  const named = segments.filter((s) => s.label);
+  if (named.length === 0) return "No data";
+  return named
+    .map((s) => (s.placeholder ? s.label : `${s.label}: ${s.value}`))
+    .join(", ");
+}
+
+/** Status donut: a ring of coloured sectors with `center` in the hole. Pod/workload status. */
 export default function Donut({
   segments,
   size = 108,
   thickness = 15,
   center,
 }: DonutProps) {
-  const total = segments.reduce((a, s) => a + s.value, 0) || 1;
-  let acc = 0;
-  const stops = segments
-    .map((s) => {
-      const start = (acc / total) * 100;
-      acc += s.value;
-      const end = (acc / total) * 100;
-      return `${s.color} ${start}% ${end}%`;
-    })
-    .join(", ");
+  // A zero-value segment has no sector; the frame's label still names it.
+  const rows = segments
+    .filter((s) => s.value > 0)
+    .map((s) => ({ name: s.label ?? "", value: s.value, fill: s.color }));
 
   return (
-    <div
-      style={{
-        position: "relative",
-        width: `${size}px`,
-        height: `${size}px`,
-        borderRadius: "50%",
-        background: `conic-gradient(${stops})`,
-        flexShrink: 0,
-      }}
+    <ChartFrame
+      preset="tile"
+      kind="donut"
+      label={donutLabel(segments)}
+      width={size}
+      height={size}
     >
+      <PieChart {...BARE_CHART_PROPS}>
+        <Pie
+          data={rows}
+          dataKey="value"
+          nameKey="name"
+          innerRadius={Math.max(0, size / 2 - thickness)}
+          outerRadius={size / 2}
+          startAngle={90}
+          endAngle={-270}
+          stroke="none"
+          isAnimationActive={false}
+        />
+      </PieChart>
       <div
         style={{
           position: "absolute",
           inset: `${thickness}px`,
-          borderRadius: "50%",
-          background: "var(--bg-surface)",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -58,6 +74,6 @@ export default function Donut({
       >
         {center}
       </div>
-    </div>
+    </ChartFrame>
   );
 }

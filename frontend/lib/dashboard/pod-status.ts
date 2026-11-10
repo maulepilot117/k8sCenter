@@ -11,8 +11,9 @@ import type { DonutSegment } from "@/components/charts/Donut.tsx";
  * does not plot (Succeeded, Unknown), where pods.total is non-zero but every
  * segment is 0.
  *
- * Donut renders value and color only, so no label is passed; segment order is
- * the order the legend renders beside it.
+ * Each segment carries its phase name so the donut's accessible label can
+ * name it; segment order is the order the legend renders beside it. The
+ * placeholder is named without a count.
  *
  * This lives in lib/ rather than inline in the widget because the guard has
  * already regressed into a user-visible bug once, and a pure function is the
@@ -25,10 +26,17 @@ export function podStatusSegments(
 ): DonutSegment[] {
   if (running + pending + failed > 0) {
     return [
-      { value: running, color: "var(--success)" },
-      { value: pending, color: "var(--warning)" },
-      { value: failed, color: "var(--error)" },
+      { value: running, color: "var(--success)", label: "Running" },
+      { value: pending, color: "var(--warning)", label: "Pending" },
+      { value: failed, color: "var(--error)", label: "Failed" },
     ];
   }
-  return [{ value: 1, color: "var(--border-subtle)" }];
+  return [
+    {
+      value: 1,
+      color: "var(--border-subtle)",
+      label: "No pods",
+      placeholder: true,
+    },
+  ];
 }

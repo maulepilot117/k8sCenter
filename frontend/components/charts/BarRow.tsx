@@ -21,6 +21,12 @@ export default function BarRow({
   const pct = Math.max(0, Math.min(100, (value / max) * 100));
   return (
     <div
+      role="meter"
+      aria-label={label}
+      aria-valuenow={value}
+      aria-valuemin={0}
+      aria-valuemax={max}
+      aria-valuetext={suffix || undefined}
       style={{
         display: "flex",
         alignItems: "center",
@@ -51,6 +57,7 @@ export default function BarRow({
         }}
       >
         <div
+          data-bar-fill=""
           style={{
             height: "100%",
             borderRadius: "4px",
