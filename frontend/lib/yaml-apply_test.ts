@@ -148,26 +148,35 @@ interface Mounted extends UseYamlApplyReturn {
   setOptions(next: Partial<UseYamlApplyOptions>): void;
 }
 
+// Options travel as props, as they do from a real caller, and every
+// rerender passes new props (`pass`), so each one is a distinct render.
+interface HarnessProps {
+  yaml: string;
+  options?: UseYamlApplyOptions;
+  pass: number;
+  renders: UseYamlApplyReturn[];
+}
+
+function Harness(props: HarnessProps) {
+  props.renders.push(useYamlApply(props.yaml, props.options));
+  return null;
+}
+
 /** Mounts the hook. */
 function mount(
   initialYaml = "kind: ConfigMap",
   initialOptions?: UseYamlApplyOptions,
 ): Mounted {
   const renders: UseYamlApplyReturn[] = [];
-  // Options travel as props, as they do from a real caller, and every
-  // rerender passes new props (`pass`), so each one is a distinct render.
-  interface HarnessProps {
-    options?: UseYamlApplyOptions;
-    pass: number;
-  }
   let options = initialOptions;
   let pass = 0;
-  function Harness(props: HarnessProps) {
-    renders.push(useYamlApply(initialYaml, props.options));
-    return null;
-  }
   const element = () =>
-    createElement(Harness, { options, pass: ++pass } satisfies HarnessProps);
+    createElement(Harness, {
+      yaml: initialYaml,
+      options,
+      pass: ++pass,
+      renders,
+    } satisfies HarnessProps);
   let rendered: ReturnType<typeof render> | undefined;
   act(() => {
     rendered = render(element());

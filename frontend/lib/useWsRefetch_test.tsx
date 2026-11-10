@@ -86,18 +86,36 @@ afterEach(() => {
   switchCluster(LOCAL_CLUSTER_ID, "local");
 });
 
+function Probe({ fetchFn }: { fetchFn: () => Promise<void> }) {
+  useWsRefetch(fetchFn, [SUB], DEBOUNCE_MS);
+  return null;
+}
+
+function Feed({ fetchFn }: { fetchFn: () => Promise<void> }) {
+  useWsRefetch(fetchFn, [["notif-feed", "notifications", ""]], DEBOUNCE_MS);
+  return null;
+}
+
+function TaggedProbe({ tag, seen }: { tag: string; seen: string[] }) {
+  useWsRefetch(
+    () => {
+      seen.push(tag);
+      return Promise.resolve();
+    },
+    [SUB],
+    DEBOUNCE_MS,
+  );
+  return null;
+}
+
 function mount(): { calls: () => number; unmount: () => void } {
   let calls = 0;
   const fetchFn = () => {
     calls++;
     return Promise.resolve();
   };
-  function Probe() {
-    useWsRefetch(fetchFn, [SUB], DEBOUNCE_MS);
-    return null;
-  }
   setAccessToken("test-token");
-  const view = render(<Probe />);
+  const view = render(<Probe fetchFn={fetchFn} />);
   return { calls: () => calls, unmount: () => act(() => view.unmount()) };
 }
 
@@ -137,19 +155,15 @@ test("a remote selection still subscribes to the cluster-agnostic notification f
   // cluster is selected, so the gate must not silence them.
   switchCluster("remote-1", "gen-1");
   let calls = 0;
-  function Feed() {
-    useWsRefetch(
-      () => {
+  setAccessToken("test-token");
+  render(
+    <Feed
+      fetchFn={() => {
         calls++;
         return Promise.resolve();
-      },
-      [["notif-feed", "notifications", ""]],
-      DEBOUNCE_MS,
-    );
-    return null;
-  }
-  setAccessToken("test-token");
-  render(<Feed />);
+      }}
+    />,
+  );
 
   expect(FakeSocket.instances).toHaveLength(1);
   const socket = FakeSocket.instances[0];
@@ -190,22 +204,11 @@ test("unmounting unsubscribes and cancels a pending refetch", async () => {
 
 test("the refetch calls the fetch function from the latest render", async () => {
   const seen: string[] = [];
-  function Probe({ tag }: { tag: string }) {
-    useWsRefetch(
-      () => {
-        seen.push(tag);
-        return Promise.resolve();
-      },
-      [SUB],
-      DEBOUNCE_MS,
-    );
-    return null;
-  }
   setAccessToken("test-token");
-  const view = render(<Probe tag="first" />);
+  const view = render(<TaggedProbe tag="first" seen={seen} />);
   FakeSocket.instances[0].accept();
 
-  view.rerender(<Probe tag="second" />);
+  view.rerender(<TaggedProbe tag="second" seen={seen} />);
   FakeSocket.instances[0].deliver(SUB[0]);
   await settle();
   expect(seen).toEqual(["second"]);

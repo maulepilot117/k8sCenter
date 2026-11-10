@@ -114,7 +114,8 @@ export type CheckReason = Open<
   | "window_expired"
   | "identity_unknown"
   | "outcome_unrecorded"
-  | "strategy_not_supported">;
+  | "strategy_not_supported"
+>;
 
 /** SourceRef mirrors diagnostics.SourceRef: the object a check observed. */
 export interface SourceRef {

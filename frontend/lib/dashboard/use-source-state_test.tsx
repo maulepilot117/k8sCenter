@@ -20,16 +20,22 @@ function resolved(data: unknown) {
   };
 }
 
+function Probe({ onRender }: { onRender: () => void }) {
+  onRender();
+  const s = useSourceState<{ n: number }>(KEY);
+  return <span>{s.data ? `n=${s.data.n}` : "empty"}</span>;
+}
+
 describe("useSourceState", () => {
   test("re-renders when its own source resolves, not when another does", () => {
     let renders = 0;
-    function Probe() {
-      renders++;
-      const s = useSourceState<{ n: number }>(KEY);
-      return <span>{s.data ? `n=${s.data.n}` : "empty"}</span>;
-    }
-
-    const { container } = render(<Probe />);
+    const { container } = render(
+      <Probe
+        onRender={() => {
+          renders++;
+        }}
+      />,
+    );
     expect(container.textContent).toBe("empty");
     const afterMount = renders;
 

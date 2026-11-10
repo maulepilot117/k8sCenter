@@ -34,14 +34,62 @@ function countSubscriptions<T>(s: Signal<T>): {
   return { open: () => open, opened: () => opened };
 }
 
+function CountingReader({
+  count,
+  onRender,
+}: {
+  count: Signal<number>;
+  onRender: () => void;
+}) {
+  onRender();
+  return <span data-testid="v">{useSignalValue(count)}</span>;
+}
+
+function ClusterTarget({ seen }: { seen: string[] }) {
+  const id = useSignalValue(selectedCluster);
+  const generation = useSignalValue(selectedClusterGeneration);
+  const epoch = useSignalValue(clusterEpoch);
+  seen.push(`${id}/${generation}/${epoch}`);
+  return null;
+}
+
+function NameLabel({ name }: { name: Signal<string> }) {
+  return <b>{useSignalValue(name)}</b>;
+}
+
+function CountingItalicReader({
+  count,
+  onRender,
+}: {
+  count: Signal<number>;
+  onRender: () => void;
+}) {
+  onRender();
+  return <i>{useSignalValue(count)}</i>;
+}
+
+function TwoSignalReader({
+  other,
+  count,
+}: {
+  other: Signal<string>;
+  count: Signal<number>;
+}) {
+  useSignalValue(other);
+  return <i>{useSignalValue(count)}</i>;
+}
+
 test("a signal write re-renders a reader exactly once", async () => {
   const count = signal(1);
   let renders = 0;
-  function Reader() {
-    renders++;
-    return <span data-testid="v">{useSignalValue(count)}</span>;
-  }
-  const r = render(<Reader />);
+  const r = render(
+    <CountingReader
+      count={count}
+      onRender={() => {
+        renders++;
+      }}
+    />,
+  );
   expect(r.getByTestId("v").textContent).toBe("1");
   const before = renders;
 
@@ -56,14 +104,7 @@ test("a signal write re-renders a reader exactly once", async () => {
 test("a cluster switch never renders a mix of old and new values", async () => {
   switchCluster("cluster-a", "gen-a");
   const seen: string[] = [];
-  function Target() {
-    const id = useSignalValue(selectedCluster);
-    const generation = useSignalValue(selectedClusterGeneration);
-    const epoch = useSignalValue(clusterEpoch);
-    seen.push(`${id}/${generation}/${epoch}`);
-    return null;
-  }
-  render(<Target />);
+  render(<ClusterTarget seen={seen} />);
   const startEpoch = clusterEpoch.value;
 
   await act(() => {
@@ -79,21 +120,21 @@ test("a cluster switch never renders a mix of old and new values", async () => {
 
 test("server rendering returns the signal's current value", () => {
   const name = signal("remote-1");
-  function Label() {
-    return <b>{useSignalValue(name)}</b>;
-  }
-  expect(renderToString(<Label />)).toBe("<b>remote-1</b>");
+  expect(renderToString(<NameLabel name={name} />)).toBe("<b>remote-1</b>");
 });
 
 test("unmounting closes the subscription, and later writes do not render", async () => {
   const count = signal(0);
   const subs = countSubscriptions(count);
   let renders = 0;
-  function Reader() {
-    renders++;
-    return <i>{useSignalValue(count)}</i>;
-  }
-  const r = render(<Reader />);
+  const r = render(
+    <CountingItalicReader
+      count={count}
+      onRender={() => {
+        renders++;
+      }}
+    />,
+  );
   expect(subs.open()).toBe(1);
 
   // Effect cleanups run after paint, so flush them before checking.
@@ -112,11 +153,7 @@ test("re-rendering for another reason keeps the same subscription", async () => 
   const count = signal(0);
   const subs = countSubscriptions(count);
   const other = signal("a");
-  function Reader() {
-    useSignalValue(other);
-    return <i>{useSignalValue(count)}</i>;
-  }
-  render(<Reader />);
+  render(<TwoSignalReader other={other} count={count} />);
   await act(() => {
     other.value = "b";
   });
