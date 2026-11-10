@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { notifApi } from "@/lib/api.ts";
 import type {
   NotifChannel,
@@ -14,7 +14,6 @@ import {
   SOURCE_LABELS,
 } from "@/lib/notif-center-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /** Capitalize first letter of a severity for display. */
 function capFirst(s: string): string {
@@ -115,15 +114,13 @@ export default function NotificationRules() {
     setSaving(false);
   };
 
-  // The in-flight set is read after awaits and by a second press that lands
-  // before the next render, so it lives in a ref as well as state.
-  const [, setTogglingIds, togglingIdsRef] = useStateRef<Set<string>>(
-    new Set(),
-  );
+  // Never rendered: read only by the toggle handler, including after its
+  // awaits and by a second press that lands before the next render.
+  const togglingIds = useRef<Set<string>>(new Set());
 
   const handleToggle = async (rule: NotifRule) => {
-    if (togglingIdsRef.current.has(rule.id)) return; // prevent rapid-fire
-    setTogglingIds(new Set([...togglingIdsRef.current, rule.id]));
+    if (togglingIds.current.has(rule.id)) return;
+    togglingIds.current = new Set([...togglingIds.current, rule.id]);
     try {
       await notifApi.updateRule(rule.id, {
         name: rule.name,
@@ -136,9 +133,9 @@ export default function NotificationRules() {
     } catch {
       setError("Failed to toggle rule");
     }
-    const next = new Set(togglingIdsRef.current);
+    const next = new Set(togglingIds.current);
     next.delete(rule.id);
-    setTogglingIds(next);
+    togglingIds.current = next;
   };
 
   const handleDelete = async (id: string) => {

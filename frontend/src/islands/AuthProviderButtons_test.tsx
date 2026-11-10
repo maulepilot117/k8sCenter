@@ -1,7 +1,13 @@
 /** @jsxImportSource react */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
-import { body, render, settle, setupDom } from "@/src/test-utils/render.tsx";
+import {
+  body,
+  json,
+  render,
+  settle,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
 /**
  * SSO buttons appear only when the provider list has OIDC providers; local
@@ -18,12 +24,6 @@ function stubFetch(responder: () => Response) {
   globalThis.fetch = (async () =>
     responder()) as unknown as typeof globalThis.fetch;
 }
-const data = (d: unknown, status = 200) =>
-  new Response(JSON.stringify({ data: d }), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-
 beforeEach(() => setAccessToken("t"));
 afterEach(() => {
   globalThis.fetch = bunFetch;
@@ -32,7 +32,7 @@ afterEach(() => {
 
 test("renders a button linking to each OIDC provider", async () => {
   stubFetch(() =>
-    data([
+    json([
       { id: "local", type: "local", displayName: "Local" },
       {
         id: "okta",
@@ -53,7 +53,7 @@ test("renders a button linking to each OIDC provider", async () => {
 });
 
 test("renders nothing without OIDC providers", async () => {
-  stubFetch(() => data([{ id: "local", type: "local", displayName: "Local" }]));
+  stubFetch(() => json([{ id: "local", type: "local", displayName: "Local" }]));
   const { container } = render(<AuthProviderButtons />);
   await settle();
   expect(container.innerHTML).toBe("");

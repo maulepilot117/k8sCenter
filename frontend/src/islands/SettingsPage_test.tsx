@@ -103,9 +103,12 @@ const messages = () => toasts.value.map((t) => `${t.type}:${t.message}`);
 
 test("renders nothing on the server pass", () => {
   setBrowser(false);
-  const { container } = render(<SettingsPage />);
-  expect(container.innerHTML).toBe("");
-  setBrowser(true);
+  try {
+    const { container } = render(<SettingsPage />);
+    expect(container.innerHTML).toBe("");
+  } finally {
+    setBrowser(true);
+  }
 });
 
 test("shows a loading line, then the stored values", async () => {

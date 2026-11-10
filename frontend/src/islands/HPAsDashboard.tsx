@@ -3,13 +3,10 @@ import { useEffect, useState } from "react";
 import HPAWizard from "@/src/islands/HPAWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export default function HPAsDashboard() {
-  // Re-render the subtitle as the namespace (and so the count) changes.
-  useSignalValue(selectedNamespace);
   const [wizardOpen, setWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)

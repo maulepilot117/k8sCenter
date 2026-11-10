@@ -268,9 +268,6 @@ export default function BackupAssurance() {
     loadAll();
   }, []);
 
-  // The SSR placeholder and the hydrated root share their attributes:
-  // hydration never re-applies the root's own props (see
-  // server/check-placeholder-root-parity.ts).
   if (!isClient) {
     return <div className={ROOT_CLASS} data-testid={ROOT_TEST_ID} />;
   }

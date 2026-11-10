@@ -93,7 +93,7 @@ export default function AlertSettings() {
     })
       .then(() => {
         setSuccess("Settings saved.");
-        setSmtpPassword(""); // Clear password field after save
+        setSmtpPassword("");
         fetchSettings();
       })
       .catch((err) => {

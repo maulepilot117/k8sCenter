@@ -4,7 +4,6 @@ import ConfigMapWizard from "@/src/islands/ConfigMapWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import SecretWizard from "@/src/islands/SecretWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -50,14 +49,9 @@ export default function ConfigDashboard({
 }: {
   currentPath: string;
 }) {
-  // The shared resource-counts store re-fetches when the namespace changes;
-  // reading it here re-renders the subtitle with the new count.
-  useSignalValue(selectedNamespace);
-
   const { kind, title } = resolveTab(currentPath);
   const WizardComponent = WIZARD_MAP[kind] ?? null;
 
-  // Wizard modal — open shows the floating WizardShell
   const [wizardOpen, setWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)

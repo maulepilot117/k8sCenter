@@ -7,7 +7,6 @@ import PVCWizard from "@/src/islands/PVCWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import SnapshotList from "@/src/islands/SnapshotList.tsx";
 import StorageClassWizard from "@/src/islands/StorageClassWizard.tsx";
-import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -83,10 +82,6 @@ export default function StorageDashboard({
 }: {
   currentPath: string;
 }) {
-  // Reading selectedNamespace.value here wires reactivity — the shared
-  // resource-counts store re-fetches when namespace changes.
-  useSignalValue(selectedNamespace);
-
   const [pvcWizardOpen, setPvcWizardOpen] = useState(false);
   const [scWizardOpen, setScWizardOpen] = useState(false);
 

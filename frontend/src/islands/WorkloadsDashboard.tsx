@@ -8,7 +8,6 @@ import JobWizard from "@/src/islands/JobWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import StatefulSetWizard from "@/src/islands/StatefulSetWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -58,14 +57,9 @@ export default function WorkloadsDashboard({
 }: {
   currentPath: string;
 }) {
-  // The counts fetch lives in resource-counts.ts (reactive effect); reading
-  // the namespace here re-renders the subtitle as it changes.
-  useSignalValue(selectedNamespace);
-
   const { kind, title, createHref } = resolveKind(currentPath);
   const WizardComponent = WIZARD_MAP[kind] ?? null;
 
-  // Wizard modal — open shows the floating WizardShell
   const [wizardOpen, setWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)

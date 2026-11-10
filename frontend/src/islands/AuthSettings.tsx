@@ -21,7 +21,6 @@ export default function AuthSettings() {
   const [testResult, setTestResult] = useState("");
   const [testLoading, setTestLoading] = useState(false);
 
-  // Test form state (controlled inputs instead of document.getElementById)
   const [oidcIssuerURL, setOidcIssuerURL] = useState("");
   const [ldapURL, setLdapURL] = useState("");
   const [ldapBindDN, setLdapBindDN] = useState("");

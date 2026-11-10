@@ -5,6 +5,7 @@ import {
   act,
   body,
   fireEvent,
+  json,
   render,
   settle,
   setupDom,
@@ -84,12 +85,6 @@ interface Api {
 }
 let api: Api = {};
 
-function ok(data: unknown) {
-  return new Response(JSON.stringify({ data }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 function fail(status: number) {
   return new Response(
     JSON.stringify({ error: { code: status, message: "x" } }),
@@ -121,26 +116,26 @@ beforeEach(() => {
     const method = init?.method ?? "GET";
     calls.push({ method, url });
     if (method === "DELETE") {
-      return api.deleteStatus ? fail(api.deleteStatus) : ok({});
+      return api.deleteStatus ? fail(api.deleteStatus) : json({});
     }
     if (url.includes("/velero/assurance/status")) {
       const a = api.assurance ?? { status: 500 };
-      return a.status === 200 ? ok(a.body) : fail(a.status);
+      return a.status === 200 ? json(a.body) : fail(a.status);
     }
     if (api.failList) return fail(500);
     if (url.endsWith("/velero/status")) {
-      return ok({
+      return json({
         detected: api.detected ?? true,
         bslCount: 1,
         vslCount: 0,
         lastChecked: "2026-01-01T00:00:00Z",
       });
     }
-    if (url.endsWith("/velero/backups")) return ok(api.backups ?? []);
-    if (url.endsWith("/velero/restores")) return ok(api.restores ?? []);
-    if (url.endsWith("/velero/schedules")) return ok(api.schedules ?? []);
+    if (url.endsWith("/velero/backups")) return json(api.backups ?? []);
+    if (url.endsWith("/velero/restores")) return json(api.restores ?? []);
+    if (url.endsWith("/velero/schedules")) return json(api.schedules ?? []);
     if (url.endsWith("/velero/locations")) {
-      return ok({
+      return json({
         backupStorageLocations: [
           {
             name: "default-bsl",
@@ -154,7 +149,7 @@ beforeEach(() => {
         volumeSnapshotLocations: [],
       });
     }
-    return ok({});
+    return json({});
   }) as unknown as typeof globalThis.fetch;
 });
 afterEach(() => {

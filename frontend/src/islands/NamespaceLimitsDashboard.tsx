@@ -138,7 +138,6 @@ export default function NamespaceLimitsDashboard() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  // Narrowing the list can leave the page past the end; clamp it.
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
