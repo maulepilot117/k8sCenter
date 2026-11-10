@@ -6,17 +6,27 @@ import type { RowKeys } from "./use-row-keys.ts";
 setupDom({ browser: true });
 const { useRowKeys } = await import("./use-row-keys.ts");
 
+function RowKeysProbe({
+  n,
+  onRender,
+}: {
+  n: number;
+  onRender: (rows: RowKeys) => void;
+}) {
+  onRender(useRowKeys(n));
+  return null;
+}
+
 function harness(initial: number) {
   let rows!: RowKeys;
   let length = initial;
-  function Probe({ n }: { n: number }) {
-    rows = useRowKeys(n);
-    return null;
-  }
-  const view = render(<Probe n={length} />);
+  const onRender = (r: RowKeys) => {
+    rows = r;
+  };
+  const view = render(<RowKeysProbe n={length} onRender={onRender} />);
   const set = (n: number) => {
     length = n;
-    act(() => view.rerender(<Probe n={n} />));
+    act(() => view.rerender(<RowKeysProbe n={n} onRender={onRender} />));
   };
   const keys = () => Array.from({ length }, (_, i) => rows.keyAt(i));
   return { rows: () => rows, set, keys };

@@ -57,12 +57,12 @@ mock.module("../lib/ws.ts", () => ({
 }));
 // CodeMirror needs layout a test DOM does not have; a textarea honours the
 // same value/onChange/readOnly contract.
-mock.module("../components/ui/CodeMirrorEditor.tsx", () => ({
-  CodeMirrorEditor: (props: {
-    value: string;
-    onChange?: (v: string) => void;
-    readOnly?: boolean;
-  }) => (
+function CodeMirrorEditorStub(props: {
+  value: string;
+  onChange?: (v: string) => void;
+  readOnly?: boolean;
+}) {
+  return (
     <textarea
       data-testid="yaml"
       value={props.value}
@@ -71,7 +71,10 @@ mock.module("../components/ui/CodeMirrorEditor.tsx", () => ({
         props.onChange?.((e.currentTarget as HTMLTextAreaElement).value)
       }
     />
-  ),
+  );
+}
+mock.module("../components/ui/CodeMirrorEditor.tsx", () => ({
+  CodeMirrorEditor: CodeMirrorEditorStub,
 }));
 
 // The pod tabs open sockets; a marker is enough to see which tab is active.

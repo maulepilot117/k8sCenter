@@ -27,23 +27,40 @@ const { renderToString } = await import("react-dom/server");
 
 const DOC = "kind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  a: b\n";
 
+function EchoParent({ onEdit }: { onEdit: (v: string) => void }) {
+  const [content, setContent] = useState(DOC);
+  return (
+    <CodeMirrorEditor
+      value={content}
+      onChange={(v) => {
+        onEdit(v);
+        setContent(v);
+      }}
+    />
+  );
+}
+
+function OutsideParent({
+  onSetter,
+}: {
+  onSetter: (set: (v: string) => void) => void;
+}) {
+  const [content, setContent] = useState(DOC);
+  onSetter(setContent);
+  return <CodeMirrorEditor value={content} onChange={setContent} />;
+}
+
 function mount() {
   const state = { calls: 0, parentValue: DOC };
-  function Parent() {
-    const [content, setContent] = useState(DOC);
-    return (
-      <CodeMirrorEditor
-        value={content}
-        onChange={(v) => {
-          // A runaway echo would never return; fail it instead of hanging.
-          if (++state.calls > 50) throw new Error("onChange echo loop");
-          setContent(v);
-          state.parentValue = v;
-        }}
-      />
-    );
-  }
-  const { container } = render(<Parent />);
+  const { container } = render(
+    <EchoParent
+      onEdit={(v) => {
+        // A runaway echo would never return; fail it instead of hanging.
+        if (++state.calls > 50) throw new Error("onChange echo loop");
+        state.parentValue = v;
+      }}
+    />,
+  );
   const dom = container.querySelector(".cm-editor") as HTMLElement | null;
   if (!dom) throw new Error("editor did not mount");
   const view = EditorView.findFromDOM(dom) as EditorViewType;
@@ -82,12 +99,13 @@ test("a keystroke that lands before the parent catches up is kept", async () => 
 
 test("a value set from outside still replaces the document", async () => {
   let setOutside: (v: string) => void = () => {};
-  function Parent() {
-    const [content, setContent] = useState(DOC);
-    setOutside = setContent;
-    return <CodeMirrorEditor value={content} onChange={setContent} />;
-  }
-  const { container } = render(<Parent />);
+  const { container } = render(
+    <OutsideParent
+      onSetter={(set) => {
+        setOutside = set;
+      }}
+    />,
+  );
   const view = EditorView.findFromDOM(
     container.querySelector(".cm-editor") as HTMLElement,
   ) as EditorViewType;
