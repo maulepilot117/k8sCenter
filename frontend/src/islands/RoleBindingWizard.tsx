@@ -7,7 +7,10 @@ import type { LocalUser } from "@/lib/user-types.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
@@ -45,10 +48,9 @@ const STEPS: WizardStep[] = [
 ];
 
 function initialState(clusterScoped: boolean): BindingFormState {
-  const ns = initialNamespace();
   return {
     name: "",
-    namespace: clusterScoped ? "" : ns,
+    namespace: clusterScoped ? "" : DEFAULT_NAMESPACE,
     roleRefKind: "ClusterRole",
     roleRefName: "",
     subjects: [{ kind: "User", name: "", namespace: "" }],
@@ -63,6 +65,10 @@ export default function RoleBindingWizard({
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<BindingFormState>(() =>
     initialState(clusterScoped),
+  );
+  useAdoptSelectedNamespace(
+    (namespace) => setForm((prev) => ({ ...prev, namespace })),
+    !clusterScoped,
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);

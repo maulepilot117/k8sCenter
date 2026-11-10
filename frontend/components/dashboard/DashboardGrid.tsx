@@ -593,11 +593,11 @@ export default function DashboardGrid({
    * Scroll offsets of every box above the grid, taken just before a layout
    * change and put back once it has rendered.
    *
-   * Where the browser has `moveBefore`, Preact moves a reordered cell with it,
-   * and that keeps focus on the cell -- so the browser scrolls whatever it
-   * takes to keep the focused cell in view, `<main>` and the page included.
-   * `insertBefore` blurred the cell instead, and the focus hook puts focus
-   * back with `preventScroll`. Either way the user asked to move a widget, not
+   * React moves a reordered cell with `insertBefore`, which blurs it, and the
+   * focus hook puts focus back with `preventScroll`. A move that keeps focus
+   * on the cell instead (`moveBefore`, which React does not use today) makes
+   * the browser scroll whatever it takes to keep the cell in view, `<main>`
+   * and the page included. Either way the user asked to move a widget, not
    * the dashboard under it, and a pointer session re-measures the grid on
    * every pointermove, so a scroll mid-drag would also land the widget in the
    * wrong cell.

@@ -13,9 +13,10 @@ const getServerSnapshot = () => false;
  * `client:only` would not give.
  *
  * React uses `getServerSnapshot` while hydrating and then re-renders with
- * `getSnapshot`, so server and client markup agree. preact/compat ignores
- * `getServerSnapshot`, which is why `getSnapshot` itself returns IS_BROWSER
- * rather than a constant `true`: it is false on the server either way.
+ * `getSnapshot`, so server and client markup agree. A render that is not a
+ * hydration (`createRoot`, as the tests use) reads only `getSnapshot`, which
+ * returns IS_BROWSER rather than `true` so a test that leaves IS_BROWSER false
+ * renders the server branch.
  *
  * An effect that mounts a library into a ref rendered only in the client
  * branch must list `isClient` in its dependencies (or use a ref callback).

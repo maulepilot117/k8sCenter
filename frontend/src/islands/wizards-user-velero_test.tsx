@@ -352,21 +352,16 @@ test("VeleroRestore: choosing a backup derives the restore name, and the preview
   expect(sent.restorePVs).toBe(false);
 });
 
-test("VeleroRestore: a backup named in the URL is preselected", async () => {
-  globalThis.history.pushState({}, "", "/?backup=nightly-1");
-  try {
-    render(<VeleroRestoreWizard onClose={() => {}} />);
-    await waitFor(() =>
-      expect(
-        (body().getByLabelText("Source Backup *") as HTMLSelectElement).value,
-      ).toBe("nightly-1"),
-    );
+test("VeleroRestore: a backup named in the page's parameter is preselected", async () => {
+  render(<VeleroRestoreWizard onClose={() => {}} backup="nightly-1" />);
+  await waitFor(() =>
     expect(
-      (body().getByPlaceholderText("my-restore") as HTMLInputElement).value,
-    ).toMatch(/^nightly-1-restore-/);
-  } finally {
-    globalThis.history.pushState({}, "", "/");
-  }
+      (body().getByLabelText("Source Backup *") as HTMLSelectElement).value,
+    ).toBe("nightly-1"),
+  );
+  expect(
+    (body().getByPlaceholderText("my-restore") as HTMLInputElement).value,
+  ).toMatch(/^nightly-1-restore-/);
 });
 
 test("VeleroRestore: typing marks the wizard dirty", () => {

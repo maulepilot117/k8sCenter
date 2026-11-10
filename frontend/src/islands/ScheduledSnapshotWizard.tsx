@@ -9,7 +9,10 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
 interface ScheduledSnapshotFormState {
@@ -79,7 +82,7 @@ spec:
 function initialState(): ScheduledSnapshotFormState {
   return {
     name: "",
-    namespace: initialNamespace(),
+    namespace: DEFAULT_NAMESPACE,
     sourcePVC: "",
     volumeSnapshotClassName: "",
     schedulePreset: "0 0 * * *",
@@ -96,6 +99,9 @@ export default function ScheduledSnapshotWizard({
   const close = onClose ?? (() => globalThis.history.back());
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<ScheduledSnapshotFormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [namespaceList] = useNamespaces();
@@ -111,13 +117,16 @@ export default function ScheduledSnapshotWizard({
   const previewGen = useRef(0);
   const formRef = useLatest(form);
 
-  // Fetch PVCs (bound only) when namespace changes
+  // Fetch PVCs (bound only) when namespace changes. The form moves off
+  // DEFAULT_NAMESPACE right after hydration, so a response for the namespace
+  // it left must not land after the one for the namespace it moved to.
   const namespace = form.namespace;
   useEffect(() => {
     if (!namespace) return;
+    let current = true;
     apiGet<PVCItem[]>(`/v1/resources/pvcs/${namespace}?limit=500`)
       .then((resp) => {
-        if (Array.isArray(resp.data)) {
+        if (current && Array.isArray(resp.data)) {
           const bound = resp.data.filter((p) => p.status?.phase === "Bound");
           setPvcs(bound);
           setForm((prev) =>
@@ -129,8 +138,11 @@ export default function ScheduledSnapshotWizard({
         }
       })
       .catch(() => {
-        setPvcs([]);
+        if (current) setPvcs([]);
       });
+    return () => {
+      current = false;
+    };
   }, [namespace]);
 
   // Fetch snapshot classes

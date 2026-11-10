@@ -7,7 +7,10 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { DNS_LABEL_REGEX, LE_STAGING_ACME } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 
 export type IssuerType = "selfSigned" | "acme";
 
@@ -49,7 +52,7 @@ function initialForm(): IssuerWizardForm {
   return {
     type: "",
     name: "",
-    namespace: initialNamespace(),
+    namespace: DEFAULT_NAMESPACE,
     acme: initialAcme(),
   };
 }
@@ -99,6 +102,9 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
   const close = onClose ?? (() => globalThis.history.back());
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<IssuerWizardForm>(initialForm);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [namespaces] = useNamespaces();
 

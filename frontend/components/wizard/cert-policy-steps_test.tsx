@@ -1,7 +1,5 @@
 /** @jsxImportSource react */
 import { expect, mock, test } from "bun:test";
-// Loads preact/compat, as ToastProvider does on every ChromeLayout page.
-import "react";
 import type { Issuer } from "@/lib/certmanager-types.ts";
 import type { EngineStatus } from "@/lib/policy-types.ts";
 import { body, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";

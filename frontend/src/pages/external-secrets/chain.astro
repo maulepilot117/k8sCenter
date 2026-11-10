@@ -1,7 +1,9 @@
 ---
 import ESOChainPage from "../../islands/ESOChainPage.tsx";
 import ChromeLayout from "../../layouts/ChromeLayout.astro";
+
+const namespace = Astro.url.searchParams.get("namespace") ?? undefined;
 ---
 <ChromeLayout>
-  <ESOChainPage client:load />
+  <ESOChainPage client:load initialNamespace={namespace} />
 </ChromeLayout>

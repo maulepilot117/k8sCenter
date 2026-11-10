@@ -11,7 +11,10 @@ import {
 import type { LabelEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
@@ -76,10 +79,9 @@ function newRule(): NPRuleState {
 }
 
 function initialState(): NetworkPolicyFormState {
-  const ns = initialNamespace();
   return {
     name: "",
-    namespace: ns,
+    namespace: DEFAULT_NAMESPACE,
     podSelectorLabels: [],
     policyTypes: ["Ingress"],
     ingressRules: [],
@@ -135,6 +137,9 @@ export default function NetworkPolicyWizard({
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<NetworkPolicyFormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
   const formRef = useLatest(form);

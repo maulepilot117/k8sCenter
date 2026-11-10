@@ -5,11 +5,9 @@ import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
- * The root every return shares. Preact hydration keeps the server-rendered
- * root's own props and only reconciles its children, so a root that differed
- * between the SSR placeholder and a later return would keep the placeholder's
- * classes. The root is layout-neutral (`display: contents`); each state styles its own
- * inner box.
+ * The root every return shares: layout-neutral (`display: contents`), so each
+ * state styles its own inner box and switching state never changes the
+ * surrounding layout.
  */
 const GATE_ROOT_CLASS = "contents";
 

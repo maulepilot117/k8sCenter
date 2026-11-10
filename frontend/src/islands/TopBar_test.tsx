@@ -1,8 +1,6 @@
 /** @jsxImportSource react */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { batch } from "@preact/signals-core";
-// Loads preact/compat, as ToastProvider does on every ChromeLayout page.
-import "react";
 import {
   act,
   body,

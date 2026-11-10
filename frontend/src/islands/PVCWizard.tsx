@@ -11,7 +11,10 @@ import { ACCESS_MODES, DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
 interface PVCFormState {
@@ -34,7 +37,7 @@ const ACCESS_MODE_VALUES = ACCESS_MODES.map((m) => m.value);
 function initialState(): PVCFormState {
   return {
     name: "",
-    namespace: initialNamespace(),
+    namespace: DEFAULT_NAMESPACE,
     storageClassName: "",
     sizeValue: "10",
     sizeUnit: "Gi",
@@ -64,6 +67,9 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<PVCFormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [namespaceList] = useNamespaces();

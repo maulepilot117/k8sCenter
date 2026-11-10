@@ -9,7 +9,10 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 
 // ---------------------------------------------------------------------------
 // Shared types & constants — exported for step components
@@ -69,10 +72,9 @@ const STEPS: WizardStep[] = [
 ];
 
 function initialState(): FormState {
-  const ns = initialNamespace();
   const preset = PRESETS.standard;
   return {
-    namespace: ns,
+    namespace: DEFAULT_NAMESPACE,
     preset: "standard",
     quotaName: "default-quota",
     limitRangeName: "default-limits",
@@ -102,6 +104,9 @@ export default function NamespaceLimitsWizard({
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<FormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
 

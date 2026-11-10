@@ -20,7 +20,6 @@ import {
 } from "@/lib/stream-state.ts";
 import { SessionClusterBadge } from "@/src/components/SessionClusterBadge.tsx";
 import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useStateRef } from "@/src/lib/use-state-ref.ts";
@@ -128,8 +127,10 @@ export default function LogViewer({
   const wsRefs = useRef<Map<number, WebSocket>>(new Map());
   // The cluster this viewer streams from, taken once when it opens and kept
   // across every reconnect, so a resume never follows a changed selection.
+  // Taken on the first render after hydration, which is the first one that
+  // can show the badge.
   const pinRef = useRef<ClusterTarget | null>(null);
-  if (IS_BROWSER && pinRef.current === null) pinRef.current = currentTarget();
+  if (isClient && pinRef.current === null) pinRef.current = currentTarget();
 
   // Per-tab resume state. A retryable end reconnects after a backoff; the
   // resumed tail replays its last lines, so the ones at or before the last

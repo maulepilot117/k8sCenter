@@ -15,7 +15,10 @@ import {
 import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
 interface JobFormState {
@@ -44,10 +47,9 @@ const STEPS: WizardStep[] = [
 ];
 
 function initialState(): JobFormState {
-  const ns = initialNamespace();
   return {
     name: "",
-    namespace: ns,
+    namespace: DEFAULT_NAMESPACE,
     completions: "1",
     parallelism: "1",
     backoffLimit: "6",
@@ -68,6 +70,9 @@ export default function JobWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<JobFormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
 

@@ -1,7 +1,5 @@
 /** @jsxImportSource react */
 import { afterEach, describe, expect, test } from "bun:test";
-// Loads preact/compat, as the dashboard island does on every page.
-import "react";
 import type { SourceState } from "@/lib/dashboard/data.ts";
 import { PARAM_KEY_NAMESPACE, sourceKeyFor } from "@/lib/dashboard/params.ts";
 import {
@@ -16,9 +14,8 @@ setupDom({ browser: true });
 
 const { dashboardData } = await import("@/lib/dashboard/data.ts");
 const { getWidget } = await import("@/lib/dashboard/registry.ts");
-// Only the widgets under test, not index.ts: other widgets still on Preact load
-// @preact/signals, whose global render patch would re-render these cards even
-// when they read a source without subscribing.
+// Only the widgets under test, not index.ts, so the test loads just the cards
+// it checks.
 await import("@/components/dashboard/widgets/StorageCapacityWidget.tsx");
 await import("@/components/dashboard/widgets/HubbleFlowsWidget.tsx");
 await import("@/components/dashboard/widgets/CertsExpiringWidget.tsx");

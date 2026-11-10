@@ -26,12 +26,17 @@ function getUrlParam(name: string): string {
   return new URLSearchParams(globalThis.location.search).get(name) ?? "all";
 }
 
-export default function ViolationBrowser() {
+interface ViolationBrowserProps {
+  /** The page's `?policy=` parameter, read by the server. */
+  policy?: string;
+}
+
+export default function ViolationBrowser({ policy }: ViolationBrowserProps) {
   const [violations, setViolations] = useState<NormalizedViolation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState(() =>
-    getUrlParam("policy") !== "all" ? getUrlParam("policy") : "",
+  const [search, setSearch] = useState(
+    policy && policy !== "all" ? policy : "",
   );
   const [filterSeverity, setFilterSeverity] = useState<string>("all");
   const [filterEngine, setFilterEngine] = useState<string>("all");

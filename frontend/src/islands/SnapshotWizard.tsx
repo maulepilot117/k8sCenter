@@ -10,7 +10,10 @@ import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
 interface SnapshotFormState {
@@ -81,10 +84,14 @@ export default function SnapshotWizard({
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<SnapshotFormState>(() => ({
     name: preselectedPvc ? generateSnapshotName(preselectedPvc) : "",
-    namespace: preselectedNs || initialNamespace(),
+    namespace: preselectedNs || DEFAULT_NAMESPACE,
     sourcePVC: preselectedPvc || "",
     volumeSnapshotClassName: "",
   }));
+  useAdoptSelectedNamespace(
+    (namespace) => setForm((prev) => ({ ...prev, namespace })),
+    !preselectedNs,
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [namespaceList] = useNamespaces();
@@ -117,17 +124,23 @@ export default function SnapshotWizard({
       .catch(() => {});
   }, []);
 
-  // Fetch PVCs when namespace changes
+  // Fetch PVCs when namespace changes. The form moves off DEFAULT_NAMESPACE
+  // right after hydration, so a response for the namespace it left must not
+  // land after the one for the namespace it moved to.
   useEffect(() => {
     const ns = form.namespace;
     if (!ns) return;
+    let current = true;
     apiGet<PVCItem[]>(`/v1/resources/pvcs/${ns}?limit=500`)
       .then((resp) => {
-        if (Array.isArray(resp.data)) setPvcs(resp.data);
+        if (current && Array.isArray(resp.data)) setPvcs(resp.data);
       })
       .catch(() => {
-        setPvcs([]);
+        if (current) setPvcs([]);
       });
+    return () => {
+      current = false;
+    };
   }, [form.namespace]);
 
   const updateField = (field: string, value: unknown) => {

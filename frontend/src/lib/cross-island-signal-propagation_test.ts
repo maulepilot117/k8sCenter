@@ -21,7 +21,7 @@ import { selectedNamespace } from "./namespace.ts";
  * warning about false failures from asserting too early.
  */
 
-/** Waits one tick past whatever preact-signals' own scheduling needs. */
+/** Waits one tick past whatever signals-core's own scheduling needs. */
 function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }

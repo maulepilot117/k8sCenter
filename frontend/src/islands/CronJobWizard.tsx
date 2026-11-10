@@ -11,7 +11,10 @@ import {
 } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
 interface ContainerState {
@@ -74,10 +77,9 @@ function cronToHuman(cron: string): string {
 }
 
 function initialState(): CronJobFormState {
-  const ns = initialNamespace();
   return {
     name: "",
-    namespace: ns,
+    namespace: DEFAULT_NAMESPACE,
     schedulePreset: "0 0 * * *",
     schedule: "0 0 * * *",
     concurrencyPolicy: "Allow",
@@ -120,6 +122,9 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<CronJobFormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
 

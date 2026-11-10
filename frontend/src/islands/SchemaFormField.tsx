@@ -528,13 +528,12 @@ function PrimitiveArrayField({
             style={{ display: "flex", gap: "6px", alignItems: "center" }}
           >
             <input
-              // Preact types <input> as a union keyed on a literal `type`,
-              // so the two-way choice is resolved to one branch before it
-              // is spread.
-              {...(schema.items?.type === "integer" ||
-              schema.items?.type === "number"
-                ? { type: "number" as const }
-                : { type: "text" as const })}
+              type={
+                schema.items?.type === "integer" ||
+                schema.items?.type === "number"
+                  ? "number"
+                  : "text"
+              }
               style={{ ...inputStyle, flex: 1 }}
               value={item != null ? String(item) : ""}
               onChange={(e) => updateItem(idx, e.currentTarget.value)}

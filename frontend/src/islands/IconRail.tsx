@@ -10,13 +10,9 @@ import {
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 /**
- * The rail's root <nav> styling, shared by the SSR placeholder and the
- * hydrated tree so the two cannot diverge.
- *
- * Hydration does not re-apply the root element's class/style — it
- * matches the existing server-rendered node and recurses into children. A
- * property present on one root and not the other therefore sticks for the
- * life of the page, with nothing in the build or the E2E suite to catch it.
+ * The rail's root <nav> styling, shared by the SSR placeholder and the client
+ * tree so the rail has its final size and stacking from first paint and does
+ * not shift when its items arrive.
  */
 const RAIL_NAV_STYLE = {
   width: "var(--rail-width, 60px)",
@@ -264,16 +260,8 @@ export default function IconRail({ currentPath }: IconRailProps) {
   const onLeave = () => setHoveredId(null);
 
   if (!isClient) {
-    // SSR placeholder with correct dimensions.
-    //
-    // It MUST carry the identical style to the hydrated <nav> below. Preact
-    // hydration attaches children to the server-rendered root but does not
-    // re-apply that root's class/style, so any property present here and
-    // missing there (or vice versa) survives permanently in the browser. The
-    // shared RAIL_NAV_STYLE is what makes the two impossible to drift apart:
-    // when this placeholder omitted display/align-items/z-index/overflow, the
-    // rail rendered unstyled and the active-item indicator escaped its
-    // overflow:hidden clip.
+    // SSR placeholder, shown until hydration, with the client <nav>'s exact
+    // style (RAIL_NAV_STYLE) so the page lays out around the real rail.
     return <nav className="glass-bar" style={RAIL_NAV_STYLE} />;
   }
 

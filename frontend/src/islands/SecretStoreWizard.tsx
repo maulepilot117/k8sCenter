@@ -22,7 +22,10 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
@@ -92,7 +95,7 @@ function stepsFor(provider: SecretStoreProvider | ""): WizardStep[] {
 function initialForm(scope: "namespaced" | "cluster"): SecretStoreWizardForm {
   return {
     name: "",
-    namespace: scope === "namespaced" ? initialNamespace() : "",
+    namespace: scope === "namespaced" ? DEFAULT_NAMESPACE : "",
     provider: "",
     refreshInterval: "1h",
     providerSpec: {},
@@ -108,6 +111,10 @@ export default function SecretStoreWizard({
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<SecretStoreWizardForm>(() =>
     initialForm(scope),
+  );
+  useAdoptSelectedNamespace(
+    (namespace) => setForm((prev) => ({ ...prev, namespace })),
+    scope === "namespaced",
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);

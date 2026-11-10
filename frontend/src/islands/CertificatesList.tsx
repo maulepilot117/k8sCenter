@@ -27,7 +27,7 @@ export default function CertificatesList() {
 
   // Check URL param for pre-filter
   const expiringOnly =
-    IS_BROWSER &&
+    isClient &&
     new URLSearchParams(globalThis.location.search).get("status") ===
       "expiring";
 

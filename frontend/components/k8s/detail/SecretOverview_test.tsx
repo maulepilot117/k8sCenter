@@ -1,7 +1,5 @@
 /** @jsxImportSource react */
 import { afterEach, expect, test } from "bun:test";
-// Loads preact/compat the way ToastProvider does on every ChromeLayout page.
-import "react";
 import type { K8sResource } from "@/lib/k8s-types.ts";
 import {
   act,

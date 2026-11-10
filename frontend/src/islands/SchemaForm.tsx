@@ -16,7 +16,7 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { formStateToYaml, safeDeepSet } from "@/lib/schema-to-yaml.ts";
 import SchemaFormField from "@/src/islands/SchemaFormField.tsx";
 import YamlPreview from "@/src/islands/YamlPreview.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import { selectedNamespaceOrDefault } from "@/src/lib/namespace.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 
@@ -334,7 +334,7 @@ export default function SchemaForm({
   // Form state
   const [formName, setFormName] = useState(name ?? "");
   const [formNamespace, setFormNamespace] = useState(
-    namespace ?? initialNamespace(),
+    namespace ?? selectedNamespaceOrDefault(),
   );
   const [formLabels, setFormLabels] = useState<KVEntry[]>([]);
   const [formAnnotations, setFormAnnotations] = useState<KVEntry[]>([]);

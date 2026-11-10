@@ -56,7 +56,7 @@ function expectColumn(page: Page, id: string, col: number) {
 /**
  * What Save's title says once a write has been refused. Mirrors
  * SAVE_BLOCKED_REASON in DashboardV2.tsx, copied rather than imported: that
- * module is a Preact island and importing it would pull the whole rendering
+ * module is a React island and importing it would pull the whole rendering
  * stack into the Playwright runtime for one string.
  */
 const SAVE_BLOCKED_REASON =

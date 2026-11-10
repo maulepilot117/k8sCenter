@@ -1,7 +1,5 @@
 /** @jsxImportSource react */
 import { expect, mock, test } from "bun:test";
-// Loads preact/compat, as ToastProvider does on every ChromeLayout page.
-import "react";
 import { useState } from "react";
 import type {
   AssuranceException,

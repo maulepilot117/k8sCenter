@@ -7,7 +7,10 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 interface ConfigMapFormState {
@@ -22,10 +25,9 @@ const STEPS: WizardStep[] = [
 ];
 
 function initialState(): ConfigMapFormState {
-  const ns = initialNamespace();
   return {
     name: "",
-    namespace: ns,
+    namespace: DEFAULT_NAMESPACE,
     entries: [{ key: "", value: "" }],
   };
 }
@@ -45,6 +47,9 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<ConfigMapFormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
 

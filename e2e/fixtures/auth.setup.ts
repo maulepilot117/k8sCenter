@@ -17,7 +17,7 @@ setup("create admin and authenticate", async ({ page, request }) => {
     failOnStatusCode: false,
   });
 
-  // Log in via UI (required — access token lives in-memory Preact signals).
+  // Log in via UI (required — access token lives in an in-memory signal).
   // storageState will preserve the httpOnly refresh cookie but NOT the
   // in-memory access token. Each test starts with no token — the first API
   // call triggers a transparent refresh via the saved cookie.

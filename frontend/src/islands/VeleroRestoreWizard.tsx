@@ -48,17 +48,16 @@ function initialState(preselectedBackup?: string): RestoreFormState {
 
 interface Props {
   onClose?: () => void;
+  /** The page's `?backup=` parameter, read by the server. */
+  backup?: string;
 }
 
-export default function VeleroRestoreWizard({ onClose }: Props) {
+export default function VeleroRestoreWizard({ onClose, backup }: Props) {
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
-  const [form, setForm] = useState<RestoreFormState>(() => {
-    const urlParams = IS_BROWSER
-      ? new URLSearchParams(globalThis.location.search)
-      : null;
-    return initialState(urlParams?.get("backup") || undefined);
-  });
+  const [form, setForm] = useState<RestoreFormState>(() =>
+    initialState(backup || undefined),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
   const formRef = useLatest(form);

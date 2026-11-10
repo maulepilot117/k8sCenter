@@ -7,11 +7,10 @@ import { join } from "node:path";
  * `dashboardData.state(key)` in render shows the first value and never
  * updates, because nothing subscribes the component to the key.
  *
- * The live-update tests beside each widget catch that only when nothing else
- * in the process has loaded `@preact/signals`: its global render patch
- * re-renders every component on any signal it reads, and chart components
- * still on Preact load it. This check reads the files instead, so it holds in
- * the full suite.
+ * The live-update tests beside each widget catch that by driving a source
+ * change and watching the card. This check reads the files instead, so it
+ * also catches a widget whose test would pass only because something else
+ * re-rendered it.
  */
 const DIR = import.meta.dir;
 const PRAGMA = "@jsxImportSource react";

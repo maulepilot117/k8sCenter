@@ -1,8 +1,5 @@
 /** @jsxImportSource react */
 import { afterEach, describe, expect, test } from "bun:test";
-// Loads preact/compat, as the chrome does on every page, so the widgets'
-// React-prop JSX is translated the way it is in the browser.
-import "react";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import {
   PARAM_KEY_NAMESPACE,

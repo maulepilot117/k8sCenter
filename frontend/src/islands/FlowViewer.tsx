@@ -12,7 +12,7 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { type PanelState, streamState } from "@/lib/networking-state.ts";
 import { currentTarget, UNKNOWN_GENERATION } from "@/src/lib/cluster.ts";
 import { hasDom } from "@/src/lib/has-dom.ts";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import { selectedNamespaceOrDefault } from "@/src/lib/namespace.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useStateRef } from "@/src/lib/use-state-ref.ts";
@@ -129,7 +129,7 @@ export default function FlowViewer() {
   // the animation-frame flush, so each has a ref that is current between
   // renders.
   const [namespace, setNamespace, namespaceRef] = useStateRef(
-    initialNamespace(),
+    selectedNamespaceOrDefault(),
   );
   const [namespaceList] = useNamespaces();
   const [verdict, setVerdict, verdictRef] = useStateRef("");

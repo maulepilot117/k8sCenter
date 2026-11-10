@@ -7,7 +7,10 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { LabelEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 interface PDBFormState {
@@ -40,10 +43,9 @@ const PDB_ICON = (
 );
 
 function initialState(): PDBFormState {
-  const ns = initialNamespace();
   return {
     name: "",
-    namespace: ns,
+    namespace: DEFAULT_NAMESPACE,
     selectorLabels: [{ key: "", value: "" }],
     budgetType: "minAvailable",
     budgetValue: "1",
@@ -54,6 +56,9 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<PDBFormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
   const labelKeys = useRowKeys(form.selectorLabels.length);

@@ -10,6 +10,7 @@ import { apiGet } from "@/lib/api.ts";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
@@ -31,6 +32,9 @@ export default function AlertsPage() {
   >(null);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const selected = useSignalValue(selectedCluster);
+  // The selection is restored from localStorage, which the server cannot
+  // read, so the remote-cluster notice waits for hydration.
+  const isClient = useIsClient();
   // AbortController for in-flight fetchHistory requests (Finding #28).
   const historyAbortRef = useRef<AbortController | null>(null);
 
@@ -113,7 +117,7 @@ export default function AlertsPage() {
       {/* /alerts and /alerts/history always read the local Alertmanager,
           whatever cluster is selected (R-8 KTD13). Say so, or a quiet local
           feed reads as a quiet remote cluster. */}
-      {selected !== LOCAL_CLUSTER_ID && (
+      {isClient && selected !== LOCAL_CLUSTER_ID && (
         <Alert variant="info">
           These alerts come from the local cluster's Alertmanager, not the
           selected remote cluster. Alert rules on the remote are managed on the

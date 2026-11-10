@@ -2,8 +2,6 @@
 import type { ComponentProps } from "react";
 
 // Exactly what `<input>` itself accepts, so the spread below stays assignable.
-// While JSX types come from Preact that is its accessible union, which pairs
-// each `type` with the `role` and `list` values valid for it.
 type InputProps = ComponentProps<"input"> & {
   label?: string;
   error?: string;
