@@ -36,9 +36,23 @@ function AxisChart() {
   );
 }
 
-const realRect = HTMLElement.prototype.getBoundingClientRect;
+// Put the prototype back exactly as it was: leaving an own property behind
+// would shadow stubs other test files set on Element.prototype.
+const ownRect = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  "getBoundingClientRect",
+);
 afterEach(() => {
-  HTMLElement.prototype.getBoundingClientRect = realRect;
+  if (ownRect) {
+    Object.defineProperty(
+      HTMLElement.prototype,
+      "getBoundingClientRect",
+      ownRect,
+    );
+  } else {
+    delete (HTMLElement.prototype as Partial<HTMLElement>)
+      .getBoundingClientRect;
+  }
 });
 
 test("no data shows the empty message and no chart", () => {
