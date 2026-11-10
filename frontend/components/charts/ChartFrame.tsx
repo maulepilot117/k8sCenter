@@ -50,13 +50,16 @@ export default function ChartFrame({
     height: `${height}px`,
     flexShrink: width === undefined ? undefined : 0,
   } as const;
+  const frameAttrs = {
+    "data-chart-frame": "",
+    "data-chart": kind,
+    "data-chart-preset": preset,
+  };
 
   if (empty) {
     return (
       <div
-        data-chart-frame=""
-        data-chart={kind}
-        data-chart-preset={preset}
+        {...frameAttrs}
         data-chart-state="empty"
         className="flex items-center justify-center text-xs"
         style={{ ...box, color: "var(--text-muted)" }}
@@ -68,9 +71,7 @@ export default function ChartFrame({
 
   return (
     <div
-      data-chart-frame=""
-      data-chart={kind}
-      data-chart-preset={preset}
+      {...frameAttrs}
       data-chart-state="ready"
       role={preset === "tile" ? "img" : "figure"}
       aria-label={label}

@@ -393,8 +393,6 @@ test.describe.serial("Remote cluster capabilities", () => {
     await page.goto("/");
     const health = page.locator('[data-widget-id="cluster-health"]');
     await expect(health).toHaveAttribute("data-widget-state", "ready");
-    // The gauge is one image named for the health score, and its chart is
-    // drawn into a box with a size.
     await expect(
       health.getByRole("img", { name: /cluster health: \d+/i }),
     ).toHaveCount(1);

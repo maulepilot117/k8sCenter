@@ -3,6 +3,7 @@ import { Area, AreaChart, YAxis } from "recharts";
 import ChartFrame from "@/components/charts/ChartFrame.tsx";
 import {
   BARE_CHART_PROPS,
+  CHART_TOKENS,
   formatValue,
   valueDomain,
 } from "@/components/charts/chart-theme.ts";
@@ -32,7 +33,7 @@ export default function Sparkline({
   name = "Trend",
   width,
   height = 34,
-  stroke = "var(--accent)",
+  stroke = CHART_TOKENS.line,
   fill,
   gradient = false,
   strokeWidth = 1.8,
@@ -40,10 +41,8 @@ export default function Sparkline({
 }: SparklineProps) {
   const gradientId = `spark-${useId()}`;
 
-  // Drop non-finite samples (NaN/±Infinity) so they cannot break the line.
   const clean = data.filter((v) => Number.isFinite(v));
   const latest = clean[clean.length - 1];
-  // A single sample is drawn twice so it shows as a flat line.
   const rows = (clean.length === 1 ? [clean[0], clean[0]] : clean).map((v) => ({
     v,
   }));

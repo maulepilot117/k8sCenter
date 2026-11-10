@@ -44,7 +44,6 @@ export function GaugeRing({
       thickness={strokeWidth}
       color={color}
       secondaryColor={indeterminate ? undefined : secondaryColor}
-      track="var(--bg-elevated)"
       label={accessibleLabel}
     >
       <span

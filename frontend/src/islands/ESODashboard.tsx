@@ -59,8 +59,6 @@ function esoStatusToDot(
   }
 }
 
-/** Hero gauge — synced / total. Uses var(--success) for the synced arc and
- * var(--bg-elevated) for the track. */
 function SyncHealthRing({ synced, total }: { synced: number; total: number }) {
   return (
     <RadialGauge
@@ -68,7 +66,6 @@ function SyncHealthRing({ synced, total }: { synced: number; total: number }) {
       size={200}
       thickness={12}
       color="var(--success)"
-      track="var(--bg-elevated)"
       label={`${synced} of ${total} synced`}
     >
       <span

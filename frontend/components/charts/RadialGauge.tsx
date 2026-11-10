@@ -1,7 +1,9 @@
 import { type ReactNode, useId } from "react";
 import { PolarAngleAxis, RadialBar, RadialBarChart } from "recharts";
 import ChartFrame from "./ChartFrame.tsx";
-import { BARE_CHART_PROPS } from "./chart-theme.ts";
+import { BARE_CHART_PROPS, CHART_TOKENS } from "./chart-theme.ts";
+
+const NO_MARGIN = { top: 0, right: 0, bottom: 0, left: 0 };
 
 interface RadialGaugeProps {
   /** 0..100; values outside are clamped. */
@@ -13,7 +15,8 @@ interface RadialGaugeProps {
   color: string;
   /** Fades the ring from `color` to this colour, corner to corner. */
   secondaryColor?: string;
-  track: string;
+  /** Colour of the unfilled ring. */
+  track?: string;
   /** Accessible name; states the value the ring shows. */
   label: string;
   /** Centre content, laid over the ring. */
@@ -31,11 +34,11 @@ export default function RadialGauge({
   thickness,
   color,
   secondaryColor,
-  track,
+  track = CHART_TOKENS.track,
   label,
   children,
 }: RadialGaugeProps) {
-  const gradientId = `radial-gauge-${useId().replace(/:/g, "")}`;
+  const gradientId = `radial-gauge-${useId()}`;
   const clamped = Math.max(0, Math.min(100, percent));
   const outerRadius = size / 2 - 1;
   const fill = secondaryColor ? `url(#${gradientId})` : color;
@@ -55,7 +58,7 @@ export default function RadialGauge({
         outerRadius={outerRadius}
         startAngle={90}
         endAngle={-270}
-        margin={{ top: 0, right: 0, bottom: 0, left: 0 }}
+        margin={NO_MARGIN}
       >
         {secondaryColor && (
           <defs>

@@ -3,11 +3,10 @@ import type { DonutSegment } from "@/components/charts/Donut.tsx";
 /**
  * Donut segments for the pod-status phase breakdown.
  *
- * The guard is the sum of the three plotted counts, not pods.total. Donut
- * divides by the summed segment values, so an all-zero set collapses every
- * conic-gradient stop to `0% 0%` and the last color floods the whole ring --
- * an empty cluster drew a solid red donut until that was fixed. Summing the
- * plotted values also covers a cluster whose pods are all in phases this donut
+ * The guard is the sum of the three plotted counts, not pods.total. An
+ * all-zero set leaves the donut nothing to draw, so an empty cluster gets one
+ * neutral placeholder segment instead of a bare or error-coloured ring.
+ * Summing the plotted values also covers a cluster whose pods are all in phases this donut
  * does not plot (Succeeded, Unknown), where pods.total is non-zero but every
  * segment is 0.
  *
@@ -16,8 +15,7 @@ import type { DonutSegment } from "@/components/charts/Donut.tsx";
  * placeholder is named without a count.
  *
  * This lives in lib/ rather than inline in the widget because the guard has
- * already regressed into a user-visible bug once, and a pure function is the
- * only shape this repo can unit-test (it has no component test harness).
+ * already regressed into a user-visible bug once.
  */
 export function podStatusSegments(
   running: number,

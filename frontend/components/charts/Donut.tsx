@@ -36,7 +36,6 @@ export default function Donut({
   thickness = 15,
   center,
 }: DonutProps) {
-  // A zero-value segment has no sector; the frame's label still names it.
   const rows = segments
     .filter((s) => s.value > 0)
     .map((s) => ({ name: s.label ?? "", value: s.value, fill: s.color }));
