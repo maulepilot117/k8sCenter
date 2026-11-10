@@ -166,3 +166,44 @@ test("QuickActionsFab opens, links its actions, and closes", () => {
   fireEvent.click(ui.getByRole("button", { name: "Close quick actions" }));
   expect(ui.queryAllByRole("link").length).toBe(0);
 });
+
+test("QuickActionsFab closes on Escape and hands focus back to its button", () => {
+  render(<QuickActionsFab />);
+  const ui = body();
+  fireEvent.click(ui.getByRole("button", { name: "Open quick actions" }));
+  ui.getByRole("link", { name: "New Service" }).focus();
+
+  fireEvent.keyDown(document, { key: "Escape" });
+
+  expect(ui.queryAllByRole("link").length).toBe(0);
+  expect(document.activeElement).toBe(
+    ui.getByRole("button", { name: "Open quick actions" }),
+  );
+});
+
+test("QuickActionsFab leaves focus alone on an Escape meant for another component", () => {
+  render(<QuickActionsFab />);
+  const ui = body();
+  const field = document.createElement("input");
+  document.body.appendChild(field);
+  fireEvent.click(ui.getByRole("button", { name: "Open quick actions" }));
+  field.focus();
+
+  fireEvent.keyDown(document, { key: "Escape" });
+
+  expect(ui.queryAllByRole("link").length).toBe(0);
+  expect(document.activeElement).toBe(field);
+  field.remove();
+});
+
+test("QuickActionsFab closes on a press outside it, not on one inside its menu", () => {
+  render(<QuickActionsFab />);
+  const ui = body();
+  fireEvent.click(ui.getByRole("button", { name: "Open quick actions" }));
+
+  fireEvent.mouseDown(ui.getByRole("link", { name: "Apply YAML" }));
+  expect(ui.getAllByRole("link").length).toBe(4);
+
+  fireEvent.mouseDown(document.body);
+  expect(ui.queryAllByRole("link").length).toBe(0);
+});

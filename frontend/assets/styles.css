@@ -170,6 +170,35 @@ body {
     inset -1px -1px 0 var(--glass-rim-dark);
 }
 
+/* A glass bar that hosts glass popovers (the top bar's menus). An element
+   with a backdrop-filter is the backdrop root of everything inside it, so a
+   .glass-elevated dropdown nested in a plain .glass-bar can only blur the bar
+   itself: the page below shows through it unblurred. The host paints the
+   bar's glass on a ::before layer instead, so the bar element has no
+   backdrop-filter and its popovers blur the page. Not for a bar that
+   scrolls: the absolute layer covers only its first screenful. */
+.glass-bar-host {
+  position: relative;
+  isolation: isolate;
+}
+
+.glass-bar-host::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  background: var(--glass-surface);
+  -webkit-backdrop-filter: blur(var(--glass-blur))
+    saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness));
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim-light),
+    inset -1px -1px 0 var(--glass-rim-dark);
+}
+
 /* Specular rim: bright top + soft top-left highlight + dark bottom-right
    edge = the "thick lens" illusion that separates liquid glass from flat
    frosting. box-shadow follows each element's own border-radius. */
@@ -214,7 +243,8 @@ body {
   .glass-elevated {
     background: var(--bg-elevated);
   }
-  .glass-bar {
+  .glass-bar,
+  .glass-bar-host::before {
     background: var(--bg-surface);
   }
   .glass-scrim {
@@ -230,7 +260,8 @@ body {
     backdrop-filter: none;
     background: var(--bg-elevated);
   }
-  .glass-bar {
+  .glass-bar,
+  .glass-bar-host::before {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     background: var(--bg-surface);

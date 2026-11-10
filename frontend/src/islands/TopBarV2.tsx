@@ -61,7 +61,7 @@ export default function TopBarV2() {
 
   return (
     <header
-      className="glass-bar"
+      className="glass-bar-host"
       style={{
         height: "var(--topbar-height, 56px)",
         borderBottom: "1px solid var(--glass-border)",
