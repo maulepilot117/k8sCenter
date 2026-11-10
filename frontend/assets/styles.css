@@ -401,41 +401,6 @@ body {
   animation: page-enter-in 0.15s ease-out;
 }
 
-/* ── Gauge draw animation ── */
-@keyframes gauge-draw {
-  from {
-    stroke-dashoffset: var(--gauge-circumference);
-  }
-  to {
-    stroke-dashoffset: var(--gauge-offset);
-  }
-}
-
-/* ── Number count-up (used with @property) ── */
-@property --num {
-  syntax: "<integer>";
-  initial-value: 0;
-  inherits: false;
-}
-
-.count-up {
-  transition: --num 0.8s cubic-bezier(0.16, 1, 0.3, 1);
-  counter-reset: num var(--num);
-}
-.count-up::after {
-  content: counter(num);
-}
-
-/* ── Sparkline draw ── */
-@keyframes sparkline-draw {
-  from {
-    stroke-dashoffset: var(--line-length);
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
 /* ── Cross-document View Transitions (CSS-only, Chrome/Edge/Safari) ── */
 @view-transition {
   navigation: auto;

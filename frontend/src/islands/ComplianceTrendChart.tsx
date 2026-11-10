@@ -217,7 +217,7 @@ function MarkerGlyph({ kind }: { kind: MarkerKind }) {
     return (
       <circle
         r={4}
-        fill="var(--surface)"
+        fill="var(--bg-surface)"
         stroke="var(--warning)"
         strokeWidth={2}
       />

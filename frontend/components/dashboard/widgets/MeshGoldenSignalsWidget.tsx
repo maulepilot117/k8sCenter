@@ -201,7 +201,7 @@ function Quantile({ label, value }: { label: string; value: number | null }) {
   return (
     <span
       className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs"
-      style={{ backgroundColor: "var(--surface-subtle)" }}
+      style={{ backgroundColor: "var(--bg-elevated)" }}
     >
       <span className="text-text-muted">{label}</span>
       <span className="font-medium text-text-secondary">

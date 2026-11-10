@@ -533,7 +533,7 @@ const tableWrapStyle: CSSProperties = {
 
 const theadRowStyle: CSSProperties = {
   borderBottom: "1px solid var(--border-primary)",
-  background: "var(--surface)",
+  background: "var(--bg-surface)",
 };
 
 const tbodyRowStyle: CSSProperties = {
@@ -626,7 +626,7 @@ function renderGatewayClassesTable(items: GatewayClassSummary[]) {
               }}
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLTableRowElement).style.background =
-                  "color-mix(in srgb, var(--hover) 30%, transparent)";
+                  "color-mix(in srgb, var(--bg-hover) 30%, transparent)";
               }}
               onMouseLeave={(e) => {
                 (e.currentTarget as HTMLTableRowElement).style.background = "";
@@ -637,7 +637,7 @@ function renderGatewayClassesTable(items: GatewayClassSummary[]) {
                   href={getDetailHref("gatewayclasses", item)}
                   style={{
                     fontWeight: 500,
-                    color: "var(--brand)",
+                    color: "var(--accent)",
                     textDecoration: "none",
                   }}
                   onMouseEnter={(e) => {
@@ -709,7 +709,7 @@ function renderGatewaysTable(items: GatewaySummary[]) {
               }}
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLTableRowElement).style.background =
-                  "color-mix(in srgb, var(--hover) 30%, transparent)";
+                  "color-mix(in srgb, var(--bg-hover) 30%, transparent)";
               }}
               onMouseLeave={(e) => {
                 (e.currentTarget as HTMLTableRowElement).style.background = "";
@@ -720,7 +720,7 @@ function renderGatewaysTable(items: GatewaySummary[]) {
                   href={getDetailHref("gateways", item)}
                   style={{
                     fontWeight: 500,
-                    color: "var(--brand)",
+                    color: "var(--accent)",
                     textDecoration: "none",
                   }}
                   onMouseEnter={(e) => {
@@ -797,7 +797,7 @@ function renderHTTPRoutesTable(items: HTTPRouteSummary[]) {
               }}
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLTableRowElement).style.background =
-                  "color-mix(in srgb, var(--hover) 30%, transparent)";
+                  "color-mix(in srgb, var(--bg-hover) 30%, transparent)";
               }}
               onMouseLeave={(e) => {
                 (e.currentTarget as HTMLTableRowElement).style.background = "";
@@ -808,7 +808,7 @@ function renderHTTPRoutesTable(items: HTTPRouteSummary[]) {
                   href={getDetailHref("httproutes", item)}
                   style={{
                     fontWeight: 500,
-                    color: "var(--brand)",
+                    color: "var(--accent)",
                     textDecoration: "none",
                   }}
                   onMouseEnter={(e) => {
@@ -889,7 +889,7 @@ function renderRoutesTable(kind: GatewayResourceKind, items: RouteSummary[]) {
               }}
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLTableRowElement).style.background =
-                  "color-mix(in srgb, var(--hover) 30%, transparent)";
+                  "color-mix(in srgb, var(--bg-hover) 30%, transparent)";
               }}
               onMouseLeave={(e) => {
                 (e.currentTarget as HTMLTableRowElement).style.background = "";
@@ -900,7 +900,7 @@ function renderRoutesTable(kind: GatewayResourceKind, items: RouteSummary[]) {
                   href={getDetailHref(kind, item)}
                   style={{
                     fontWeight: 500,
-                    color: "var(--brand)",
+                    color: "var(--accent)",
                     textDecoration: "none",
                   }}
                   onMouseEnter={(e) => {

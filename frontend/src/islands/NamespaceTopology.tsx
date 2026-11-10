@@ -95,9 +95,9 @@ interface NamespaceTopologyProps {
 }
 
 const HEALTH_COLORS: Record<TopoNode["health"], string> = {
-  healthy: "var(--status-success)",
-  degraded: "var(--status-warning)",
-  failing: "var(--status-error)",
+  healthy: "var(--success)",
+  degraded: "var(--warning)",
+  failing: "var(--error)",
   unknown: "var(--text-muted)",
 };
 
@@ -1032,11 +1032,11 @@ export default function NamespaceTopology({
                 style={{
                   backgroundColor:
                     selected.health === "healthy"
-                      ? "color-mix(in srgb, var(--status-success) 15%, transparent)"
+                      ? "color-mix(in srgb, var(--success) 15%, transparent)"
                       : selected.health === "degraded"
-                        ? "color-mix(in srgb, var(--status-warning) 15%, transparent)"
+                        ? "color-mix(in srgb, var(--warning) 15%, transparent)"
                         : selected.health === "failing"
-                          ? "color-mix(in srgb, var(--status-error) 15%, transparent)"
+                          ? "color-mix(in srgb, var(--error) 15%, transparent)"
                           : "var(--bg-elevated)",
                   color: HEALTH_COLORS[selected.health],
                 }}

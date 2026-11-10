@@ -91,7 +91,7 @@ function MtlsCoverage() {
               does not read as one that is mostly unencrypted. */}
           <div
             className="mb-1 h-2 w-full overflow-hidden rounded-full"
-            style={{ backgroundColor: "var(--surface-subtle)" }}
+            style={{ backgroundColor: "var(--bg-elevated)" }}
             data-testid="mtls-coverage-bar"
           >
             <div
