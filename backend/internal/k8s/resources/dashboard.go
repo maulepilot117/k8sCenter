@@ -604,7 +604,7 @@ func dashboardTrendRange(rangeKey string) (window, step time.Duration) {
 // not eat into that endpoint's 1-second Prometheus budget.
 //
 // Local cluster: when monitoring is unavailable (h.Trends == nil) or a query
-// fails, the response carries empty series and HTTP 200 — the dashboard
+// fails, the response carries null series and HTTP 200 — the dashboard
 // degrades to no sparklines rather than erroring.
 //
 // Remote cluster: the series come from the cluster's own Prometheus through

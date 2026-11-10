@@ -165,6 +165,29 @@ test("a null in the middle of a series keeps the samples before it on their step
   expect(tip.textContent).toContain("80%");
 });
 
+test("a gap is drawn over the same way whether one series or both lost the step", async () => {
+  // Step 1 is a gap in CPU only, so its row still carries memory. Step 3 is a
+  // gap in both, so it has no row at all. Both must look alike: each area is
+  // one unbroken line over its finite samples, as the sparklines draw them.
+  const { container } = render(
+    <ResourceAreaChart
+      cpuData={[10, null, 30, null, 50]}
+      memData={[60, 70, 80, null, 100]}
+      window="1h0m0s"
+      step="2m0s"
+      end={END}
+    />,
+  );
+  await settle();
+  const curves = [...container.querySelectorAll(".recharts-area-curve")];
+  expect(curves).toHaveLength(2);
+  for (const curve of curves) {
+    const d = curve.getAttribute("d") ?? "";
+    // Recharts starts a new subpath with M at every break in a line.
+    expect(d.match(/M/g)).toHaveLength(1);
+  }
+});
+
 test("a missing memory series draws CPU alone", async () => {
   const { container } = render(
     <ResourceAreaChart

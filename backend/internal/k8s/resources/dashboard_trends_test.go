@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,6 +108,50 @@ func TestHandleDashboardTrends_HappyPath(t *testing.T) {
 	}
 	if len(got.NetworkTx) != 3 || got.NetworkTx[2] != 110 {
 		t.Fatalf("happy path: want networkTx [80 95 110], got %v", got.NetworkTx)
+	}
+}
+
+// TestHandleDashboardTrends_GapsAndEndReachTheWire checks the grid contract
+// through the handler, not only at json.Marshal: a gap is a JSON null that
+// keeps its index, a NaN cannot break the encode after the 200 header is sent,
+// and end is on the wire when a query ran and absent when none did.
+func TestHandleDashboardTrends_GapsAndEndReachTheWire(t *testing.T) {
+	end := time.Date(2026, 11, 10, 14, 0, 0, 0, time.UTC)
+	h, _ := testHandler(t)
+	h.Trends = stubTrendProvider{result: DashboardTrends{
+		CPU:    TrendSeries{10, math.NaN(), 30},
+		Memory: TrendSeries{math.Inf(1), 21, 22},
+		Window: "1h0m0s",
+		Step:   "2m0s",
+		End:    end,
+	}}
+	rr := httptest.NewRecorder()
+
+	h.HandleDashboardTrends(rr, requestWithUser("GET", "/api/v1/cluster/dashboard-trends", ""))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !json.Valid(rr.Body.Bytes()) {
+		t.Fatalf("body is not valid JSON: %s", body)
+	}
+	for _, want := range []string{
+		`"cpu":[10,null,30]`,
+		`"memory":[null,21,22]`,
+		`"nodes":null`,
+		`"end":"2026-11-10T14:00:00Z"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %s: %s", want, body)
+		}
+	}
+
+	nilRR := httptest.NewRecorder()
+	h.Trends = nil
+	h.HandleDashboardTrends(nilRR, requestWithUser("GET", "/api/v1/cluster/dashboard-trends", ""))
+	if strings.Contains(nilRR.Body.String(), `"end"`) {
+		t.Fatalf("no query ran, so end must be omitted: %s", nilRR.Body.String())
 	}
 }
 
