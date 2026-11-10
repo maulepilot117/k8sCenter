@@ -1,7 +1,8 @@
 /** @jsxImportSource react */
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
+import { disconnectWS } from "@/src/lib/ws.ts";
 import {
   act,
   body,
@@ -37,6 +38,12 @@ class FakeWebSocket {
 }
 
 globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+
+// Another test file may have left the shared ws store holding a socket it
+// never closed; start each test from no socket so the banner opens a fake one.
+beforeEach(() => {
+  disconnectWS();
+});
 
 afterEach(() => {
   globalThis.fetch = bunFetch;

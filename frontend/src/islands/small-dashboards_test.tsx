@@ -8,6 +8,7 @@ import {
   resourceCounts,
   resourceCountsTruncated,
 } from "@/src/lib/resource-counts.ts";
+import { disconnectWS } from "@/src/lib/ws.ts";
 import {
   act,
   body,
@@ -64,6 +65,9 @@ beforeEach(() => {
   }) as unknown as typeof globalThis.fetch;
 });
 afterEach(() => {
+  // Drop the quiet socket from the shared ws store; left in CONNECTING, it
+  // stops a later test file's subscription from opening its own socket.
+  disconnectWS();
   globalThis.fetch = bunFetch;
   globalThis.WebSocket = bunWebSocket;
   setAccessToken(null);
