@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface QuickAction {
@@ -34,6 +34,28 @@ const ACTIONS: QuickAction[] = [
 export default function QuickActionsFab() {
   const [expanded, setExpanded] = useState(false);
   const isClient = useIsClient();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  // Close like the other chrome menus do: on a press outside the FAB, or on
+  // Escape, which also hands focus back to the button that opened the menu.
+  useEffect(() => {
+    if (!expanded) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setExpanded(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setExpanded(false);
+      buttonRef.current?.focus();
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [expanded]);
 
   if (!isClient) return null;
 
@@ -47,6 +69,7 @@ export default function QuickActionsFab() {
 
   return (
     <div
+      ref={rootRef}
       style={{
         position: "fixed",
         bottom: "24px",
@@ -60,6 +83,7 @@ export default function QuickActionsFab() {
     >
       {/* Main FAB button */}
       <button
+        ref={buttonRef}
         type="button"
         onClick={toggle}
         style={{
