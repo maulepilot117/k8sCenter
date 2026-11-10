@@ -94,9 +94,14 @@ export function MetricTile({
           </span>
         )}
       </div>
-      {sparkData && sparkData.length >= 2 && (
+      {sparkData && sparkData.length >= 1 && (
         <div style={{ marginTop: "10px" }}>
-          <SparklineChart data={sparkData} color={sparkColor} height={30} />
+          <SparklineChart
+            data={sparkData}
+            color={sparkColor}
+            name={label}
+            height={30}
+          />
         </div>
       )}
     </WidgetShell>
