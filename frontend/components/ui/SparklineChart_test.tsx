@@ -66,7 +66,7 @@ test("the server renders the frame box and no svg", () => {
   expect(html).not.toContain("<svg");
 });
 
-test("the network tile names its receive and transmit rows", async () => {
+test("the network tile names its receive and transmit rows and draws them in two colours", async () => {
   const { getByRole } = render(
     <NetworkTile
       rxP95={4}
@@ -77,8 +77,12 @@ test("the network tile names its receive and transmit rows", async () => {
     />,
   );
   await settle();
-  getByRole("img", { name: "Network receive, latest 3" });
-  getByRole("img", { name: "Network transmit, latest 5" });
+  const stroke = (row: HTMLElement) =>
+    row.querySelector(".recharts-area-curve")?.getAttribute("stroke");
+  const rx = getByRole("img", { name: "Network receive, latest 3" });
+  const tx = getByRole("img", { name: "Network transmit, latest 5" });
+  expect(stroke(rx)).toBe("var(--accent)");
+  expect(stroke(tx)).toBe("var(--accent-secondary)");
 });
 
 test("a metric tile names its sparkline for the tile label, even with one sample", async () => {
