@@ -1,4 +1,5 @@
 /** @jsxImportSource react */
+import { useMemo } from "react";
 import { ResourceAreaChart } from "@/components/charts/ResourceAreaChart.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
@@ -38,7 +39,7 @@ function LegendKey({ color, label }: { color: string; label: string }) {
 }
 
 /**
- * CPU and memory utilisation over the selected window, as a stacked area
+ * CPU and memory utilisation over the selected window, as an area
  * chart with a two-key legend in the shell's action slot.
  *
  * Lifted from the pre-registry DashboardV2 card. The positional flex wrapper
@@ -46,6 +47,10 @@ function LegendKey({ color, label }: { color: string; label: string }) {
  */
 function ResourceUtilization() {
   const t = useSourceState<DashboardTrends>("dashboard-trends").data;
+  // The series end at the moment they were fetched, so the time axis is
+  // anchored to when this payload arrived and moves only when new data does.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-anchor on each new payload
+  const end = useMemo(() => Date.now(), [t]);
 
   return (
     <WidgetShell
@@ -57,7 +62,13 @@ function ResourceUtilization() {
         </div>
       }
     >
-      <ResourceAreaChart cpuData={t?.cpu ?? null} memData={t?.memory ?? null} />
+      <ResourceAreaChart
+        cpuData={t?.cpu ?? null}
+        memData={t?.memory ?? null}
+        window={t?.window}
+        step={t?.step}
+        end={end}
+      />
     </WidgetShell>
   );
 }

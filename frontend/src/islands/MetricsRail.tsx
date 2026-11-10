@@ -305,15 +305,16 @@ function KpiTile({ kpi }: { kpi: KpiState }) {
           kpi.value
         )}
       </div>
-      {kpi.series.length > 1 && (
+      {kpi.series.length > 0 && (
         <Sparkline
           data={kpi.series}
+          name={kpi.label}
           height={32}
           stroke="var(--accent)"
           fill="color-mix(in srgb, var(--accent) 14%, transparent)"
         />
       )}
-      {kpi.series.length <= 1 && !kpi.loading && (
+      {kpi.series.length === 0 && !kpi.loading && (
         <div
           style={{
             height: "32px",
