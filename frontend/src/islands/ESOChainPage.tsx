@@ -1,13 +1,16 @@
 /** @jsxImportSource react */
 import { useState } from "react";
 import NamespaceTopology from "@/src/islands/NamespaceTopology.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 
-export default function ESOChainPage() {
-  const initialNamespace = IS_BROWSER
-    ? (new URLSearchParams(globalThis.location.search).get("namespace") ?? "")
-    : "";
+interface ESOChainPageProps {
+  /** The page's `?namespace=` parameter, read by the server. */
+  initialNamespace?: string;
+}
+
+export default function ESOChainPage({
+  initialNamespace = "",
+}: ESOChainPageProps) {
   const [namespace, setNamespace] = useState(initialNamespace);
   const isClient = useIsClient();
 

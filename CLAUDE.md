@@ -112,7 +112,7 @@ k8sCenter is a web-based Kubernetes management platform that delivers vCenter-le
 | Layer | Technology |
 |---|---|
 | Backend API | Go 1.27, chi router, client-go v0.35.2 |
-| Frontend | Bun 1.4.x, Astro 7.x (Preact islands), Tailwind v4, Monaco Editor |
+| Frontend | Bun 1.4.x, Astro 7.x (React 19 islands via `@astrojs/react`), Tailwind v4, Monaco Editor |
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack subchart) |
 | Auth | JWT (HMAC-SHA256) + OIDC / LDAP / local (Argon2id, PostgreSQL-backed) |
@@ -281,7 +281,7 @@ make helm-lint / helm-template                    # Helm validation
 make check-dashboards                             # Verify Grafana JSON sync
 ```
 
-**Astro 7.x config notes:** `output: "server"` with `@astrojs/node` in **middleware mode** — `frontend/server/prod.ts` owns the socket so it can also own WebSocket upgrades and security headers (KTD2/KTD3). Dev serves on 5173, not Astro's 4321 default. No `tailwind.config.ts` (Tailwind v4 is CSS-first). `@codemirror/*` and `preact`/`@preact/signals-core` must stay in `vite.resolve.dedupe` — two resolved copies break signal and `Facet` identity checks.
+**Astro 7.x config notes:** `output: "server"` with `@astrojs/node` in **middleware mode** — `frontend/server/prod.ts` owns the socket so it can also own WebSocket upgrades and security headers (KTD2/KTD3). Dev serves on 5173, not Astro's 4321 default. No `tailwind.config.ts` (Tailwind v4 is CSS-first). `react`, `react-dom`, `@preact/signals-core` and `@codemirror/*` must stay in `vite.resolve.dedupe` — two resolved copies break hooks, signal subscriptions and `Facet` identity checks.
 
 ---
 
@@ -401,7 +401,7 @@ When compacting this conversation, always preserve:
 - The GitNexus "Always Do" / "Never Do" rules (impact before editing, detect_changes before committing, UNKNOWN risk is unresolved)
 - The current task's modified file paths and any in-flight test results / verification command output
 - User preferences expressed in this session (e.g., scope confirmations, explicit "skip X" decisions)
-- **`frontend/server/placeholder-root-parity-baseline.json` is a record, not an escape hatch.** Its entries are divergences inherited verbatim from the pre-migration Fresh tree. Adding an entry to make `bun run check` pass silences the only detector this defect class has. The fix is to hoist the root's attributes into one constant both returns use.
+- **A render never asks whether it runs in a browser.** `frontend/server/check-no-render-is-browser.ts` fails when a component or hook render reads `IS_BROWSER`, `hasDom()` or `typeof window`, because React then discards the server HTML on hydration. A lazy `useState`/`useReducer` initialiser counts as render. Gate the markup on `useIsClient()`, move the check into an effect or handler, or pass a URL parameter in as a prop from the page (`Astro.url.searchParams`); a create form starts on `DEFAULT_NAMESPACE` and takes the picker's namespace through `useAdoptSelectedNamespace`. The guard has no allow-list; fix the render rather than exempting it. It reads one file at a time, so it does not see a browser read inside an imported function or a rendered module-scope store; the e2e page-error fixture catches the text mismatches those cause, and nothing catches an attribute-only mismatch in a production build.
 
 Drop freely: historical Build Progress phase descriptions (1–13 are reference, not active state); Roadmap items already checked off; verbose tool-result transcripts that have been summarised.
 

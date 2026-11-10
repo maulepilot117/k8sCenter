@@ -11,7 +11,10 @@ import {
 import type { LabelEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
@@ -76,10 +79,9 @@ function newRule(): NPRuleState {
 }
 
 function initialState(): NetworkPolicyFormState {
-  const ns = initialNamespace();
   return {
     name: "",
-    namespace: ns,
+    namespace: DEFAULT_NAMESPACE,
     podSelectorLabels: [],
     policyTypes: ["Ingress"],
     ingressRules: [],
@@ -135,6 +137,9 @@ export default function NetworkPolicyWizard({
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<NetworkPolicyFormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
   const formRef = useLatest(form);
@@ -1248,16 +1253,18 @@ function PeerEditor({
       >
         <select
           value={peer.type}
-          onChange={(e) =>
+          onChange={(e) => {
+            // Read before the updater runs: React clears currentTarget once
+            // the handler returns, and updaters run later.
+            const type = e.currentTarget.value as NPPeerState["type"];
             onUpdate((p) => ({
               ...p,
-              type: (e.currentTarget as HTMLSelectElement)
-                .value as NPPeerState["type"],
+              type,
               labels: [newLabelEntry()],
               cidr: "",
               except: [],
-            }))
-          }
+            }));
+          }}
           className={WIZARD_INPUT_CLASS}
           style={{ width: "180px" }}
         >
@@ -1400,12 +1407,10 @@ function PeerEditor({
             <input
               type="text"
               value={peer.cidr}
-              onChange={(e) =>
-                onUpdate((p) => ({
-                  ...p,
-                  cidr: e.currentTarget.value,
-                }))
-              }
+              onChange={(e) => {
+                const cidr = e.currentTarget.value;
+                onUpdate((p) => ({ ...p, cidr }));
+              }}
               placeholder="10.0.0.0/8"
               className={WIZARD_INPUT_CLASS}
             />

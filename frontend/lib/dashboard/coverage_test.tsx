@@ -1,6 +1,6 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { render } from "preact-render-to-string";
+import { renderToString } from "react-dom/server";
 import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
 // Registers every widget, so the drift guard below sees the real catalog.
 import "@/components/dashboard/widgets/index.ts";
@@ -23,6 +23,11 @@ import type { SourceState } from "./data.ts";
 import { DASHBOARD_FETCHERS, dashboardData } from "./data.ts";
 import { allWidgets, getWidget } from "./registry.ts";
 import { sourcesOf } from "./widget-state.ts";
+
+/** React server output separates adjacent text nodes with comment markers; drop them so assertions read the visible text. */
+function render(node: Parameters<typeof renderToString>[0]): string {
+  return renderToString(node).replaceAll("<!-- -->", "");
+}
 
 /**
  * The summary a remote cluster answers with: real node and pod counts, and
@@ -839,7 +844,7 @@ describe("widget bodies", () => {
     expect(html).toContain(">—<");
     expect(html).not.toContain(">0<");
     // Neutral, not amber: nothing was left unread, there was nothing to read.
-    expect(html).toContain('color:var(--text-muted);">—<');
+    expect(html).toContain('color:var(--text-muted)">—<');
   });
 
   test("a skipped pods signal still shows the failed-pod count it read", () => {

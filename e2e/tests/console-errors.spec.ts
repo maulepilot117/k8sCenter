@@ -28,10 +28,9 @@ const throwInEffect = `
   setTimeout(() => { throw new Error("effect boom"); }, 0);
 `;
 
-const iconRailMismatch =
-  'Expected a DOM node of type "div" but found "" as available DOM-node(s), ' +
-  "this is caused by the SSR'd HTML containing different DOM-nodes compared " +
-  "to the hydrated one. in div (at src/islands/IconRail.tsx:210) in IconRail";
+const hydrationMismatch =
+  "Uncaught Error: Hydration failed because the server rendered HTML didn't " +
+  "match the client. As a result this tree will be regenerated on the client.";
 
 test("an error thrown in an effect is collected with its text", async ({
   page,
@@ -68,22 +67,17 @@ test("a page with no errors passes", async ({ page, pageErrors }) => {
   expect(pageErrors.entries).toEqual([]);
 });
 
-test("a known hydration warning passes and an unknown one does not", async ({
+test("a React hydration error is collected as unexpected", async ({
   page,
   pageErrors,
 }) => {
-  await serve(
-    page,
-    `console.error(${JSON.stringify(iconRailMismatch)});
-     console.error(${JSON.stringify(iconRailMismatch.replace(/IconRail/g, "NewIsland"))});`,
-  );
+  await serve(page, `console.error(${JSON.stringify(hydrationMismatch)});`);
 
-  expect(pageErrors.entries).toHaveLength(2);
   const unexpected = pageErrors.unexpected();
   expect(unexpected).toHaveLength(1);
-  expect(unexpected[0]?.text).toContain("in NewIsland");
+  expect(unexpected[0]?.text).toContain("Hydration failed");
 
-  pageErrors.clear();
+  pageErrors.clear(); // collected on purpose; let teardown pass
 });
 
 test.describe("a spec that provokes an error on purpose", () => {

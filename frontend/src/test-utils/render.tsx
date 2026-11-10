@@ -22,24 +22,53 @@
  *   Library's `screen`: `screen` binds to the document that existed when the
  *   library first loaded, which may be another file's or none.
  *
- * Renders through @testing-library/preact while the app runs on Preact
- * (its query API matches @testing-library/react), so a converted component
- * and the unconverted components it renders run on one runtime, as in the
- * browser. When the real React runtime is installed, only this file's
- * imports change.
+ * Renders through @testing-library/react on the same React runtime the
+ * browser uses.
  */
 import { afterAll, afterEach, mock } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { act, cleanup, within } from "@testing-library/preact";
+import { act, cleanup, within } from "@testing-library/react";
+import * as React from "react";
 
 export {
   act,
   fireEvent,
   render,
   waitFor,
-} from "@testing-library/preact";
+} from "@testing-library/react";
 
 const IS_BROWSER_MODULE = "@/src/lib/is-browser.ts";
+
+/**
+ * React's shared internals, for the one field the act check reads. React
+ * sets `actQueue` while an act() scope is open and parks every update made
+ * outside act in it until the scope closes.
+ */
+const reactInternals = (
+  React as unknown as {
+    __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE: {
+      actQueue: unknown[] | null;
+    };
+  }
+).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+
+/**
+ * Fails a test that ends with an act() scope still open: an
+ * `act(async ...)` it did not await, or one whose callback never settles.
+ * An open scope cannot be closed from outside React. It swallows every later
+ * update, in this file and in every file after it in the same process, so
+ * components stop rendering in tests far from the cause. Failing here names
+ * the test that caused it; tests after it may fail too until it is fixed.
+ */
+function failOnOpenActScope(): void {
+  if (reactInternals.actQueue === null) return;
+  throw new Error(
+    "This test left a React act() scope open: await every act(async ...) " +
+      "(and every helper that returns one), and make sure its callback " +
+      "settles. Until it is fixed, later tests in this run stop rendering " +
+      "updates and fail too.",
+  );
+}
 
 export interface DomOptions {
   /** What IS_BROWSER reads as in this file. Default false, as on the server. */
@@ -51,9 +80,16 @@ export function setupDom({ browser = false }: DomOptions = {}): void {
   if (registeredHere) GlobalRegistrator.register({ url: "http://localhost/" });
   setBrowser(browser);
 
-  afterEach(() => cleanup());
-  afterAll(() => {
+  afterEach(() => {
     cleanup();
+    failOnOpenActScope();
+  });
+  afterAll(async () => {
+    cleanup();
+    // React's scheduler may still hold a render task queued by an update made
+    // outside act. It reads `window.event` as soon as it runs, so let it run
+    // while this file's document still exists.
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
     setBrowser(false);
     if (registeredHere) GlobalRegistrator.unregister();
   });

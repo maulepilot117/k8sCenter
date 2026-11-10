@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The Cilium config editor reads a cluster's cilium-config and writes one key
@@ -118,10 +118,7 @@ async function editAndSave(root: HTMLElement, value: string) {
   ) as HTMLElement;
   act(() => (buttons(row, "Edit")[0] as HTMLButtonElement).click());
   const input = root.querySelector("input") as HTMLInputElement;
-  act(() => {
-    input.value = value;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  fireEvent.input(input, { target: { value } });
   act(() => (buttons(root, "Save")[0] as HTMLButtonElement).click());
   await settle();
 }
@@ -232,10 +229,7 @@ test("a second Enter while a save is in flight sends no second PUT", async () =>
   ) as HTMLElement;
   act(() => (buttons(row, "Edit")[0] as HTMLButtonElement).click());
   const input = root.querySelector("input") as HTMLInputElement;
-  act(() => {
-    input.value = "true";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  fireEvent.input(input, { target: { value: "true" } });
   const enter = () => {
     input.dispatchEvent(
       new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),

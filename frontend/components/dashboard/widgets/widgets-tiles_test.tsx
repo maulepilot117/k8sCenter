@@ -7,9 +7,8 @@ setupDom({ browser: true });
 const { dashboardData } = await import("@/lib/dashboard/data.ts");
 const { getWidget } = await import("@/lib/dashboard/registry.ts");
 const { selectedCluster } = await import("@/src/lib/cluster.ts");
-// Single widget files rather than the index: the index pulls in modules that
-// load @preact/signals, whose component tracking would mask a widget that
-// reads a source without subscribing.
+// Single widget files rather than the index, so the test loads just the
+// widgets it checks.
 for (const file of [
   "CpuTileWidget",
   "MemoryTileWidget",

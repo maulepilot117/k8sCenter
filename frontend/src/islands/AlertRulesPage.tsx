@@ -7,6 +7,7 @@ import GlassCard from "@/components/ui/GlassCard.tsx";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface RuleSummary {
@@ -60,6 +61,9 @@ export default function AlertRulesPage() {
   const [editorNamespace, setEditorNamespace] = useState("default");
   const [saving, setSaving] = useState(false);
   const selected = useSignalValue(selectedCluster);
+  // The selection is restored from localStorage, which the server cannot
+  // read, so the remote-cluster notice waits for hydration.
+  const isClient = useIsClient();
 
   const fetchRules = useCallback(() => {
     setLoading(true);
@@ -212,9 +216,7 @@ export default function AlertRulesPage() {
           <textarea
             value={editorContent}
             onChange={(e) => setEditorContent(e.currentTarget.value)}
-            // Preact's JSX types, in force until the runtime switch, only know
-            // the lowercase name; rename to spellCheck when React's arrive.
-            spellcheck={false}
+            spellCheck={false}
             style={{
               width: "100%",
               height: "384px",
@@ -256,7 +258,7 @@ export default function AlertRulesPage() {
           the firing and history feeds always read the local Alertmanager
           (R-8 KTD13). Say so, or a quiet local feed reads as remote rules
           that are not firing. */}
-      {selected !== LOCAL_CLUSTER_ID && (
+      {isClient && selected !== LOCAL_CLUSTER_ID && (
         <Alert variant="info">
           These are the selected remote cluster's alert rules. Whether they fire
           depends on that cluster running prometheus-operator; the firing alerts

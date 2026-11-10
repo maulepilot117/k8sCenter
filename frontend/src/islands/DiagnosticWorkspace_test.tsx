@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The diagnostics API refuses a remote cluster selection with 501
@@ -379,10 +379,7 @@ test("the namespace field follows a top-bar change until the user types one", as
     });
     expect(field().value).toBe("team-c");
 
-    act(() => {
-      field().value = "mine";
-      field().dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    fireEvent.input(field(), { target: { value: "mine" } });
     act(() => {
       selectedNamespace.value = "team-d";
     });

@@ -43,7 +43,7 @@ export default function Gauge({
           r={r}
           fill="none"
           stroke={track}
-          stroke-width={thickness}
+          strokeWidth={thickness}
         />
         <circle
           cx={cx}
@@ -51,10 +51,10 @@ export default function Gauge({
           r={r}
           fill="none"
           stroke={color}
-          stroke-width={thickness}
-          stroke-linecap="round"
-          stroke-dasharray={circ.toFixed(1)}
-          stroke-dashoffset={offset.toFixed(1)}
+          strokeWidth={thickness}
+          strokeLinecap="round"
+          strokeDasharray={circ.toFixed(1)}
+          strokeDashoffset={offset.toFixed(1)}
           transform={`rotate(-90 ${cx} ${cx})`}
         />
       </svg>

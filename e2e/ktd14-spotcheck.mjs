@@ -14,10 +14,10 @@
  * It is kept rather than deleted for two reasons. --control mode does not need
  * the Fresh tree at all: it captures one origin against itself and reports the
  * noise floor, which is what tells you whether a diff percentage means
- * anything. And the class of defect it found is now covered going forward by
- * frontend/server/check-placeholder-root-parity.ts, which was written from
- * this harness's findings -- so this file is the provenance of that guard's
- * baseline.
+ * anything. And it is the provenance of check-placeholder-root-parity.ts,
+ * the guard written from its findings. That guard was deleted when the
+ * frontend moved to React, which re-renders a hydrated island's root and so
+ * cannot strand its attributes.
  *
  * Plan: docs/plans/2026-09-14-0850-refactor-bun-astro-migration-plan.md
  *   U12 step 1b -- "Run the visual spot-check across the 49 navigation-reachable

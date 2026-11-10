@@ -1,7 +1,5 @@
 /** @jsxImportSource react */
 import { expect, mock, test } from "bun:test";
-// Loads preact/compat so `onChange` on text inputs listens per keystroke.
-import "react";
 import { body, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });

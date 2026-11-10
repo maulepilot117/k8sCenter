@@ -6,32 +6,10 @@
       // Recreates deno.json's `"@/": "./"` import-map entry (U3 approach
       // step 2) now that Astro/Bun resolve `@/` from real dependency
       // resolution rather than an import map.
-      "@/*": ["./*"],
-      // React-to-Preact bridge. Source is moving to React APIs file by file
-      // while the app still runs on Preact. These entries make `astro check`
-      // and `bun test` resolve every `react` import to preact/compat; the
-      // matching `vite.resolve.alias` in astro.config.mjs does the same for
-      // `astro dev` and `bun run build`. One runtime for every tool means a
-      // converted file can render an unconverted one and the reverse. All of
-      // this is removed when the real React runtime is installed.
-      "react": ["./node_modules/preact/compat"],
-      "react-dom": ["./node_modules/preact/compat"],
-      "react-dom/client": ["./node_modules/preact/compat/client"],
-      "react-dom/server": ["./node_modules/preact/compat/server"],
-      "react-dom/test-utils": ["./node_modules/preact/test-utils"],
-      // The JSX runtime goes through compat so that a file on React APIs
-      // (marked `@jsxImportSource react`) loads compat itself: compat turns
-      // React's prop names (strokeWidth, htmlFor) into DOM attributes, and
-      // only for vnodes created after it has loaded.
-      "react/jsx-runtime": ["./node_modules/preact/compat/jsx-runtime"],
-      "react/jsx-dev-runtime": ["./node_modules/preact/compat/jsx-dev-runtime"]
-      // U4's `fresh/runtime` shim entry lived here until U12. Its only
-      // consumers were the Fresh tree and the six modules that shipped with
-      // it; `lib/cluster.ts` is now a one-line re-export of its src twin and
-      // imports nothing.
+      "@/*": ["./*"]
     },
     "jsx": "preserve",
-    "jsxImportSource": "preact",
+    "jsxImportSource": "react",
     // U5: without an explicit "types" array, `astro check` doesn't pick up
     // @types/bun's ambient "bun:test" module declaration on its own (it
     // resolves fine for plain `tsc`/editors, just not through astro

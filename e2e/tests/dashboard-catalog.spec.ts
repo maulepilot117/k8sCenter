@@ -331,11 +331,9 @@ test.describe("dashboard catalog", () => {
     await service.selectOption("checkout");
     await namespace.selectOption("staging");
     await expect(service).toHaveValue("");
-    // The whole list, read from each option's value property. Preact only
-    // writes an option's `value` attribute when it differs from the option's
-    // text, so an attribute selector like option[value="preview"] cannot see
-    // these options, and a zero count for "checkout" would pass for the same
-    // reason. An exact list proves "checkout" is gone and "preview" arrived.
+    // The whole list, read from each option's value property. A zero count
+    // for "checkout" alone would also pass if the list never loaded; an exact
+    // list proves "checkout" is gone and "preview" arrived.
     await expect
       .poll(() =>
         service.evaluate((el) =>

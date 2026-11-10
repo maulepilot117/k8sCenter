@@ -1,7 +1,9 @@
 ---
 import ViolationBrowser from "../../islands/ViolationBrowser.tsx";
 import ChromeLayout from "../../layouts/ChromeLayout.astro";
+
+const policy = Astro.url.searchParams.get("policy") ?? undefined;
 ---
 <ChromeLayout>
-  <ViolationBrowser client:load />
+  <ViolationBrowser client:load policy={policy} />
 </ChromeLayout>

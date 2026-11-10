@@ -293,12 +293,11 @@ describe("DashboardGrid keyboard", () => {
 });
 
 /**
- * Preact 11 reorders a keyed cell with `moveBefore`, which keeps focus on it,
- * and Chromium then scrolls every box above the focused cell to show it.
- * happy-dom has neither behaviour (its insertBefore drops focus and never
- * scrolls), so this stands in for the browser: a reorder of the grid's
- * children while focus is inside it keeps focus and resets the scroll of the
- * ancestors to 0.
+ * A reorder that keeps focus on the moved cell (as `moveBefore` does) makes
+ * Chromium scroll every box above the focused cell to show it. happy-dom has
+ * neither behaviour (its insertBefore drops focus and never scrolls), so this
+ * stands in for the worst case: a reorder of the grid's children while focus
+ * is inside it keeps focus and resets the scroll of the ancestors to 0.
  */
 function moveLikeChromium(scroller: HTMLElement) {
   const original = Node.prototype.insertBefore;
@@ -322,7 +321,7 @@ function moveLikeChromium(scroller: HTMLElement) {
   );
 }
 
-describe("DashboardGrid scroll hold (Preact 11 moveBefore focus fix)", () => {
+describe("DashboardGrid scroll hold (a reorder that keeps focus)", () => {
   test("a keyboard move leaves every ancestor's scroll offset where it was", () => {
     const { container, scroller } = mount([
       item("a", CPU, 0, 0, 2, 2),

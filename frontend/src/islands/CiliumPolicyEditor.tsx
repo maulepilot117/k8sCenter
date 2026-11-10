@@ -5,7 +5,7 @@ import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import type { LabelEntry } from "@/lib/wizard-types.ts";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import { selectedNamespaceOrDefault } from "@/src/lib/namespace.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface RuleRow {
@@ -26,10 +26,8 @@ interface PolicyWarning {
 }
 
 /**
- * The page root's classes, shared by the SSR placeholder and the hydrated root
- * so the two cannot diverge. Preact applies the server-rendered root's class
- * once at hydration and never re-diffs that node, so a class present on one
- * root and missing from the other sticks for the life of the page.
+ * The page root's classes, shared by the SSR placeholder and the client root
+ * so the page keeps its width when the editor replaces the placeholder.
  */
 const EDITOR_PAGE_CLASS = "p-6 max-w-5xl";
 
@@ -71,7 +69,7 @@ export default function CiliumPolicyEditor({
   const close = onClose ?? (() => globalThis.history.back());
   const isClient = useIsClient();
   const [name, setName] = useState("");
-  const [namespace, setNamespace] = useState(() => initialNamespace());
+  const [namespace, setNamespace] = useState(selectedNamespaceOrDefault);
   const [namespaceList] = useNamespaces();
   const [endpointSelector, setEndpointSelector] = useState<LabelEntry[]>([
     { key: "", value: "" },
@@ -96,13 +94,9 @@ export default function CiliumPolicyEditor({
   useDirtyGuard(Boolean(name || rules.length > 1));
 
   if (!isClient) {
-    // Must carry EDITOR_PAGE_CLASS, identical to the hydrated root below.
-    // This island is mounted with client:load from
-    // src/pages/networking/cilium-policies/new.astro, so it is server-rendered
-    // and hydrated in place — and Preact keeps the server-rendered root's
-    // class, only recursing into children. When this root omitted
-    // `max-w-5xl`, the form lost its width constraint for the life of the
-    // page with nothing in the build or the E2E suite to catch it.
+    // Server-rendered and shown until hydration, so it carries the same
+    // EDITOR_PAGE_CLASS as the client root below: the heading does not move
+    // when the form arrives.
     return (
       <div className={EDITOR_PAGE_CLASS}>
         <h1 className="text-2xl font-semibold text-text-primary">

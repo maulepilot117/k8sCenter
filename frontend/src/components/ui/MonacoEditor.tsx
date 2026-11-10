@@ -5,20 +5,17 @@ import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
 /**
- * The editor root's classes, shared by the SSR placeholder and the hydrated
- * root so the two cannot diverge.
+ * The editor root's classes, shared by the SSR placeholder, the editor and the
+ * failed-load fallback, so the box keeps its size and border across all three.
  *
  * `relative` is load-bearing, not cosmetic: Monaco positions .view-lines and
  * .monaco-scrollable-element absolutely, and they resolve against the nearest
  * positioned ancestor. Without it they escape the editor box entirely.
  *
- * `bg-base` is what the SSR placeholder painted before these two roots were
- * reconciled. It has to stay on the shared class: the placeholder has no
- * children, so between first paint and hydration the bordered box would
- * otherwise show whatever the parent container paints, then snap to base once
- * the loading overlay mounts. The hydrated root pays nothing for it — Monaco
- * paints over it, and the failed-load branch swaps in a textarea that carries
- * its own background.
+ * `bg-base` matters for the placeholder: it has no children, so between first
+ * paint and hydration the bordered box would otherwise show whatever the
+ * parent container paints, then snap to base once the loading overlay mounts.
+ * The editor pays nothing for it — Monaco paints over it.
  */
 const EDITOR_ROOT_CLASS =
   "relative bg-base rounded-md border border-border-primary";
@@ -213,25 +210,14 @@ export function MonacoEditor({
 
   // Fallback textarea for when Monaco fails to load
   if (!isClient) {
-    // Must carry EDITOR_ROOT_CLASS, identical to the hydrated root below.
-    // Hydration keeps the server-rendered root's class and only
-    // recurses into children, so a class that differs here sticks for the
-    // life of the page. This root previously said `bg-base` where the
-    // hydrated root says `relative`; losing `position: relative` left
-    // Monaco's absolutely-positioned .view-lines resolving against <body>,
-    // which drew the code at x=62 behind the secondary nav instead of
-    // inside the editor box.
+    // Shown until hydration, with the editor's EDITOR_ROOT_CLASS so the box
+    // does not change size or border when Monaco loads.
     return <div style={{ height }} className={EDITOR_ROOT_CLASS} />;
   }
 
   if (failed) {
-    // EDITOR_ROOT_CLASS here too, for the same reason as the placeholder
-    // above. This branch renders on a post-mount Monaco load failure, by
-    // which point the root is a live node whose props *do* get diffed -- so
-    // a bare `relative` would strip the border and background off the box
-    // at the exact moment it falls back to a plain textarea. Before
-    // hydration it is stranded behind the SSR class and renders nothing at
-    // all, which is why it read as harmless.
+    // EDITOR_ROOT_CLASS here too: on a Monaco load failure the box keeps its
+    // border and background as it falls back to a plain textarea.
     //
     // The textarea carries no chrome of its own. It fills a wrapper that
     // already draws the border, background and radius, so repeating them here
@@ -245,9 +231,7 @@ export function MonacoEditor({
           onChange={(e) => onChange?.(e.currentTarget.value)}
           readOnly={readOnly}
           className="w-full h-full bg-transparent text-text-primary font-mono text-sm p-4 resize-none focus:outline-none focus:ring-2 focus:ring-brand"
-          // Preact's JSX types, in force until the runtime switch, only know
-          // the lowercase name; rename to spellCheck when React's arrive.
-          spellcheck={false}
+          spellCheck={false}
         />
       </div>
     );

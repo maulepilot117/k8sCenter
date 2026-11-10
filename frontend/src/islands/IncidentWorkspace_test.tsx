@@ -10,7 +10,7 @@ import type {
   NoteView,
   WithheldEvidence,
 } from "@/lib/incident-types.ts";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 
@@ -506,10 +506,7 @@ test("a capture is pinned to the local cluster and its per-source results are sh
   const root = await mount(<IncidentWorkspace id={ID} />);
   const set = (id: string, v: string) => {
     const el = root.querySelector(`#${id}`) as HTMLInputElement;
-    act(() => {
-      el.value = v;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    fireEvent.input(el, { target: { value: v } });
   };
   set("capture-namespace", "shop");
   set("capture-name", "checkout");
@@ -544,10 +541,7 @@ const clickButton = async (root: HTMLElement, label: string) => {
 };
 function setField(root: HTMLElement, id: string, value: string) {
   const el = root.querySelector(`#${id}`) as HTMLInputElement;
-  act(() => {
-    el.value = value;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  fireEvent.input(el, { target: { value } });
 }
 function submitFormOf(root: HTMLElement, fieldId: string) {
   act(() => {
@@ -668,10 +662,7 @@ test("sharing: add with canAnnotate, self-grant no-op, remove, and the grant lim
   const annotate = [...root.querySelectorAll("label")]
     .find((l) => l.textContent?.trim() === "Can add notes")
     ?.querySelector("input") as HTMLInputElement;
-  act(() => {
-    annotate.checked = true;
-    annotate.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  fireEvent.click(annotate);
   submitFormOf(root, "grant-grantee");
   await flush();
   const add = calls.filter((c) => c.method === "POST")[0];

@@ -88,8 +88,7 @@ async function release(ns: string) {
 }
 
 function offered(): string[] {
-  // The property, not the attribute: Preact sets an option's value as a DOM
-  // property.
+  // Reads the DOM `value` property, which is what the rendered option offers.
   return [...document.querySelectorAll("option")]
     .map((o) => o.value)
     .filter((v) => v !== "");

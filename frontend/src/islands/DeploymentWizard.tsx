@@ -15,7 +15,10 @@ import {
 import type { ProbeState } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { initialNamespace } from "@/src/lib/namespace.ts";
+import {
+  DEFAULT_NAMESPACE,
+  useAdoptSelectedNamespace,
+} from "@/src/lib/namespace.ts";
 
 interface DeploymentFormState {
   name: string;
@@ -48,10 +51,9 @@ const STEPS: WizardStep[] = [
 ];
 
 function initialState(): DeploymentFormState {
-  const ns = initialNamespace();
   return {
     name: "",
-    namespace: ns,
+    namespace: DEFAULT_NAMESPACE,
     image: "",
     replicas: 1,
     labels: [{ key: "app", value: "" }],
@@ -75,6 +77,9 @@ export default function DeploymentWizard({
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<DeploymentFormState>(initialState);
+  useAdoptSelectedNamespace((namespace) =>
+    setForm((prev) => ({ ...prev, namespace })),
+  );
   const [namespaceList, setNamespaceList] = useNamespaces();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);

@@ -1,5 +1,5 @@
 import node from "@astrojs/node";
-import preact from "@astrojs/preact";
+import react from "@astrojs/react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "astro/config";
 import { bunServerDevPlugin } from "./server/dev-plugin.ts";
@@ -23,7 +23,7 @@ export default defineConfig({
   // the most visible thing there is.
   server: { port: 5173 },
   adapter: node({ mode: "middleware" }),
-  integrations: [preact()],
+  integrations: [react()],
   vite: {
     // U5: wires the same headers/malformed-guard/ws-proxy dispatch used by
     // the built server (frontend/server/prod.ts) into `astro dev`'s own
@@ -32,34 +32,12 @@ export default defineConfig({
     // rather than a second outer server.
     plugins: [tailwindcss(), bunServerDevPlugin()],
     resolve: {
-      // React-to-Preact bridge: every `react` import runs on preact/compat
-      // in `astro dev`, the build and the browser. tsconfig.json's `paths`
-      // carries the same map for `astro check` and `bun test`, so all four
-      // tools run one runtime; keep the two lists identical. Anchored
-      // patterns stop `react` from also rewriting `react-dom/...` or a
-      // package that merely starts with "react".
-      alias: [
-        { find: /^react$/, replacement: "preact/compat" },
-        { find: /^react-dom$/, replacement: "preact/compat" },
-        { find: /^react-dom\/client$/, replacement: "preact/compat/client" },
-        { find: /^react-dom\/server$/, replacement: "preact/compat/server" },
-        { find: /^react-dom\/test-utils$/, replacement: "preact/test-utils" },
-        // Through compat, so a file marked `@jsxImportSource react` loads
-        // compat before its first vnode; see tsconfig.json.
-        {
-          find: /^react\/jsx-runtime$/,
-          replacement: "preact/compat/jsx-runtime",
-        },
-        {
-          find: /^react\/jsx-dev-runtime$/,
-          replacement: "preact/compat/jsx-dev-runtime",
-        },
-      ],
-      // KTD5: the failure mode this guards against is not Astro but two
-      // resolved copies of these packages -- after which a computed()
-      // built from one copy can't see a signal() from the other. Preact
-      // islands share state via module-scope @preact/signals (KD nothing
-      // fresh-specific here), so both packages must dedupe to one copy.
+      // The failure mode this guards against is not Astro but two resolved
+      // copies of an identity-checked package. Two copies of React break
+      // hooks ("Invalid hook call") and context; two copies of
+      // @preact/signals-core mean a computed() built from one copy cannot see
+      // a signal() from the other, and islands share every store through
+      // module-scope signals. Each must dedupe to one copy.
       //
       // U14: the same failure mode, one dependency family over. Vite's dev
       // optimizer was pre-bundling @codemirror/state into two separate
@@ -75,7 +53,8 @@ export default defineConfig({
       // browser. Dedupe the whole @codemirror/* family so every package
       // shares one resolved copy of @codemirror/state's Facet identities.
       dedupe: [
-        "preact",
+        "react",
+        "react-dom",
         "@preact/signals-core",
         "@codemirror/state",
         "@codemirror/view",

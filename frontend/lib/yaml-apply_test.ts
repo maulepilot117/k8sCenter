@@ -155,9 +155,7 @@ function mount(
 ): Mounted {
   const renders: UseYamlApplyReturn[] = [];
   // Options travel as props, as they do from a real caller, and every
-  // rerender passes new props. With @preact/signals loaded (another test file
-  // may load it first), a component re-rendered with props equal to the last
-  // ones is skipped, so the new options would never reach the hook.
+  // rerender passes new props (`pass`), so each one is a distinct render.
   interface HarnessProps {
     options?: UseYamlApplyOptions;
     pass: number;
@@ -253,12 +251,17 @@ async function run(
   status: number,
   payload: unknown,
 ): Promise<Call> {
-  const done = handler();
-  await flush();
-  const call = calls[calls.length - 1];
-  call.respond(status, payload);
-  await done;
-  return call;
+  let call: Call | undefined;
+  // The handler's state updates must land inside act, or React defers the
+  // render and the assertions that follow read the previous one.
+  await act(async () => {
+    const done = handler();
+    await flush();
+    call = calls[calls.length - 1];
+    call.respond(status, payload);
+    await done;
+  });
+  return call as Call;
 }
 
 test("apply sends the pinned cluster after a switch", async () => {
@@ -283,7 +286,7 @@ test("apply is disabled with no pin", async () => {
   stubFetch();
   const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
 
-  await hook.handleApply();
+  await act(() => hook.handleApply());
 
   expect(calls.length).toBe(0);
   expect(hook.error).toContain("Validate");
@@ -313,15 +316,20 @@ test("a preview in flight while the restored generation resolves still pins", as
   stubFetch();
   const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
 
-  const done = hook.handleValidate();
-  await flush();
+  let done!: Promise<void>;
+  await act(async () => {
+    done = hook.handleValidate();
+    await flush();
+  });
   const inFlight = calls[0];
 
   act(() => switchCluster("cluster-a", "gen-a"));
   expect(inFlight.signal?.aborted).toBe(false);
 
-  inFlight.respond(200, preview("cluster-a", "gen-a"));
-  await done;
+  await act(async () => {
+    inFlight.respond(200, preview("cluster-a", "gen-a"));
+    await done;
+  });
 
   expect(hook.pin?.targetGeneration).toBe("gen-a");
   expect(hook.pinStale).toBe(false);
@@ -361,7 +369,7 @@ test("clearPin forces a fresh preview", async () => {
   expect(hook.pin).toBeNull();
   expect(hook.preview).toBeNull();
 
-  await hook.handleApply();
+  await act(() => hook.handleApply());
   expect(calls.length).toBe(1); // the validate only
 
   act(() => switchCluster("cluster-b", "gen-b"));
@@ -378,8 +386,11 @@ test("late validate response from a prior epoch is discarded", async () => {
   stubFetch();
   const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
 
-  const done = hook.handleValidate();
-  await flush();
+  let done!: Promise<void>;
+  await act(async () => {
+    done = hook.handleValidate();
+    await flush();
+  });
   const inFlight = calls[0];
   expect(inFlight.clusterHeader).toBe("cluster-a");
 
@@ -388,8 +399,10 @@ test("late validate response from a prior epoch is discarded", async () => {
   expect(inFlight.signal?.aborted).toBe(true);
 
   // ...and even a response that arrives anyway is not rendered or pinned.
-  inFlight.respond(200, preview("cluster-a", "gen-a"));
-  await done;
+  await act(async () => {
+    inFlight.respond(200, preview("cluster-a", "gen-a"));
+    await done;
+  });
 
   expect(hook.pin).toBeNull();
   expect(hook.preview).toBeNull();
@@ -589,12 +602,15 @@ function refusal(status: number, reason: string, extra?: unknown) {
 
 /** Runs a handler whose single request dies without an answer. */
 async function runDropped(handler: () => Promise<void>): Promise<Call> {
-  const done = handler();
-  await flush();
-  const call = calls[calls.length - 1];
-  call.fail();
-  await done;
-  return call;
+  let call: Call | undefined;
+  await act(async () => {
+    const done = handler();
+    await flush();
+    call = calls[calls.length - 1];
+    call.fail();
+    await done;
+  });
+  return call as Call;
 }
 
 function operationIdOf(call: Call): string | null {
@@ -728,12 +744,15 @@ test("tracked apply sends a UUIDv4 id and surfaces the tracking block", async ()
   stubFetch();
   const hook = mount("kind: ConfigMap", { tracked: true });
 
-  const done = hook.handleApply();
-  await flush();
-  const id = operationIdOf(calls[0]);
-  expect(id).toMatch(UUID_V4);
-  calls[0].respond(200, appliedTracked(id as string));
-  await done;
+  let id: string | null = null;
+  await act(async () => {
+    const done = hook.handleApply();
+    await flush();
+    id = operationIdOf(calls[0]);
+    expect(id).toMatch(UUID_V4);
+    calls[0].respond(200, appliedTracked(id as string));
+    await done;
+  });
 
   expect(hook.lastOperationId).toBe(id);
   expect(hook.result?.tracking?.operationId ?? null).toBe(id);

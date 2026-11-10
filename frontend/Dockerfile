@@ -30,7 +30,7 @@ RUN bun run build
 # Pre-bundle the SSR entry in place so its externals are inlined (KTD6).
 #
 # Without this the launcher cannot load it at all: the emitted entry.mjs
-# imports bare specifiers such as `preact` that resolve only against
+# imports bare specifiers such as `react-dom/server` that resolve only against
 # node_modules, and node_modules is exactly what must not reach the runtime
 # layer. `--target=bun` inlines them. Built to a temp path first because
 # `bun build` will not write over its own input.

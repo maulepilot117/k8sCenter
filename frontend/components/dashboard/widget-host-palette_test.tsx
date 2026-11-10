@@ -1,8 +1,5 @@
 /** @jsxImportSource react */
 import { afterEach, expect, test } from "bun:test";
-// Loads preact/compat, as ToastProvider does on every ChromeLayout page, so
-// `onChange` on a text input is a per-keystroke listener.
-import "react";
 import { dashboardData, type SourceState } from "@/lib/dashboard/data.ts";
 import type { WidgetDef } from "@/lib/dashboard/types.ts";
 import {

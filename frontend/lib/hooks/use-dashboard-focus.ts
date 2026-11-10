@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 /**
  * Where the keyboard goes when the dashboard editor changes shape.
@@ -157,6 +157,7 @@ export interface DashboardFocus {
  * hook stays the mover of focus and not a second owner of the editor's state.
  */
 export function useDashboardFocus(editing: boolean): DashboardFocus {
+  const isClient = useIsClient();
   const editButton = useRef<HTMLButtonElement | null>(null);
   const cancelButton = useRef<HTMLButtonElement | null>(null);
   const addButton = useRef<HTMLButtonElement | null>(null);
@@ -249,26 +250,24 @@ export function useDashboardFocus(editing: boolean): DashboardFocus {
     // story about it was wrong once already:
     //
     //   1. A re-mounted grid always renders wide. It corrects to one column
-    //      from its own layout effect, which measures the grid and writes its
-    //      `narrow` signal -- and which runs before this one, because Preact
-    //      flushes a child's layout effects before its parent's.
-    //   2. That write does not patch anything itself. Preact re-renders from a
-    //      signal write on the microtask queue, so at this moment the DOM is
-    //      still the wide one and the new cell still carries the tab stop that
-    //      one-column mode is about to take away -- which is exactly why the
-    //      `focus()` above succeeds and a check made right here cannot see the
-    //      problem.
-    //   3. When that re-render runs it patches the DOM synchronously, and
+    //      from its own layout effect, which measures the grid and sets its
+    //      `narrow` state -- and which runs before this one, because React
+    //      runs a child's layout effects before its parent's.
+    //   2. That update does not patch anything itself. React renders an
+    //      update set during a layout effect once every layout effect of the
+    //      commit has run, so at this moment the DOM is still the wide one and
+    //      the new cell still carries the tab stop that one-column mode is
+    //      about to take away -- which is exactly why the `focus()` above
+    //      succeeds and a check made right here cannot see the problem.
+    //   3. When that render commits it patches the DOM synchronously, and
     //      removing `tabindex` from the focused element blurs it to the body
     //      then and there -- measured in Chromium, the one engine the E2E gate
     //      runs, where `document.activeElement` is already the body on the
     //      statement after `removeAttribute("tabindex")`.
     //
-    // So a microtask queued here runs after the blur. Preact either flushes
-    // that re-render inside the flush already in progress -- synchronously,
-    // before any microtask at all -- or schedules its own microtask for it
-    // from step 1, which was queued before this one and therefore runs first.
-    // Both orderings land the patch ahead of this callback.
+    // So a microtask queued here runs after the blur: React renders and
+    // commits a layout-effect update synchronously, before the commit returns
+    // and so before any microtask runs.
     //
     // This was a `requestAnimationFrame` until R5. A frame also sees it, one
     // frame later, but it is the weaker thing to depend on: a backgrounded or
@@ -334,7 +333,7 @@ export function useDashboardFocus(editing: boolean): DashboardFocus {
   // it even though the widget still exists. Capture before the child patch;
   // restore afterwards only if that patch dropped focus to the document.
   const activePlacement =
-    IS_BROWSER &&
+    isClient &&
     editing &&
     document.activeElement instanceof HTMLElement &&
     document.activeElement.matches("[data-instance-id]")

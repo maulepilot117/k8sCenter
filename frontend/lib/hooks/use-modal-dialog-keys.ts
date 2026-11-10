@@ -1,4 +1,8 @@
-import { type RefObject, useRef } from "react";
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+  useRef,
+} from "react";
 
 /**
  * The keyboard contract every `aria-modal="true"` dialog in this app owes:
@@ -48,7 +52,7 @@ export interface ModalDialogKeys {
   /** Attach to the dialog panel -- the element carrying `role="dialog"`. */
   dialogRef: RefObject<HTMLDivElement | null>;
   /** Attach to that same element's `onKeyDown`. */
-  onKeyDown: (e: KeyboardEvent) => void;
+  onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
 }
 
 export function useModalDialogKeys(onClose: () => void): ModalDialogKeys {
@@ -75,7 +79,7 @@ export function useModalDialogKeys(onClose: () => void): ModalDialogKeys {
    * alongside it for the same reason -- nothing a dialog handles should be
    * visible to a listener outside it.
    */
-  function onKeyDown(e: KeyboardEvent) {
+  function onKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {
       e.preventDefault();
       e.stopPropagation();

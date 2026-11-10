@@ -1,17 +1,17 @@
 /** @jsxImportSource react */
 import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { renderToString } from "preact-render-to-string";
-import type { ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, hydrateRoot } from "react-dom/client";
-import { act } from "react-dom/test-utils";
+import { renderToString } from "react-dom/server";
 import { setAccessToken } from "@/lib/api.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 /**
  * Render-level coverage for the resource detail page.
  *
  * Hydration: the server render and the first browser render must have the
- * same element structure. Preact's hydration adopts the server's elements
+ * same element structure, because hydration adopts the server's elements
  * positionally and does not re-apply their props. When the metrics rail was
  * gated on IS_BROWSER, the server emitted DetailShell's single-column body
  * while the browser rendered the two-column grid, so every element below it
@@ -44,10 +44,10 @@ const mockIsBrowser = () =>
   mock.module("../lib/is-browser.ts", () => ({ IS_BROWSER: env.browser }));
 mockIsBrowser();
 
-// The real rail is SSR-safe in the same way: nothing on the server, a card in
-// the browser.
+// The real rail is SSR-safe in the same way: nothing on the server or during
+// hydration, a card once the browser has taken over (useIsClient).
 mock.module("./MetricsRail.tsx", () => ({
-  default: () => (env.browser ? <aside data-testid="rail" /> : null),
+  default: () => (useIsClient() ? <aside data-testid="rail" /> : null),
 }));
 mock.module("../lib/ws.ts", () => ({
   EVENT_DELETED: "DELETED",

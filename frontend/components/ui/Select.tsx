@@ -1,8 +1,7 @@
 /** @jsxImportSource react */
 import type { ComponentProps, ReactNode } from "react";
 
-// Exactly what `<select>` itself accepts, so the spread below stays
-// assignable (Preact's accessible variant while JSX types come from Preact).
+// Exactly what `<select>` itself accepts, so the spread below stays assignable.
 type SelectProps = ComponentProps<"select"> & {
   label?: string;
   error?: string;

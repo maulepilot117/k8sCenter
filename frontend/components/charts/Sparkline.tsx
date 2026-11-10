@@ -49,9 +49,9 @@ export default function Sparkline({
         d={line}
         fill="none"
         stroke={stroke}
-        stroke-width={strokeWidth}
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );

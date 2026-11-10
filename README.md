@@ -184,7 +184,7 @@ Kubernetes Cluster
 | Layer | Technology |
 |---|---|
 | Backend API | Go 1.27, chi router, client-go v0.35.2 |
-| Frontend | Bun 1.4.x, Astro 7.x (Preact islands), Tailwind v4 |
+| Frontend | Bun 1.4.x, Astro 7.x (React 19 islands), Tailwind v4 |
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack) |
 | Logs | Loki (LogQL proxy, namespace enforcement) |

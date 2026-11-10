@@ -20,11 +20,7 @@ export default function TextField({
 }: TextFieldProps) {
   return (
     <input
-      // While JSX types come from Preact, <input> is a union keyed on a
-      // literal `type`, so the two-way choice is resolved to one branch.
-      {...(type === "password"
-        ? { type: "password" as const }
-        : { type: "text" as const })}
+      type={type}
       value={value}
       placeholder={placeholder}
       onChange={(e) => onInput(e.currentTarget.value)}

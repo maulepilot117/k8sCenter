@@ -33,9 +33,8 @@ export default function ToastProvider() {
   // and is what makes hydration possible at all. `toasts` is empty during SSR
   // by construction, so the two renders agree.
   //
-  // Read through useSignalValue rather than `toasts.value`: the bare read
-  // only re-renders if @preact/signals has patched Preact on this page,
-  // which nothing guarantees once this island stops importing it.
+  // Read through useSignalValue rather than `toasts.value`: React does not
+  // re-render a component for a bare signal read.
   const active = useSignalValue(toasts);
   return (
     <div

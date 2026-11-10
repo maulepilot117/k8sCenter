@@ -273,11 +273,10 @@ test("chain panel with a namespace prop hides the input", async () => {
   expect(view.container.querySelector("input")).toBeNull();
 });
 
-test("chain page seeds the namespace from the URL and follows typing", async () => {
+test("chain page seeds the namespace from the page's parameter and follows typing", async () => {
   setAccessToken("t");
   stubTopology();
-  globalThis.history.replaceState(null, "", "/?namespace=seeded");
-  const view = render(<ESOChainPage />);
+  const view = render(<ESOChainPage initialNamespace="seeded" />);
   await settle();
   const root = view.container;
   const input = root.querySelector("input") as HTMLInputElement;

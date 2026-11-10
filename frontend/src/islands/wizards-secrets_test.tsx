@@ -329,7 +329,8 @@ test("ExternalSecret: an unselected store shows its error and does not advance",
   render(<ExternalSecretWizard onClose={() => {}} />);
   type(byId("es-name"), "app-config");
   await next();
-  body().getByText("Select a store");
+  // The placeholder <option> carries the same words, so read the error itself.
+  expect(byId("es-store-name-error").textContent).toBe("Select a store");
   body().getByText("Step 1 of 2", { exact: false });
   expect(previewCall("external-secret")).toBeUndefined();
 });

@@ -1,8 +1,5 @@
 /** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-// Loads preact/compat, as ToastProvider does on every ChromeLayout page, so
-// `onChange` on text inputs is a per-keystroke `input` listener.
-import "react";
 import {
   act,
   body,
@@ -77,13 +74,11 @@ afterEach(() => {
 const previewCall = () => calls.find((c) => c.path.endsWith("/preview"));
 
 function type(el: HTMLElement, value: string) {
-  (el as HTMLInputElement).value = value;
-  fireEvent.input(el);
+  fireEvent.input(el, { target: { value } });
 }
 
 function pick(el: HTMLElement, value: string) {
-  (el as HTMLSelectElement).value = value;
-  fireEvent.change(el);
+  fireEvent.change(el, { target: { value } });
 }
 
 async function press(name: string | RegExp) {

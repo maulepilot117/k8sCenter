@@ -57,6 +57,9 @@ function subtitleOf(heading: string): string | null {
 
 beforeEach(() => {
   urls = [];
+  // The counts store is shared by every test file in the process; the
+  // subtitles read "Loading…" only while it is empty.
+  resetCountsForTest();
   setAccessToken("t");
   globalThis.WebSocket = QuietWebSocket as unknown as typeof WebSocket;
   globalThis.fetch = (async (input: string | URL | Request) => {

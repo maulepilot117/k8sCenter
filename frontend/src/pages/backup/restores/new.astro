@@ -1,7 +1,9 @@
 ---
 import VeleroRestoreWizard from "../../../islands/VeleroRestoreWizard.tsx";
 import ChromeLayout from "../../../layouts/ChromeLayout.astro";
+
+const backup = Astro.url.searchParams.get("backup") ?? undefined;
 ---
 <ChromeLayout>
-  <VeleroRestoreWizard client:load />
+  <VeleroRestoreWizard client:load backup={backup} />
 </ChromeLayout>

@@ -1,7 +1,5 @@
 /** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-// Loads preact/compat, as ToastProvider does on every ChromeLayout page.
-import "react";
 import type { PinConfig, SavedViewConfig } from "@/lib/preference-types.ts";
 import type { PinRecord, SavedViewRecord } from "@/lib/preferences.ts";
 import {

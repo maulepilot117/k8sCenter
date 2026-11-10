@@ -24,7 +24,7 @@ import { extractAstroFrontmatter } from "./check-no-signal-store-in-ssr.ts";
  * Deliberately NOT checked: islands imported and mounted from *inside*
  * another island's own .tsx source (e.g. TopBarV2.tsx mounting
  * ClusterSwitcher, ResourceDetail.tsx mounting PodTerminal). Those are
- * plain Preact composition inside an already-hydrated component tree, not
+ * plain React composition inside an already-hydrated component tree, not
  * a second Astro-level hydration boundary — nothing to annotate there.
  */
 
