@@ -20,8 +20,6 @@ export function SparklineChart({
   width,
   height = 28,
 }: SparklineChartProps) {
-  // Use Math.random instead of crypto.randomUUID — the latter requires
-  // a secure context (HTTPS) and fails on HTTP-only deployments (homelab).
   const gradientId = `spark-${useId()}`;
 
   // Drop non-finite samples (NaN/±Infinity) so they cannot produce broken

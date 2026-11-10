@@ -321,7 +321,7 @@ function NewIncidentForm({
   const inConflict = conflict || state.conflict;
   /**
    * Aborted when the form unmounts. A create still in flight then neither
-   * navigates nor touches this form's signals, but it still settles the
+   * navigates nor sets this form's state, but it still settles the
    * island's state and the stored record, which outlive the form: the abort
    * itself leaves the outcome unknown, so the id is kept as uncertain. The
    * server may already have committed it, which is also why Cancel is
