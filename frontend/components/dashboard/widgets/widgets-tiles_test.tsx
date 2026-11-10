@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import {
   act,
   fireEvent,
@@ -312,6 +312,35 @@ describe("resource-utilization", () => {
     // The oldest of three samples on the 2m grid is four minutes before end.
     const tip = container.querySelector('[role="status"]') as HTMLElement;
     expect(tip.textContent).toContain("13:56");
+  });
+
+  test("falls back to the arrival time when end is absent or does not parse", async () => {
+    // An older backend sends no end. Pin the clock so the fallback is visible:
+    // the oldest of three samples on the 2m grid sits four minutes before it.
+    setSystemTime(new Date(2026, 0, 5, 9, 30));
+    try {
+      for (const end of [undefined, "not a time"]) {
+        seed("dashboard-trends", {
+          cpu: [10, 20, 30],
+          memory: [30, 40, 50],
+          window: "1h0m0s",
+          step: "2m0s",
+          end,
+        });
+        const { container, unmount } = mount("resource-utilization");
+        await settle();
+        const chart = container.querySelector('[tabindex="0"]') as Element;
+        expect(chart).not.toBeNull();
+        await act(async () => {
+          fireEvent.focus(chart);
+        });
+        const tip = container.querySelector('[role="status"]') as HTMLElement;
+        expect(tip.textContent).toContain("09:26");
+        unmount();
+      }
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("redraws the chart when the trends change", () => {

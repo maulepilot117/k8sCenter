@@ -62,6 +62,11 @@ interface TrendRow {
  * of n sits at end - (n - 1 - i) * step. A null or non-finite entry is skipped
  * but keeps its index: the samples before it stay on their own steps, and CPU
  * and memory line up step for step.
+ *
+ * A step both series lost gets no row, while a step only one lost gets a row
+ * without that key. The areas set `connectNulls` so the two cases draw alike:
+ * one line over the finite samples, the way the sparklines draw the same
+ * series. The tooltip still offers only the steps that hold a sample.
  */
 function buildRows(
   cpu: TrendSeries,
@@ -158,6 +163,7 @@ export function ResourceAreaChart({
             stroke="var(--accent-secondary)"
             strokeWidth={1.8}
             fill={`url(#${memGradId})`}
+            connectNulls
             dot={false}
             isAnimationActive={false}
           />
@@ -170,6 +176,7 @@ export function ResourceAreaChart({
             stroke="var(--accent)"
             strokeWidth={1.8}
             fill={`url(#${cpuGradId})`}
+            connectNulls
             dot={false}
             isAnimationActive={false}
           />

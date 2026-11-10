@@ -58,14 +58,14 @@ var ErrAllTrendQueriesFailed = errors.New("all dashboard trend queries failed")
 
 // DashboardTrends implements resources.TrendProvider. It range-queries
 // Prometheus for the metric-card series concurrently and returns whatever
-// resolved; individual query failures are logged and yield an empty series
-// for that metric rather than failing the whole request.
+// resolved; individual query failures are logged and yield a null series for
+// that metric rather than failing the whole request.
 //
 // A resolution failure (no binding for a remote cluster, local Prometheus not
 // discovered, binding unreadable) is returned as the error, so the caller can
 // tell "not configured" from "failed". For a remote cluster, every query
 // failing is also an error (ErrAllTrendQueriesFailed): a broken binding must
-// not read as "no data". The local cluster keeps its empty-series answer.
+// not read as "no data". The local cluster keeps its null-series answer.
 func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, clusterID string, window, step time.Duration) (resources.DashboardTrends, error) {
 	out := resources.DashboardTrends{
 		Window: window.String(),
@@ -87,7 +87,7 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, clusterID stri
 	// trendQueries (currently 7, including the two cluster-wide network
 	// range queries). On a loaded Prometheus the 24h window at a 48m step can
 	// push several queries past 5s together, blanking every sparkline at once.
-	// Locally that failure is benign (empty series, HTTP 200 — the cards just
+	// Locally that failure is benign (null series, HTTP 200 — the cards just
 	// hide); for a remote cluster it surfaces as ErrAllTrendQueriesFailed. It
 	// is a tuning question, not a correctness bug: measure 24h/48m latency
 	// against a representative-retention Prometheus, then either raise this to

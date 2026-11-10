@@ -60,6 +60,22 @@ test("non-finite samples are dropped before the latest value is read", () => {
   expect(getByRole("img").getAttribute("aria-label")).toBe("Pods, latest 2");
 });
 
+test("null gaps from the trends grid are skipped, and an all-null series draws nothing", async () => {
+  // The dashboard-trends response marks a step with no sample as null.
+  const gappy = render(<Sparkline data={[1, null, 3, null]} name="Pods" />);
+  await settle();
+  expect(gappy.getByRole("img").getAttribute("aria-label")).toBe(
+    "Pods, latest 3",
+  );
+  expect(frameOf(gappy.container).dataset.chartState).toBe("ready");
+  expect(gappy.container.querySelector("svg")).not.toBeNull();
+  gappy.unmount();
+
+  const none = render(<Sparkline data={[null, null]} />);
+  expect(frameOf(none.container).dataset.chartState).toBe("empty");
+  expect(none.container.querySelector("svg")).toBeNull();
+});
+
 test("the line is drawn in the given stroke", async () => {
   const { container } = render(
     <Sparkline data={[1, 3, 2]} stroke="var(--accent-secondary)" />,
