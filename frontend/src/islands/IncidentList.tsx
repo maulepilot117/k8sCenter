@@ -1,5 +1,11 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type ChangeEvent,
+  type FormEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { ApiError } from "@/lib/api.ts";
@@ -41,6 +47,8 @@ import {
   LINK,
   StatusBadge,
 } from "@/src/components/incidents/ui.tsx";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /**
  * The incidents the caller owns or was granted (GET /v1/incidents), newest
@@ -99,18 +107,18 @@ function listErrorText(err: unknown): string {
 function RoleBadge({ incident }: { incident: IncidentView }) {
   if (incident.role === "owner") {
     return (
-      <span class="inline-flex rounded-full bg-accent-dim px-2 py-0.5 text-xs font-medium text-accent">
+      <span className="inline-flex rounded-full bg-accent-dim px-2 py-0.5 text-xs font-medium text-accent">
         Owner
       </span>
     );
   }
   return (
-    <span class="inline-flex flex-wrap items-center gap-1.5">
-      <span class="inline-flex rounded-full border border-border-primary px-2 py-0.5 text-xs font-medium text-text-secondary">
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <span className="inline-flex rounded-full border border-border-primary px-2 py-0.5 text-xs font-medium text-text-secondary">
         Collaborator
       </span>
       {!incident.canAnnotate && (
-        <span class="text-xs text-text-muted">read-only</span>
+        <span className="text-xs text-text-muted">read-only</span>
       )}
     </span>
   );
@@ -287,28 +295,30 @@ function NewIncidentForm({
   // Snapshotted once: the form prefills from, and announces, only what was
   // outstanding when it opened, never a create this form starts itself.
   const restored = useRef(state.intent?.payload).current;
-  const showRestored = useSignal(restored !== undefined);
-  const title = useSignal(restored?.title ?? "");
-  const summary = useSignal(restored?.summary ?? "");
-  const windowStart = useSignal(
+  const [showRestored, setShowRestored] = useState(restored !== undefined);
+  const [title, setTitle] = useState(restored?.title ?? "");
+  const [summary, setSummary] = useState(restored?.summary ?? "");
+  const [windowStart, setWindowStart] = useState(() =>
     toLocalInput(
       restored
         ? new Date(restored.windowStart)
         : new Date(Date.now() - DEFAULT_INCIDENT_WINDOW_MS),
     ),
   );
-  const windowEnd = useSignal(
+  const [windowEnd, setWindowEnd] = useState(
     restored?.windowEnd ? toLocalInput(new Date(restored.windowEnd)) : "",
   );
-  const submitting = useSignal(false);
-  const error = useSignal<string | null>(null);
+  // Written before the request is sent, so a second activation before the
+  // next render is already a no-op.
+  const [submitting, setSubmitting, submittingRef] = useStateRef(false);
+  const [error, setError] = useState<string | null>(null);
   /** A create met `client_request_id_conflict` (kept in `state` too). */
-  const conflict = useSignal(state.conflict);
+  const [conflict, setConflict] = useState(state.conflict);
   /**
    * The notice shows for a conflict this form met, or one restored into
    * `state` after it opened (the island re-renders when it restores).
    */
-  const inConflict = conflict.value || state.conflict;
+  const inConflict = conflict || state.conflict;
   /**
    * Aborted when the form unmounts. A create still in flight then neither
    * navigates nor touches this form's signals, but it still settles the
@@ -327,32 +337,32 @@ function NewIncidentForm({
 
   /** Validates and creates; `fresh` forces a new request id. */
   const create = async (fresh: boolean) => {
-    if (submitting.value || !ready) return;
-    const start = fromLocalInput(windowStart.value);
-    if (!title.value.trim()) {
-      error.value = "Give the incident a title.";
+    if (submittingRef.current || !ready) return;
+    const start = fromLocalInput(windowStart);
+    if (!title.trim()) {
+      setError("Give the incident a title.");
       return;
     }
     if (!start) {
-      error.value = "Enter when the incident window starts.";
+      setError("Enter when the incident window starts.");
       return;
     }
     let end: string | undefined;
-    if (windowEnd.value) {
-      const parsed = fromLocalInput(windowEnd.value);
+    if (windowEnd) {
+      const parsed = fromLocalInput(windowEnd);
       if (!parsed) {
-        error.value = "The window end is not a valid time.";
+        setError("The window end is not a valid time.");
         return;
       }
       if (parsed < start) {
-        error.value = "The window end must not be before its start.";
+        setError("The window end must not be before its start.");
         return;
       }
       end = parsed;
     }
     const payload: CreatePayload = {
-      title: title.value.trim(),
-      summary: summary.value,
+      title: title.trim(),
+      summary,
       windowStart: start,
       ...(end ? { windowEnd: end } : {}),
     };
@@ -375,10 +385,10 @@ function NewIncidentForm({
     // Recorded before the request, so a reload while it is in flight, or
     // after its answer was lost, resends this id.
     recordCreateState(userId, state);
-    error.value = null;
-    conflict.value = false;
-    showRestored.value = false;
-    submitting.value = true;
+    setError(null);
+    setConflict(false);
+    setShowRestored(false);
+    setSubmitting(true);
     const signal = lifetime.current?.signal;
     try {
       const res = await createIncident(
@@ -413,18 +423,18 @@ function NewIncidentForm({
         recordCreateState(userId, state, sent.requestId);
       }
       if (signal?.aborted) return;
-      if (isCreateConflict(err)) conflict.value = true;
-      else error.value = keyedCreateErrorText(err, "this request");
-      submitting.value = false;
+      if (isCreateConflict(err)) setConflict(true);
+      else setError(keyedCreateErrorText(err, "this request"));
+      setSubmitting(false);
     }
   };
 
-  const submit = (e: Event) => {
+  const submit = (e: FormEvent) => {
     e.preventDefault();
     // After a conflict only the explicit "anyway" action creates, including
     // one restored into `state` after the form opened.
-    if (conflict.value || state.conflict) {
-      conflict.value = true;
+    if (conflict || state.conflict) {
+      setConflict(true);
       return;
     }
     void create(false);
@@ -434,20 +444,20 @@ function NewIncidentForm({
     <form
       aria-labelledby="new-incident-heading"
       onSubmit={submit}
-      class="flex flex-col gap-4 rounded-lg border border-border-subtle bg-surface p-4"
+      className="flex flex-col gap-4 rounded-lg border border-border-subtle bg-surface p-4"
     >
-      <h2 id="new-incident-heading" class={HEADING}>
+      <h2 id="new-incident-heading" className={HEADING}>
         New incident
       </h2>
-      {error.value && (
+      {error && (
         <div role="alert">
-          <Alert variant="error">{error.value}</Alert>
+          <Alert variant="error">{error}</Alert>
         </div>
       )}
-      {showRestored.value && !inConflict && !error.value && (
+      {showRestored && !inConflict && !error && (
         <p
           data-testid="new-incident-restored"
-          class="m-0 text-sm text-text-secondary"
+          className="m-0 text-sm text-text-secondary"
         >
           Restored from a create whose outcome is not known. Submitting again
           cannot make a second incident.
@@ -457,10 +467,10 @@ function NewIncidentForm({
         <div
           role="alert"
           data-testid="new-incident-conflict"
-          class="flex flex-col gap-2"
+          className="flex flex-col gap-2"
         >
           <Alert variant="warning">{createConflictText("this request")}</Alert>
-          <a href="/observability/incidents" class={`text-sm ${LINK}`}>
+          <a href="/observability/incidents" className={`text-sm ${LINK}`}>
             Check your incidents
           </a>
         </div>
@@ -470,15 +480,13 @@ function NewIncidentForm({
         label="Title"
         required
         maxLength={INCIDENT_MAX_TITLE_CHARS}
-        value={title.value}
-        onInput={(e) => {
-          title.value = e.currentTarget.value;
-        }}
+        value={title}
+        onChange={(e) => setTitle(e.currentTarget.value)}
       />
-      <div class="space-y-1">
+      <div className="space-y-1">
         <label
-          for="incident-summary"
-          class="block text-sm font-medium text-text-secondary"
+          htmlFor="incident-summary"
+          className="block text-sm font-medium text-text-secondary"
         >
           Summary
         </label>
@@ -486,34 +494,30 @@ function NewIncidentForm({
           id="incident-summary"
           rows={3}
           maxLength={INCIDENT_MAX_SUMMARY_CHARS}
-          value={summary.value}
-          onInput={(e) => {
-            summary.value = e.currentTarget.value;
-          }}
-          class={FIELD}
+          value={summary}
+          onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+            setSummary(e.currentTarget.value)
+          }
+          className={FIELD}
         />
       </div>
-      <div class="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Input
           id="incident-window-start"
           type="datetime-local"
           label="Window start"
           required
           description="Evidence is read against this window. Defaults to an hour ago."
-          value={windowStart.value}
-          onInput={(e) => {
-            windowStart.value = e.currentTarget.value;
-          }}
+          value={windowStart}
+          onChange={(e) => setWindowStart(e.currentTarget.value)}
         />
         <Input
           id="incident-window-end"
           type="datetime-local"
           label="Window end"
           description="Leave empty while the incident is ongoing."
-          value={windowEnd.value}
-          onInput={(e) => {
-            windowEnd.value = e.currentTarget.value;
-          }}
+          value={windowEnd}
+          onChange={(e) => setWindowEnd(e.currentTarget.value)}
         />
       </div>
       {!ready && (
@@ -521,41 +525,41 @@ function NewIncidentForm({
           id={NOT_READY_ID}
           role="status"
           data-testid="new-incident-not-ready"
-          class="m-0 text-sm text-text-muted"
+          className="m-0 text-sm text-text-muted"
         >
           {notReadyReason}
         </p>
       )}
-      <div class="flex items-center gap-3">
+      <div className="flex items-center gap-3">
         {inConflict ? (
           <button
             type="button"
-            aria-disabled={submitting.value || !ready}
+            aria-disabled={submitting || !ready}
             aria-describedby={ready ? undefined : NOT_READY_ID}
             data-testid="new-incident-create-anyway"
             onClick={() => void create(true)}
-            class={BUTTON_PRIMARY}
+            className={BUTTON_PRIMARY}
           >
-            {submitting.value ? "Creating…" : "Create a new incident anyway"}
+            {submitting ? "Creating…" : "Create a new incident anyway"}
           </button>
         ) : (
           <button
             type="submit"
-            aria-disabled={submitting.value || !ready}
+            aria-disabled={submitting || !ready}
             aria-describedby={ready ? undefined : NOT_READY_ID}
             data-testid="new-incident-create"
-            class={BUTTON_PRIMARY}
+            className={BUTTON_PRIMARY}
           >
-            {submitting.value ? "Creating…" : "Create incident"}
+            {submitting ? "Creating…" : "Create incident"}
           </button>
         )}
         <button
           type="button"
-          aria-disabled={submitting.value}
+          aria-disabled={submitting}
           onClick={() => {
-            if (!submitting.value) onCancel();
+            if (!submittingRef.current) onCancel();
           }}
-          class={BUTTON_SECONDARY}
+          className={BUTTON_SECONDARY}
         >
           Cancel
         </button>
@@ -566,67 +570,73 @@ function NewIncidentForm({
 
 export default function IncidentList() {
   /** Rows loaded so far, across pages. */
-  const items = useSignal<IncidentView[]>([]);
+  const [items, setItems, itemsRef] = useStateRef<IncidentView[]>([]);
   /** The cursor of the next page; undefined once the last page loaded. */
-  const nextCursor = useSignal<string | undefined>(undefined);
+  const [nextCursor, setNextCursor, nextCursorRef] = useStateRef<
+    string | undefined
+  >(undefined);
   /** Whether the first page has loaded at least once. */
-  const loaded = useSignal(false);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading, loadingRef] = useStateRef(true);
+  const [error, setError] = useState<string | null>(null);
   /** The last request failed; keeps Retry mounted while it is re-attempted. */
-  const failed = useSignal(false);
-  const noDatabase = useSignal(false);
-  const formOpen = useSignal(false);
+  const [failed, setFailed] = useState(false);
+  const [noDatabase, setNoDatabase] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
   /** The outstanding create and conflict state, across Cancel and reopen. */
   const createState = useRef<CreateState>({ intent: null, conflict: false });
   /** The signed-in user; the top bar loads it, possibly after this mounts. */
   const auth = useAuth();
-  const userId = auth.user.value?.id ?? null;
+  const user = useSignalValue(auth.user);
+  const authLoading = useSignalValue(auth.loading);
+  const authLoadAttempted = useSignalValue(auth.loadAttempted);
+  const userId = user?.id ?? null;
   /**
    * The user whose record `createState` was restored from. The form sends
    * nothing until it is the signed-in user, and setting it re-renders an
    * open form so a restored conflict shows at once.
    */
-  const restoredFor = useSignal<string | null>(null);
+  const [restoredFor, setRestoredFor, restoredForRef] = useStateRef<
+    string | null
+  >(null);
 
   // Restores what this user recorded before a reload, once the user is
   // known. The state is mutated in place: an open form holds this object.
   useEffect(() => {
-    if (restoredFor.peek() === userId) return;
+    if (restoredForRef.current === userId) return;
     const state = createState.current;
     // Signed out, or another user signed in on this page: nothing of the
     // previous user's create carries over in memory (logout cleared their
     // record, and another user's key never reads it). The form closes too:
     // it was filled from, and may say it restored, the previous user's
     // create, so the next user opens it afresh.
-    if (restoredFor.peek() !== null) {
+    if (restoredForRef.current !== null) {
       state.intent = null;
       state.conflict = false;
       state.conflictAt = undefined;
-      formOpen.value = false;
+      setFormOpen(false);
     }
     if (!userId) {
-      restoredFor.value = null;
+      setRestoredFor(null);
       return;
     }
     // The state is empty here: only a create sets it, a create waits for
     // this restore, and the reset above empties it whenever the user changes.
     Object.assign(state, restoreCreateState(userId, Date.now()));
-    restoredFor.value = userId;
+    setRestoredFor(userId);
   }, [userId]);
-  const createReady = userId !== null && restoredFor.value === userId;
+  const createReady = userId !== null && restoredFor === userId;
   /**
    * The signed-in user is no longer the one whose create the island holds.
    * For the render before the effect above runs, the form is not shown, so
    * the previous user's draft is never on screen for the next one.
    */
-  const userChanged =
-    restoredFor.value !== null && restoredFor.value !== userId;
+  const userChanged = restoredFor !== null && restoredFor !== userId;
   // "Could not be loaded" only once the load finished without a user; while
   // it runs, or between the user arriving and their record being restored,
   // the form is still loading.
   const notReadyReason =
-    userId !== null || auth.loading.value || !auth.loadAttempted.value
+    userId !== null || authLoading || !authLoadAttempted
       ? "Your sign-in details are still loading. You can create the incident once they have."
       : "Your sign-in details could not be loaded. Reload the page to create an incident.";
   /**
@@ -634,7 +644,10 @@ export default function IncidentList() {
    * and a sequence number every activation increments, so asking again for
    * the same cursor still re-runs the fetch effect.
    */
-  const request = useSignal<{ cursor: string; seq: number }>({
+  const [request, setRequest, requestRef] = useStateRef<{
+    cursor: string;
+    seq: number;
+  }>({
     cursor: "",
     seq: 0,
   });
@@ -649,36 +662,37 @@ export default function IncidentList() {
     };
   }, []);
 
-  const { cursor, seq } = request.value;
+  const { cursor, seq } = request;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `seq` is not read, but a new value re-runs the fetch when the same cursor is asked for again
   useEffect(() => {
     const controller = new AbortController();
-    loading.value = true;
+    setLoading(true);
     // The previous failure is stale once a new attempt starts; Retry stays
     // mounted through `failed` until this attempt settles.
-    error.value = null;
+    setError(null);
     listIncidents(
       { limit: PAGE_SIZE, continue: cursor || undefined },
       controller.signal,
     )
       .then((page) => {
         if (controller.signal.aborted) return;
-        items.value = cursor ? [...items.value, ...page.items] : page.items;
-        nextCursor.value = page.continue;
-        loaded.value = true;
-        failed.value = false;
-        loading.value = false;
+        setItems(cursor ? [...itemsRef.current, ...page.items] : page.items);
+        setNextCursor(page.continue);
+        setLoaded(true);
+        setFailed(false);
+        setLoading(false);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
         if (isPersistenceUnavailable(err)) {
           // Not retryable: a retry that lands here must not leave Retry behind.
-          noDatabase.value = true;
-          failed.value = false;
+          setNoDatabase(true);
+          setFailed(false);
         } else {
-          error.value = listErrorText(err);
-          failed.value = true;
+          setError(listErrorText(err));
+          setFailed(true);
         }
-        loading.value = false;
+        setLoading(false);
       });
     return () => controller.abort();
   }, [cursor, seq]);
@@ -686,62 +700,62 @@ export default function IncidentList() {
   const issue = (to: string) => {
     // Busy from the click itself, not from the effect a frame later, so a
     // second activation before the effect runs is already a no-op.
-    loading.value = true;
-    request.value = { cursor: to, seq: request.peek().seq + 1 };
+    setLoading(true);
+    setRequest({ cursor: to, seq: requestRef.current.seq + 1 });
   };
   const retry = () => {
-    if (loading.value) return;
-    issue(request.peek().cursor);
+    if (loadingRef.current) return;
+    issue(requestRef.current.cursor);
   };
   const loadMore = () => {
-    if (loading.value || !nextCursor.value) return;
-    issue(nextCursor.value);
+    const next = nextCursorRef.current;
+    if (loadingRef.current || !next) return;
+    issue(next);
   };
   const closeForm = () => {
     restoreFocus.current = true;
-    formOpen.value = false;
+    setFormOpen(false);
   };
   // The form's controls are gone once it closes; return focus to the control
   // that opened it after that control has rendered again.
-  const formIsOpen = formOpen.value;
   useEffect(() => {
-    if (!formIsOpen && restoreFocus.current) {
+    if (!formOpen && restoreFocus.current) {
       restoreFocus.current = false;
       newButtonRef.current?.focus();
     }
-  }, [formIsOpen]);
+  }, [formOpen]);
 
-  const busy = loading.value;
-  const rows = items.value;
-  const canCreate = !noDatabase.value;
+  const busy = loading;
+  const rows = items;
+  const canCreate = !noDatabase;
 
   return (
-    <div class={ROOT_CLASS}>
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div class="flex flex-col gap-1">
-          <h1 class="m-0 text-2xl font-bold tracking-tight text-text-primary">
+    <div className={ROOT_CLASS}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <h1 className="m-0 text-2xl font-bold tracking-tight text-text-primary">
             Incidents
           </h1>
-          <p class="m-0 text-sm text-text-muted">
+          <p className="m-0 text-sm text-text-muted">
             Investigations you own or were invited to. Each one collects
             evidence from the cluster and notes from the people working it.
           </p>
         </div>
-        {canCreate && !formOpen.value && (
+        {canCreate && !formOpen && (
           <button
             type="button"
             ref={newButtonRef}
             onClick={() => {
-              formOpen.value = true;
+              setFormOpen(true);
             }}
-            class={BUTTON_PRIMARY}
+            className={BUTTON_PRIMARY}
           >
             New incident
           </button>
         )}
       </div>
 
-      {canCreate && formOpen.value && !userChanged && (
+      {canCreate && formOpen && !userChanged && (
         <NewIncidentForm
           onCancel={closeForm}
           state={createState.current}
@@ -751,45 +765,45 @@ export default function IncidentList() {
         />
       )}
 
-      {noDatabase.value && (
+      {noDatabase && (
         <div
           role="status"
-          class="flex flex-col gap-1 rounded-lg border border-border-subtle bg-surface p-4"
+          className="flex flex-col gap-1 rounded-lg border border-border-subtle bg-surface p-4"
         >
-          <p class="m-0 text-sm font-semibold text-text-primary">
+          <p className="m-0 text-sm font-semibold text-text-primary">
             Incidents are unavailable: this deployment has no database
           </p>
-          <p class="m-0 text-sm text-text-secondary">
+          <p className="m-0 text-sm text-text-secondary">
             Incidents are stored in PostgreSQL. Configure a database for
             k8sCenter to record incidents here.
           </p>
         </div>
       )}
 
-      {busy && !loaded.value && !noDatabase.value && (
-        <p role="status" class="m-0 text-sm text-text-muted">
+      {busy && !loaded && !noDatabase && (
+        <p role="status" className="m-0 text-sm text-text-muted">
           Loading incidents…
         </p>
       )}
 
-      {failed.value && !noDatabase.value && (
-        <div class="flex flex-col items-start gap-2">
-          {error.value && (
-            <div role="alert" class="w-full">
-              <Alert variant="error">{error.value}</Alert>
+      {failed && !noDatabase && (
+        <div className="flex flex-col items-start gap-2">
+          {error && (
+            <div role="alert" className="w-full">
+              <Alert variant="error">{error}</Alert>
             </div>
           )}
-          <div class="flex items-center gap-3 text-sm">
+          <div className="flex items-center gap-3 text-sm">
             <button
               type="button"
               aria-disabled={busy}
               onClick={retry}
-              class={BUTTON_SECONDARY}
+              className={BUTTON_SECONDARY}
             >
               Retry
             </button>
             {busy && (
-              <span role="status" class="text-text-muted">
+              <span role="status" className="text-text-muted">
                 Retrying…
               </span>
             )}
@@ -797,8 +811,8 @@ export default function IncidentList() {
         </div>
       )}
 
-      {loaded.value && rows.length === 0 && !failed.value && (
-        <p class="m-0 text-sm text-text-secondary">
+      {loaded && rows.length === 0 && !failed && (
+        <p className="m-0 text-sm text-text-secondary">
           No incidents yet. Open one with “New incident” when you start
           investigating a problem.
         </p>
@@ -807,50 +821,50 @@ export default function IncidentList() {
       {rows.length > 0 && (
         <div
           aria-busy={busy}
-          class="overflow-x-auto rounded-lg border border-border-subtle bg-surface"
+          className="overflow-x-auto rounded-lg border border-border-subtle bg-surface"
         >
-          <table class="w-full border-collapse text-left text-sm">
-            <caption class="sr-only">Your incidents</caption>
+          <table className="w-full border-collapse text-left text-sm">
+            <caption className="sr-only">Your incidents</caption>
             <thead>
-              <tr class="text-xs uppercase tracking-wide text-text-muted">
-                <th scope="col" class="px-3 py-2 font-semibold">
+              <tr className="text-xs uppercase tracking-wide text-text-muted">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Incident
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Status
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Your role
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Created
                 </th>
-                <th scope="col" class="px-3 py-2 font-semibold">
+                <th scope="col" className="px-3 py-2 font-semibold">
                   Updated
                 </th>
               </tr>
             </thead>
             <tbody>
               {rows.map((incident) => (
-                <tr key={incident.id} class="border-t border-border-subtle">
-                  <td class="px-3 py-2 align-top">
+                <tr key={incident.id} className="border-t border-border-subtle">
+                  <td className="px-3 py-2 align-top">
                     <a
                       href={incidentHref(incident.id)}
-                      class={`font-medium ${LINK}`}
+                      className={`font-medium ${LINK}`}
                     >
                       {incident.title}
                     </a>
                   </td>
-                  <td class="px-3 py-2 align-top">
+                  <td className="px-3 py-2 align-top">
                     <StatusBadge status={incident.status} />
                   </td>
-                  <td class="px-3 py-2 align-top">
+                  <td className="px-3 py-2 align-top">
                     <RoleBadge incident={incident} />
                   </td>
-                  <td class="px-3 py-2 align-top text-text-secondary">
+                  <td className="px-3 py-2 align-top text-text-secondary">
                     <When at={incident.createdAt} />
                   </td>
-                  <td class="px-3 py-2 align-top text-text-secondary">
+                  <td className="px-3 py-2 align-top text-text-secondary">
                     <When at={incident.updatedAt} />
                   </td>
                 </tr>
@@ -860,18 +874,18 @@ export default function IncidentList() {
         </div>
       )}
 
-      {nextCursor.value && rows.length > 0 && (
-        <div class="flex items-center gap-3 text-sm">
+      {nextCursor && rows.length > 0 && (
+        <div className="flex items-center gap-3 text-sm">
           <button
             type="button"
             aria-disabled={busy}
             onClick={loadMore}
-            class={BUTTON_SECONDARY}
+            className={BUTTON_SECONDARY}
           >
             Load more
           </button>
-          {busy && !failed.value && (
-            <span role="status" class="text-text-muted">
+          {busy && !failed && (
+            <span role="status" className="text-text-muted">
               Loading more incidents…
             </span>
           )}

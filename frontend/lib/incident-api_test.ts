@@ -1,7 +1,6 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { h, render } from "preact";
-import { act } from "preact/test-utils";
+import { afterEach, expect, test } from "bun:test";
+import { createElement } from "react";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 import { ApiError, setAccessToken } from "./api.ts";
 import { fetchCurrentUser, logout } from "./auth.ts";
 import { switchCluster } from "./cluster.ts";
@@ -46,10 +45,9 @@ import {
 // The IncidentList island's tests live at the bottom of this file rather than
 // in their own IncidentList_test.tsx: the unit's five-file budget (types, API
 // client, this test, the island, the page) has no room for a sixth. They use
-// `h` instead of JSX because this is a .ts file.
+// `createElement` instead of JSX because this is a .ts file.
 
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
+setupDom({ browser: true });
 
 interface Recorded {
   url: string;
@@ -81,7 +79,14 @@ const NOTE = "0b8e2f7a-1c3d-4e5f-8a9b-0c1d2e3f4a5b";
 
 let calls: Recorded[] = [];
 let original: typeof globalThis.fetch | undefined;
-let host: HTMLElement | null = null;
+let view: ReturnType<typeof render> | null = null;
+
+/** Unmounts the island, as leaving the page does. */
+function unmountView() {
+  const mounted = view;
+  if (mounted) act(() => mounted.unmount());
+  view = null;
+}
 
 /** Replies are served in order; the last one repeats. */
 function stubFetch(...replies: Reply[]) {
@@ -114,11 +119,7 @@ function stubFetch(...replies: Reply[]) {
 let originalAssign: Location["assign"] | undefined;
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  unmountView();
   if (original) globalThis.fetch = original;
   original = undefined;
   if (originalAssign) globalThis.location.assign = originalAssign;
@@ -789,11 +790,9 @@ async function mount() {
     },
     () => fetchCurrentUser(),
   );
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(h(IncidentList, {}), host as HTMLElement));
+  view = render(createElement(IncidentList, {}));
   await flush();
-  return host;
+  return view.container as HTMLElement;
 }
 
 function setValue(el: Element | null, value: string) {
@@ -1213,7 +1212,7 @@ test("IncidentList: a create that settles after the form unmounted never navigat
   await until(() => calls.length === 2);
   // The create carries the form's lifetime signal.
   expect(calls[1].signal).toBeInstanceOf(AbortSignal);
-  act(() => render(null, root));
+  unmountView();
   gate.resolve();
   await flush();
   expect(visited).toEqual([]);
@@ -1304,9 +1303,7 @@ test("IncidentList: create maps no-database and busy to their own messages", asy
     await until(() => form.querySelector('[role="alert"]') !== null);
     expect(form.querySelector('[role="alert"]')?.textContent).toContain(text);
     expect(visited).toEqual([]);
-    act(() => render(null, root));
-    root.remove();
-    host = null;
+    unmountView();
   }
 });
 
@@ -1363,7 +1360,7 @@ test("IncidentList: a page that settles after unmount writes nothing and does no
   const root = await mount();
   act(() => button(root, "Load more")?.click());
   await until(() => listCalls().length === 2);
-  act(() => render(null, root));
+  unmountView();
   // The in-flight read was cancelled by the unmount, which is what the
   // island's stale-response guard keys on.
   expect(listCalls()[1].signal?.aborted).toBe(true);
@@ -1386,7 +1383,7 @@ test("IncidentList: a create that rejects after unmount writes nothing and does 
   await flush();
   submit(form);
   await until(() => calls.length === 2);
-  act(() => render(null, root));
+  unmountView();
   expect(calls[1].signal?.aborted).toBe(true);
   gate.resolve();
   await flush();
