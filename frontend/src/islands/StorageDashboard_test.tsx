@@ -82,6 +82,25 @@ test("overview shows the counts from the shared store", async () => {
   expect(text).toContain("3");
 });
 
+test("the PVC donut names its count, and says there are none when there are none", async () => {
+  const view = render(<StorageDashboard currentPath="/storage" />);
+  await settle();
+  const donutLabel = () =>
+    view.container
+      .querySelector('[data-chart="donut"]')
+      ?.getAttribute("aria-label");
+
+  await act(async () => {
+    resourceCounts.value = { persistentvolumeclaims: 7 };
+  });
+  expect(donutLabel()).toBe("Total: 7");
+
+  await act(async () => {
+    resourceCounts.value = { persistentvolumeclaims: 0 };
+  });
+  expect(donutLabel()).toBe("No PVCs");
+});
+
 test("overview shows dashes until the counts have loaded", async () => {
   const view = render(<StorageDashboard currentPath="/storage/overview/" />);
   await settle();

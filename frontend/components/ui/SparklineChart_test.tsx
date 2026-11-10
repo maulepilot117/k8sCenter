@@ -1,66 +1,94 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
-import { render, setupDom } from "@/src/test-utils/render.tsx";
+import { renderToString } from "react-dom/server";
+import { render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 const { SparklineChart } = await import("./SparklineChart.tsx");
+const { NetworkTile } = await import("./NetworkTile.tsx");
+const { MetricTile } = await import("./MetricTile.tsx");
 
-test("fluid chart fills its container", () => {
-  const { container } = render(
-    <SparklineChart data={[0, 10, 5]} color="red" />,
+test("the chart fills its container at the given height and is named for the series", async () => {
+  const { container, getByRole } = render(
+    <SparklineChart
+      data={[0, 10, 5]}
+      color="var(--accent)"
+      name="Memory"
+      height={30}
+    />,
   );
-  const svg = container.querySelector("svg") as SVGElement;
-  expect(svg.getAttribute("width")).toBe("100%");
-  expect(svg.getAttribute("height")).toBe("28");
-  expect(svg.getAttribute("viewBox")).toBe("0 0 100 28");
-  expect(svg.getAttribute("preserveAspectRatio")).toBe("none");
-  expect(svg.getAttribute("class")).toBe("block w-full");
-
-  const line = svg.querySelector("polyline") as SVGElement;
-  expect(line.getAttribute("points")).toBe("0,27 50,1 100,14");
-  expect(line.getAttribute("stroke")).toBe("red");
-  expect(line.getAttribute("stroke-width")).toBe("1.5");
-  expect(line.getAttribute("stroke-linecap")).toBe("round");
-  expect(line.getAttribute("stroke-linejoin")).toBe("round");
-  expect(line.getAttribute("vector-effect")).toBe("non-scaling-stroke");
-
-  const id = svg.querySelector("linearGradient")?.getAttribute("id") ?? "";
-  expect(id).not.toBe("");
-  expect(svg.querySelector("path")?.getAttribute("fill")).toBe(`url(#${id})`);
-  expect(svg.querySelector("path")?.getAttribute("d")).toBe(
-    "M0,28 L0,27 L50,1 L100,14 L100,28 Z",
-  );
-  const stops = [...svg.querySelectorAll("stop")];
-  expect(stops[0].getAttribute("stop-color")).toBe("red");
-  expect(stops[0].getAttribute("stop-opacity")).toBe("0.3");
-  expect(stops[1].getAttribute("stop-opacity")).toBe("0");
+  await settle();
+  const frame = container.querySelector("[data-chart-frame]") as HTMLElement;
+  expect(frame.dataset.chart).toBe("sparkline");
+  expect(frame.style.width).toBe("100%");
+  expect(frame.style.height).toBe("30px");
+  expect(getByRole("img").getAttribute("aria-label")).toBe("Memory, latest 5");
+  expect(container.querySelector("svg")).not.toBeNull();
 });
 
-test("a fixed width is honoured and the stroke is not made non-scaling", () => {
+test("the default height is 28 and a fixed width is honoured", () => {
   const { container } = render(
-    <SparklineChart data={[1, 2]} color="blue" width={60} height={20} />,
+    <SparklineChart data={[1, 2]} color="var(--accent)" />,
   );
-  const svg = container.querySelector("svg") as SVGElement;
-  expect(svg.getAttribute("width")).toBe("60");
-  expect(svg.getAttribute("viewBox")).toBe("0 0 60 20");
-  expect(svg.getAttribute("preserveAspectRatio")).toBeNull();
-  expect(svg.getAttribute("class")).toBe("inline-block");
-  expect(
-    container.querySelector("polyline")?.getAttribute("vector-effect"),
-  ).toBeNull();
+  const frame = container.querySelector("[data-chart-frame]") as HTMLElement;
+  expect(frame.style.height).toBe("28px");
+  expect(frame.getAttribute("aria-label")).toBe("Trend, latest 2");
+
+  const fixed = render(
+    <SparklineChart data={[1, 2]} color="var(--accent)" width={60} />,
+  );
+  const sized = fixed.container.querySelector(
+    "[data-chart-frame]",
+  ) as HTMLElement;
+  expect(sized.style.width).toBe("60px");
 });
 
-test("non-finite samples are dropped and fewer than two points renders nothing", () => {
-  const dropped = render(
-    <SparklineChart data={[1, Number.NaN, 2]} color="red" />,
-  );
-  expect(
-    dropped.container.querySelector("polyline")?.getAttribute("points"),
-  ).toBe("0,27 100,1");
-  dropped.unmount();
+test("one point draws, and no usable samples draw nothing", async () => {
+  const one = render(<SparklineChart data={[3]} color="var(--accent)" />);
+  await settle();
+  expect(one.container.querySelector("svg")).not.toBeNull();
+  one.unmount();
 
-  const { container } = render(
-    <SparklineChart data={[1, Number.NaN]} color="red" />,
+  const none = render(
+    <SparklineChart data={[Number.NaN]} color="var(--accent)" />,
   );
-  expect(container.querySelector("svg")).toBeNull();
+  const frame = none.container.querySelector(
+    "[data-chart-frame]",
+  ) as HTMLElement;
+  expect(frame.dataset.chartState).toBe("empty");
+  expect(none.container.querySelector("svg")).toBeNull();
+});
+
+test("the server renders the frame box and no svg", () => {
+  const html = renderToString(
+    <SparklineChart data={[1, 2, 3]} color="var(--accent)" height={22} />,
+  );
+  expect(html).toContain("height:22px");
+  expect(html).not.toContain("<svg");
+});
+
+test("the network tile names its receive and transmit rows and draws them in two colours", async () => {
+  const { getByRole } = render(
+    <NetworkTile
+      rxP95={4}
+      txP95={2}
+      rxData={[1, 2, 3]}
+      txData={[5]}
+      period="1h"
+    />,
+  );
+  await settle();
+  const stroke = (row: HTMLElement) =>
+    row.querySelector(".recharts-area-curve")?.getAttribute("stroke");
+  const rx = getByRole("img", { name: "Network receive, latest 3" });
+  const tx = getByRole("img", { name: "Network transmit, latest 5" });
+  expect(stroke(rx)).toBe("var(--accent)");
+  expect(stroke(tx)).toBe("var(--accent-secondary)");
+});
+
+test("a metric tile names its sparkline for the tile label, even with one sample", async () => {
+  const { getByRole } = render(
+    <MetricTile label="CPU" value="42" sparkData={[42]} />,
+  );
+  await settle();
+  getByRole("img", { name: "CPU, latest 42" });
 });

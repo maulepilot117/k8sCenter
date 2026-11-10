@@ -133,6 +133,7 @@ function ClusterHealth({ mode }: WidgetProps) {
           {scored ? (
             <Gauge
               value={health?.score ?? 0}
+              name="Cluster health"
               size={140}
               thickness={12}
               color={healthColor}

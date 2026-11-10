@@ -429,7 +429,7 @@ export default function NamespaceLimitsDashboard() {
                       <td style={{ padding: "10px 16px", width: "120px" }}>
                         {s.cpuUsedPercent !== undefined ? (
                           <BarRow
-                            label=""
+                            label={`${s.namespace} CPU`}
                             value={s.cpuUsedPercent}
                             max={100}
                             suffix={`${s.cpuUsedPercent.toFixed(0)}%`}
@@ -450,7 +450,7 @@ export default function NamespaceLimitsDashboard() {
                       <td style={{ padding: "10px 16px", width: "120px" }}>
                         {s.memoryUsedPercent !== undefined ? (
                           <BarRow
-                            label=""
+                            label={`${s.namespace} memory`}
                             value={s.memoryUsedPercent}
                             max={100}
                             suffix={`${s.memoryUsedPercent.toFixed(0)}%`}

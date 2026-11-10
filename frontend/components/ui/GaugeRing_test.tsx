@@ -1,90 +1,65 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
-import { act, render, setupDom, waitFor } from "@/src/test-utils/render.tsx";
+import { render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 const { GaugeRing } = await import("./GaugeRing.tsx");
 
-const R = (80 - 6) / 2;
-const CIRC = 2 * Math.PI * R;
-
-function progress(container: Element): Element {
-  return container.querySelectorAll("circle")[1];
+function frame(container: Element): HTMLElement {
+  return container.querySelector("[data-chart-frame]") as HTMLElement;
 }
 
-test("arc starts hidden and animates to the target offset after 50ms", async () => {
+test("a ring is one image labelled with its value, sized to the frame", async () => {
   const { container } = render(<GaugeRing value={25} color="red" />);
-  const svg = container.querySelector("svg") as SVGElement;
-  expect(svg.getAttribute("viewBox")).toBe("0 0 80 80");
-  const arc = progress(container);
-  expect(arc.getAttribute("stroke-dasharray")).toBe(String(CIRC));
-  expect(arc.getAttribute("stroke-dashoffset")).toBe(String(CIRC));
-  expect(arc.getAttribute("stroke")).toBe("red");
-  expect(arc.getAttribute("stroke-width")).toBe("6");
-  expect(arc.getAttribute("stroke-linecap")).toBe("round");
-  expect(arc.getAttribute("transform")).toBe("rotate(-90 40 40)");
-  expect(arc.getAttribute("style")).toContain("stroke-dashoffset 1s");
-  expect(
-    container.querySelectorAll("circle")[0].getAttribute("stroke-width"),
-  ).toBe("6");
-
-  await waitFor(() =>
-    expect(progress(container).getAttribute("stroke-dashoffset")).toBe(
-      String(CIRC - 0.25 * CIRC),
-    ),
-  );
+  await settle();
+  const f = frame(container);
+  expect(f.dataset.chart).toBe("gauge");
+  expect(f.getAttribute("role")).toBe("img");
+  expect(f.getAttribute("aria-label")).toBe("25%");
+  expect(f.style.width).toBe("80px");
+  expect(f.style.height).toBe("80px");
   expect(container.textContent).toBe("25%");
 });
 
-test("a changed value re-animates to the new offset", async () => {
-  const { container, rerender } = render(<GaugeRing value={25} color="red" />);
-  await waitFor(() =>
-    expect(progress(container).getAttribute("stroke-dashoffset")).toBe(
-      String(CIRC - 0.25 * CIRC),
-    ),
+test("a named ring leads its label with the name and shows the override", async () => {
+  const { container } = render(
+    <GaugeRing value={60} color="red" label="CPU" displayValue="6/10" />,
   );
-  rerender(<GaugeRing value={100} color="red" />);
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 100));
-  });
-  expect(progress(container).getAttribute("stroke-dashoffset")).toBe("0");
+  await settle();
+  expect(frame(container).getAttribute("aria-label")).toBe("CPU: 6/10");
+  expect(container.textContent).toContain("6/10");
+  expect(container.textContent).toContain("CPU");
 });
 
-test("unmounting before the delay cancels the timer without error", async () => {
-  const { unmount } = render(<GaugeRing value={50} color="red" />);
-  unmount();
-  await new Promise((r) => setTimeout(r, 100));
+test("values clamp to 0..100", async () => {
+  const over = render(<GaugeRing value={140} color="red" />);
+  await settle();
+  expect(frame(over.container).getAttribute("aria-label")).toBe("100%");
+  over.unmount();
+  const under = render(<GaugeRing value={-5} color="red" />);
+  await settle();
+  expect(frame(under.container).getAttribute("aria-label")).toBe("0%");
 });
 
-test("indeterminate fills the arc and skips the gradient", async () => {
+test("indeterminate shows no value and says it is not known", async () => {
   const { container } = render(
     <GaugeRing value={0} color="gray" secondaryColor="blue" indeterminate />,
   );
+  await settle();
+  expect(frame(container).getAttribute("aria-label")).toBe("value not known");
+  expect(container.textContent).toBe("—");
   expect(container.querySelector("linearGradient")).toBeNull();
-  await waitFor(() =>
-    expect(progress(container).getAttribute("stroke-dashoffset")).toBe("0"),
-  );
-  expect(progress(container).getAttribute("stroke")).toBe("gray");
 });
 
-test("secondary color adds a gradient referenced by the arc", () => {
+test("a secondary colour adds a gradient that the bar fills with", async () => {
   const { container } = render(
-    <GaugeRing
-      value={60}
-      color="red"
-      secondaryColor="blue"
-      label="CPU"
-      displayValue="6/10"
-    />,
+    <GaugeRing value={60} color="red" secondaryColor="blue" />,
   );
+  await settle();
   const grad = container.querySelector("linearGradient") as Element;
   const id = grad.getAttribute("id") ?? "";
   expect(id).not.toBe("");
-  expect(grad.getAttribute("x2")).toBe("1");
   const stops = [...grad.querySelectorAll("stop")];
   expect(stops[0].getAttribute("stop-color")).toBe("red");
   expect(stops[1].getAttribute("stop-color")).toBe("blue");
-  expect(progress(container).getAttribute("stroke")).toBe(`url(#${id})`);
-  expect(container.textContent).toContain("6/10");
-  expect(container.textContent).toContain("CPU");
+  expect(container.innerHTML).toContain(`url(#${id})`);
 });

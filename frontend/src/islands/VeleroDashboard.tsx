@@ -537,7 +537,14 @@ function VeleroOverview({
       : []),
     // Placeholder when no backups
     ...(backups.length === 0
-      ? [{ value: 1, color: "var(--bg-elevated)" }]
+      ? [
+          {
+            value: 1,
+            color: "var(--bg-elevated)",
+            label: "No backups",
+            placeholder: true,
+          },
+        ]
       : []),
   ];
 

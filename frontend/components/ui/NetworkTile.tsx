@@ -18,12 +18,15 @@ export interface NetworkTileProps {
 function Row({
   arrow,
   label,
+  name,
   value,
   data,
   color,
 }: {
   arrow: string;
   label: string;
+  /** Full name of the series, read out with its latest value. */
+  name: string;
   value: number;
   data?: number[] | null;
   color: string;
@@ -73,8 +76,8 @@ function Row({
         Mbps
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        {data && data.length >= 2 && (
-          <SparklineChart data={data} color={color} height={22} />
+        {data && data.length >= 1 && (
+          <SparklineChart data={data} color={color} name={name} height={22} />
         )}
       </div>
     </div>
@@ -130,6 +133,7 @@ export function NetworkTile({
         <Row
           arrow="▼"
           label="RX"
+          name="Network receive"
           value={rxP95}
           data={rxData}
           color="var(--accent)"
@@ -137,6 +141,7 @@ export function NetworkTile({
         <Row
           arrow="▲"
           label="TX"
+          name="Network transmit"
           value={txP95}
           data={txData}
           color="var(--accent-secondary)"

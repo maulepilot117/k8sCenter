@@ -720,7 +720,7 @@ describe("widget bodies", () => {
     // No ring at all -- an empty ring reads as a score of zero -- and the
     // em-dash where the number would be.
     expect(html).toContain('data-testid="health-unscored"');
-    expect(html).not.toContain("stroke-dashoffset");
+    expect(html).not.toContain('data-chart="gauge"');
     expect(html).toContain(">—<");
   });
 
@@ -732,7 +732,7 @@ describe("widget bodies", () => {
       }),
     );
     const html = body("cluster-health");
-    expect(html).toContain("stroke-dashoffset");
+    expect(html).toContain('data-chart="gauge"');
     expect(html).toContain(">92<");
     expect(html).not.toContain("health-unscored");
   });

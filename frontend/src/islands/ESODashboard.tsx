@@ -12,6 +12,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import RadialGauge from "@/components/charts/RadialGauge.tsx";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -58,71 +59,35 @@ function esoStatusToDot(
   }
 }
 
-/** Hero gauge — synced / total. Inline SVG ring so layout stays self-contained.
- * Uses var(--success) for the synced arc; var(--bg-elevated) for the track. */
 function SyncHealthRing({ synced, total }: { synced: number; total: number }) {
-  const size = 200;
-  const strokeWidth = 12;
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const fraction = total > 0 ? synced / total : 0;
-  const offset = circumference - fraction * circumference;
-  const center = size / 2;
-
   return (
-    <div
-      className="relative inline-flex items-center justify-center"
-      role="img"
-      aria-label={`${synced} of ${total} synced`}
-      style={{ width: `${size}px`, height: `${size}px` }}
+    <RadialGauge
+      percent={total > 0 ? (synced / total) * 100 : 0}
+      size={200}
+      thickness={12}
+      color="var(--success)"
+      label={`${synced} of ${total} synced`}
     >
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        <circle
-          cx={center}
-          cy={center}
-          r={radius}
-          fill="none"
-          stroke="var(--bg-elevated)"
-          strokeWidth={strokeWidth}
-        />
-        <circle
-          cx={center}
-          cy={center}
-          r={radius}
-          fill="none"
-          stroke="var(--success)"
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={offset}
-          transform={`rotate(-90 ${center} ${center})`}
-          style={{
-            transition: "stroke-dashoffset 1s cubic-bezier(0.16, 1, 0.3, 1)",
-          }}
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span
-          className="font-bold text-text-primary tabular-nums"
-          style={{
-            fontSize: "32px",
-            fontFamily: "var(--font-mono, monospace)",
-          }}
-        >
-          {synced} / {total}
-        </span>
-        <span
-          className="mt-1 text-xs uppercase tracking-wide"
-          style={{
-            fontSize: "11px",
-            fontWeight: 600,
-            color: "var(--text-muted)",
-          }}
-        >
-          ExternalSecrets synced
-        </span>
-      </div>
-    </div>
+      <span
+        className="font-bold text-text-primary tabular-nums"
+        style={{
+          fontSize: "32px",
+          fontFamily: "var(--font-mono, monospace)",
+        }}
+      >
+        {synced} / {total}
+      </span>
+      <span
+        className="mt-1 text-xs uppercase tracking-wide"
+        style={{
+          fontSize: "11px",
+          fontWeight: 600,
+          color: "var(--text-muted)",
+        }}
+      >
+        ExternalSecrets synced
+      </span>
+    </RadialGauge>
   );
 }
 
