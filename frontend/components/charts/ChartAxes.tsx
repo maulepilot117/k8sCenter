@@ -58,7 +58,9 @@ export function ValueYAxis({ unit, values }: ValueYAxisProps) {
       tick={AXIS_TICK_STYLE}
       tickLine={false}
       axisLine={false}
-      width={64}
+      // Wide enough for a value and its unit ("386.2 MiB", "0.56 cores") on
+      // one line; Recharts wraps a tick label that does not fit.
+      width={76}
     />
   );
 }

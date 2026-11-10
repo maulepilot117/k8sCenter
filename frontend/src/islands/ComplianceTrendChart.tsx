@@ -289,9 +289,9 @@ function TrendChart({
           <Line
             dataKey="score"
             name="Score"
-            stroke="var(--brand)"
+            stroke={CHART_TOKENS.line}
             strokeWidth={2}
-            dot={{ r: 2.5, fill: "var(--brand)", stroke: "none" }}
+            dot={{ r: 2.5, fill: CHART_TOKENS.line, stroke: "none" }}
             connectNulls={false}
             isAnimationActive={false}
           />

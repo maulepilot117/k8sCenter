@@ -357,6 +357,14 @@ test("a gap day breaks the line in two", async () => {
   expect(d.match(/M/g)?.length).toBe(2);
 });
 
+test("the score line is drawn in the theme's chart line colour", async () => {
+  const root = await mountChart({
+    data: [pt(today(-2), 80), pt(today(-1), 82)],
+  });
+  const line = root.querySelector(".recharts-line-curve");
+  expect(line?.getAttribute("stroke")).toBe("var(--accent)");
+});
+
 test("the gap marker names the reason when focused", async () => {
   const gapDay = today(-3);
   const root = await mountChart({
