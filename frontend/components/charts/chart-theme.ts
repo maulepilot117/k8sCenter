@@ -114,8 +114,16 @@ export function timeTicks(
     }
   }
   const ticks: number[] = [];
-  for (let t = first; t <= end && ticks.length < maxCount; t += chosen) {
+  for (let t = first; t <= end && ticks.length < maxCount; ) {
     ticks.push(t);
+    if (chosen >= DAY) {
+      // Calendar days, so a daylight-saving change keeps ticks on midnight.
+      const next = new Date(t);
+      next.setDate(next.getDate() + chosen / DAY);
+      t = next.getTime();
+    } else {
+      t += chosen;
+    }
   }
   return ticks;
 }

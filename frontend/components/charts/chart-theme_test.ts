@@ -50,6 +50,27 @@ describe("timeTicks", () => {
     expect(gaps[0]).toBeGreaterThan(0);
   });
 
+  test("day ticks stay on local midnight across a daylight-saving change", () => {
+    // bun test runs in UTC, which has no daylight saving; the range spans the
+    // US fall-back on 1 Nov 2026.
+    const zone = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const ticks = timeTicks(
+        new Date(2026, 9, 25, 6).getTime(),
+        new Date(2026, 10, 8, 6).getTime(),
+        20,
+      );
+      expect(ticks.length).toBeGreaterThan(10);
+      for (const t of ticks) expect(new Date(t).getHours()).toBe(0);
+      const days = ticks.map((t) => new Date(t).getDate());
+      expect(new Set(days).size).toBe(days.length);
+    } finally {
+      // Unset means bun test's default zone, UTC.
+      process.env.TZ = zone ?? "UTC";
+    }
+  });
+
   test("an empty range has no ticks", () => {
     expect(timeTicks(end, end, 4)).toEqual([]);
   });
