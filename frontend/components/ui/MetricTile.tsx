@@ -7,7 +7,7 @@ export interface MetricTileProps {
   value: string;
   unit?: string;
   delta?: number | null; // positive = up, negative = down
-  sparkData?: number[] | null;
+  sparkData?: ReadonlyArray<number | null> | null;
   sparkColor?: string;
   href?: string;
   /** Hover text on the value, e.g. why a withheld value shows a dash. */

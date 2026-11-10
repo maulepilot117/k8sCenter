@@ -16,6 +16,11 @@ test("percentile: all-non-finite series returns 0", () => {
   expect(percentile([NaN, Infinity, -Infinity], 95)).toBe(0);
 });
 
+test("percentile: null gaps in a trend series are left out", () => {
+  expect(percentile([null, 10, null, 20], 50)).toBe(15);
+  expect(percentile([null, null], 95)).toBe(0);
+});
+
 test("percentile: single-element series returns that element", () => {
   expect(percentile([42], 95)).toBe(42);
 });
@@ -96,6 +101,13 @@ test("lastDelta: a previous sample of zero has no delta", () => {
   // nothing, so the tile renders no delta rather than a misleading one.
   expect(lastDelta([0, 5])).toBeNull();
   expect(lastDelta([0, 0])).toBeNull();
+});
+
+test("lastDelta: a null gap in either of the last two steps has no delta", () => {
+  // Reaching back past the gap would compare samples two steps apart.
+  expect(lastDelta([5, 10, null])).toBeNull();
+  expect(lastDelta([5, null, 10])).toBeNull();
+  expect(lastDelta([null, 10, 20])).toBe(100);
 });
 
 test("lastDelta: a non-finite endpoint has no delta", () => {

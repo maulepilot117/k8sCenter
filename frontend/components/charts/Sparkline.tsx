@@ -7,9 +7,11 @@ import {
   formatValue,
   valueDomain,
 } from "@/components/charts/chart-theme.ts";
+import { isFiniteNumber } from "@/lib/format.ts";
 
 interface SparklineProps {
-  data: number[];
+  /** Oldest first. Null and non-finite entries are left out of the line. */
+  data: ReadonlyArray<number | null>;
   /** What the series is, read out with its latest value, e.g. "CPU usage". */
   name?: string;
   /** Fixed pixel width. Omit to fill the container (default). */
@@ -41,7 +43,7 @@ export default function Sparkline({
 }: SparklineProps) {
   const gradientId = `spark-${useId()}`;
 
-  const clean = data.filter((v) => Number.isFinite(v));
+  const clean = data.filter(isFiniteNumber);
   const latest = clean[clean.length - 1];
   const rows = (clean.length === 1 ? [clean[0], clean[0]] : clean).map((v) => ({
     v,

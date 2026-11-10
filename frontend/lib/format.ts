@@ -41,14 +41,14 @@ export function durationShort(ms: number | null | undefined): string {
 
 /**
  * Linear-interpolated percentile (`p` in 0..100) over a numeric series.
- * Non-finite samples are dropped first; returns 0 for an empty or
- * all-non-finite series, and the sole value for a single-element series.
+ * Non-finite samples and null gaps are dropped first; returns 0 for an empty
+ * or all-non-finite series, and the sole value for a single-element series.
  */
 export function percentile(
-  series: number[] | null | undefined,
+  series: ReadonlyArray<number | null> | null | undefined,
   p: number,
 ): number {
-  const clean = (series ?? []).filter((v) => Number.isFinite(v));
+  const clean = (series ?? []).filter(isFiniteNumber);
   if (clean.length === 0) return 0;
   if (clean.length === 1) return clean[0];
   const sorted = [...clean].sort((a, b) => a - b);
@@ -83,12 +83,22 @@ export function formatMbps(v: number): string {
  * meaningful percent change from nothing, and the tile renders no delta at all
  * rather than a misleading one.
  */
-export function lastDelta(series: number[] | null | undefined): number | null {
+export function lastDelta(
+  series: ReadonlyArray<number | null> | null | undefined,
+): number | null {
   if (!series || series.length < 2) return null;
   const last = series[series.length - 1];
   const prev = series[series.length - 2];
-  if (!Number.isFinite(last) || !Number.isFinite(prev) || prev === 0) {
+  // A gap in either of the last two steps means there is no change to report;
+  // reaching back past the gap would compare samples a step further apart than
+  // the tile implies.
+  if (!isFiniteNumber(last) || !isFiniteNumber(prev) || prev === 0) {
     return null;
   }
   return Math.round(((last - prev) / prev) * 100);
+}
+
+/** True for a finite number; false for null, undefined, NaN and ±Infinity. */
+export function isFiniteNumber(v: number | null | undefined): v is number {
+  return typeof v === "number" && Number.isFinite(v);
 }

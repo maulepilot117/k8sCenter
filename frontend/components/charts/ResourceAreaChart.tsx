@@ -1,6 +1,8 @@
 /** @jsxImportSource react */
 import { useId, useMemo } from "react";
 import { Area, AreaChart } from "recharts";
+import type { TrendSeries } from "@/lib/dashboard/wire-types.ts";
+import { isFiniteNumber } from "@/lib/format.ts";
 import { ChartTooltip, TimeXAxis, ValueYAxis } from "./ChartAxes.tsx";
 import ChartFrame from "./ChartFrame.tsx";
 import { AXIS_CHART_PROPS, HOUR, MINUTE } from "./chart-theme.ts";
@@ -55,19 +57,22 @@ interface TrendRow {
 }
 
 /**
- * One row per sample time. Each series ends at `end`, so its point i of n sits
- * at end - (n - 1 - i) * step, even when it is shorter than the window.
+ * One row per sample time. The backend puts every series on one grid that
+ * ends at `end`, with null for a step Prometheus had no value for, so point i
+ * of n sits at end - (n - 1 - i) * step. A null or non-finite entry is skipped
+ * but keeps its index: the samples before it stay on their own steps, and CPU
+ * and memory line up step for step.
  */
 function buildRows(
-  cpu: number[],
-  memory: number[],
+  cpu: TrendSeries,
+  memory: TrendSeries,
   end: number,
   step: number,
 ): TrendRow[] {
   const rows = new Map<number, TrendRow>();
-  const place = (values: number[], key: "cpu" | "memory") => {
+  const place = (values: TrendSeries, key: "cpu" | "memory") => {
     values.forEach((v, i) => {
-      if (!Number.isFinite(v)) return;
+      if (!isFiniteNumber(v)) return;
       const t = end - (values.length - 1 - i) * step;
       const row = rows.get(t) ?? { t };
       row[key] = v;
@@ -80,8 +85,10 @@ function buildRows(
 }
 
 export interface ResourceAreaChartProps {
-  cpuData: number[] | null;
-  memData: number[] | null;
+  /** CPU percentages on the response's grid; null entries are gaps. */
+  cpuData: TrendSeries | null;
+  /** Memory percentages on the same grid as `cpuData`. */
+  memData: TrendSeries | null;
   /** Span of the series as a Go duration ("1h0m0s"). Defaults to one hour. */
   window?: string;
   /** Spacing between samples as a Go duration ("2m0s"). Defaults to two minutes. */

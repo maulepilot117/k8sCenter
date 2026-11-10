@@ -40,24 +40,36 @@ export interface DashboardSummary {
 }
 
 /**
+ * One trend series on the response's time grid, oldest first: entry k was
+ * sampled at end - window + k * step. A null entry is a step Prometheus had no
+ * value for. It keeps its slot so every later entry stays on its own step;
+ * skip it, never compact it out, when the position means a time.
+ */
+export type TrendSeries = ReadonlyArray<number | null>;
+
+/**
  * Mirrors the backend payload from GET /v1/cluster/dashboard-trends — short
  * historical series (oldest→newest) that back the metric-card sparklines. Any
- * series may be empty when Prometheus or kube-state-metrics is unavailable;
+ * series may be null when Prometheus or kube-state-metrics is unavailable;
  * the cards then render no sparkline.
  */
 export interface DashboardTrends {
-  pods: number[] | null;
-  cpu: number[] | null;
-  memory: number[] | null;
+  pods: TrendSeries | null;
+  cpu: TrendSeries | null;
+  memory: TrendSeries | null;
   // Cluster-wide network throughput in Mbps (oldest→newest). The Network I/O
   // tile derives its displayed RX/TX p95 from these series, so the value tracks
   // whichever time-range tab is active.
-  networkRx: number[] | null;
-  networkTx: number[] | null;
+  networkRx: TrendSeries | null;
+  networkTx: TrendSeries | null;
   // Span and sample spacing of the series above, as Go durations ("1h0m0s",
   // "2m0s"). Optional: older backends omit them and the chart assumes 1h / 2m.
   window?: string;
   step?: string;
+  // When the newest grid step was taken, as an RFC 3339 time. Optional: older
+  // backends and responses with no query omit it, and the chart then anchors
+  // on when the payload arrived.
+  end?: string;
 }
 
 /**
