@@ -6,8 +6,8 @@ setupDom({ browser: true });
 
 const { dashboardData } = await import("@/lib/dashboard/data.ts");
 const { getWidget } = await import("@/lib/dashboard/registry.ts");
-// The single widget file, not the index: the index pulls in modules that load
-// @preact/signals, whose component tracking would mask a missing subscription.
+// The single widget file, not the index: other widgets could read the same
+// signals and mask a missing subscription in this one.
 await import("@/components/dashboard/widgets/ClusterTopologyWidget.tsx");
 
 const KEYS = [
@@ -157,8 +157,13 @@ describe("ClusterTopologyWidget wheel registration", () => {
     try {
       seedAll([pod("alpha")]);
       mount();
-      const calls = [...spy.mock.calls, ...svgSpy.mock.calls].filter(
-        (c) => c[0] === "wheel",
+      // React registers its own wheel listener on the root container; only
+      // the one the widget puts on its own svg is under test.
+      const svg = body().getByRole("group");
+      const calls = [spy, svgSpy].flatMap((s) =>
+        s.mock.calls.filter(
+          (c, i) => c[0] === "wheel" && s.mock.contexts[i] === svg,
+        ),
       );
       expect(calls.length).toBeGreaterThan(0);
       for (const c of calls) {

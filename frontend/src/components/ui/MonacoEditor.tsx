@@ -245,9 +245,7 @@ export function MonacoEditor({
           onChange={(e) => onChange?.(e.currentTarget.value)}
           readOnly={readOnly}
           className="w-full h-full bg-transparent text-text-primary font-mono text-sm p-4 resize-none focus:outline-none focus:ring-2 focus:ring-brand"
-          // Preact's JSX types, in force until the runtime switch, only know
-          // the lowercase name; rename to spellCheck when React's arrive.
-          spellcheck={false}
+          spellCheck={false}
         />
       </div>
     );

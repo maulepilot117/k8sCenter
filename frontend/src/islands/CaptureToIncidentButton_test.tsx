@@ -1313,7 +1313,9 @@ test("a record written as one user is never read as another: no retry label, no 
 test("until the signed-in user is known the button is inactive and says why", async () => {
   stub(() => empty);
   const root = await mount({});
-  await logout();
+  await act(async () => {
+    await logout();
+  });
   await settle();
   const trigger = q(root, "capture-to-incident");
   expect(trigger.getAttribute("aria-disabled")).toBe("true");
@@ -1623,8 +1625,10 @@ test("while the user is loading the button says so, and selecting it starts no s
   );
   await click(trigger);
   expect(calls.filter((c) => c.path === "/api/v1/auth/me")).toHaveLength(1);
-  held.release();
-  await loading;
+  await act(async () => {
+    held.release();
+    await loading;
+  });
   await settle();
   expect(trigger.getAttribute("aria-disabled")).toBe("false");
 });

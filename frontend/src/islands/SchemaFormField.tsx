@@ -967,8 +967,7 @@ function YamlSubtreeField({
         value={yamlText}
         onChange={handleChange}
         placeholder="# Enter YAML..."
-        // Preact types lack spellCheck; compat maps it to the attribute.
-        spellcheck={false}
+        spellCheck={false}
       />
     </FieldWrapper>
   );

@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The "New incident" form's outstanding create across a reload (#597). A
@@ -259,11 +259,7 @@ const field = (root: HTMLElement, id: string) =>
   root.querySelector(`#${id}`) as HTMLInputElement | HTMLTextAreaElement;
 
 async function type(root: HTMLElement, id: string, value: string) {
-  act(() => {
-    const el = field(root, id);
-    el.value = value;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  fireEvent.input(field(root, id), { target: { value } });
   await settle();
 }
 
@@ -830,9 +826,9 @@ test("a user switch with the form open closes it: u2 never sees u1's draft, and 
 
   // u2 signs in outside act: the island re-renders with u2, but the effect
   // that restores u2's record has not run yet. Scheduled outside act, that
-  // effect waits for the next animation frame or Preact's 100 ms fallback
-  // timer; frames are stopped here so it is the timer in every environment
-  // (frames do not reliably fire on CI).
+  // effect waits for the next animation frame or a fallback timer; frames
+  // are stopped here so it is the timer in every environment (frames do not
+  // reliably fire on CI).
   const raf = spyOn(globalThis, "requestAnimationFrame").mockImplementation(
     () => 0,
   );

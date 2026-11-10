@@ -83,21 +83,19 @@ function styledName(name: string, status: StatusValue = "neutral"): ReactNode {
         gap: "7px",
       },
     },
-    [
-      createElement(StatusDot, { status, size: 6 }),
-      createElement(
-        "span",
-        {
-          style: {
-            color: "var(--accent)",
-            fontFamily: "var(--font-mono, monospace)",
-            fontWeight: 500,
-            fontSize: "13px",
-          },
+    createElement(StatusDot, { status, size: 6 }),
+    createElement(
+      "span",
+      {
+        style: {
+          color: "var(--accent)",
+          fontFamily: "var(--font-mono, monospace)",
+          fontWeight: 500,
+          fontSize: "13px",
         },
-        name,
-      ),
-    ],
+      },
+      name,
+    ),
   );
 }
 
@@ -181,17 +179,15 @@ function styledBadge(
         color: c.text,
       },
     },
-    [
-      createElement("span", {
-        style: {
-          width: "6px",
-          height: "6px",
-          borderRadius: "50%",
-          background: c.dot,
-        },
-      }),
-      text,
-    ],
+    createElement("span", {
+      style: {
+        width: "6px",
+        height: "6px",
+        borderRadius: "50%",
+        background: c.dot,
+      },
+    }),
+    text,
   );
 }
 
@@ -222,20 +218,18 @@ function styledReplicaDots(
   return createElement(
     "div",
     { style: { display: "flex", alignItems: "center", gap: "6px" } },
-    [
-      createElement("div", { style: { display: "flex", gap: "3px" } }, dots),
-      createElement(
-        "span",
-        {
-          style: {
-            fontSize: "12px",
-            fontFamily: "var(--font-mono, monospace)",
-            color: "var(--text-secondary)",
-          },
+    createElement("div", { style: { display: "flex", gap: "3px" } }, dots),
+    createElement(
+      "span",
+      {
+        style: {
+          fontSize: "12px",
+          fontFamily: "var(--font-mono, monospace)",
+          color: "var(--text-secondary)",
         },
-        `${ready}/${desired}`,
-      ),
-    ],
+      },
+      `${ready}/${desired}`,
+    ),
   );
 }
 
@@ -951,7 +945,9 @@ const networkpolicyColumns: Column<K8sResource>[] = [
       return createElement(
         "span",
         { style: { display: "flex", gap: "4px" } },
-        types.map((t) => styledBadge(t, t === "Ingress" ? "info" : "warning")),
+        ...types.map((t) =>
+          styledBadge(t, t === "Ingress" ? "info" : "warning"),
+        ),
       );
     },
   },

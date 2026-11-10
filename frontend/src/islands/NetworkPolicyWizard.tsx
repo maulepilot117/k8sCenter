@@ -1248,16 +1248,18 @@ function PeerEditor({
       >
         <select
           value={peer.type}
-          onChange={(e) =>
+          onChange={(e) => {
+            // Read before the updater runs: React clears currentTarget once
+            // the handler returns, and updaters run later.
+            const type = e.currentTarget.value as NPPeerState["type"];
             onUpdate((p) => ({
               ...p,
-              type: (e.currentTarget as HTMLSelectElement)
-                .value as NPPeerState["type"],
+              type,
               labels: [newLabelEntry()],
               cidr: "",
               except: [],
-            }))
-          }
+            }));
+          }}
           className={WIZARD_INPUT_CLASS}
           style={{ width: "180px" }}
         >
@@ -1400,12 +1402,10 @@ function PeerEditor({
             <input
               type="text"
               value={peer.cidr}
-              onChange={(e) =>
-                onUpdate((p) => ({
-                  ...p,
-                  cidr: e.currentTarget.value,
-                }))
-              }
+              onChange={(e) => {
+                const cidr = e.currentTarget.value;
+                onUpdate((p) => ({ ...p, cidr }));
+              }}
               placeholder="10.0.0.0/8"
               className={WIZARD_INPUT_CLASS}
             />

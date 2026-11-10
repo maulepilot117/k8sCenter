@@ -442,11 +442,10 @@ test("toggling Previous drops the old stream's unflushed and late lines", async 
     const box = host?.querySelector(
       'input[type="checkbox"]',
     ) as HTMLInputElement;
-    box.checked = true;
     // Outside act(): a browser runs the effect cleanup (which also closes
     // sockets) only after the next frame, so the handler itself must stop
-    // the old stream.
-    box.dispatchEvent(new Event("change", { bubbles: true }));
+    // the old stream. A checkbox toggles through click, which React listens to.
+    box.click();
     expect(first.closed).toBe(true);
     first.onmessage?.({
       data: JSON.stringify({ type: "log", data: "late current line" }),
@@ -471,10 +470,7 @@ test("Previous on a container that never restarted shows the refusal alone", asy
     const box = host?.querySelector(
       'input[type="checkbox"]',
     ) as HTMLInputElement;
-    box.checked = true;
-    act(() => {
-      box.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    act(() => box.click());
     await settle();
 
     const second = latestSocket();

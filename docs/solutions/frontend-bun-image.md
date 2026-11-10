@@ -31,7 +31,7 @@ fails at runtime because `@astrojs/node` locates its own static-asset directory
 by walking `import.meta.url` for a literal `server` path segment, and a
 compiled binary's virtual path (`/$bunfs/...`) has none. Dynamically importing
 the on-disk `dist/server/entry.mjs` instead fails too, on unresolvable external
-imports such as `preact`.
+imports such as `react-dom/server`.
 
 What works, and what ships:
 

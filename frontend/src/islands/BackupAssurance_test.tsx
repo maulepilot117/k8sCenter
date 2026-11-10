@@ -201,10 +201,12 @@ async function mount() {
   return view.container as HTMLElement;
 }
 
-const click = (el: Element) =>
-  act(async () => {
+const click = async (el: Element) => {
+  await act(async () => {
     fireEvent.click(el);
-  }).then(() => settle());
+  });
+  await settle();
+};
 
 const button = (name: string | RegExp) =>
   body().getByRole("button", { name }) as HTMLButtonElement;

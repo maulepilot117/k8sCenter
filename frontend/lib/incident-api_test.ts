@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createElement } from "react";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 import { ApiError, setAccessToken } from "./api.ts";
 import { fetchCurrentUser, logout } from "./auth.ts";
 import { switchCluster } from "./cluster.ts";
@@ -797,8 +797,7 @@ async function mount() {
 
 function setValue(el: Element | null, value: string) {
   const input = el as HTMLInputElement | HTMLTextAreaElement;
-  input.value = value;
-  input.dispatchEvent(new Event("input", { bubbles: true }));
+  fireEvent.input(input, { target: { value } });
 }
 
 test("IncidentList: lists incidents with status, role and a detail link", async () => {

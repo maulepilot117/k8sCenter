@@ -86,10 +86,9 @@ test("IconRail shows a tooltip while a section is hovered", async () => {
       "Workloads",
     ),
   );
-  fireEvent(
+  fireEvent.mouseLeave(
     body().getByRole("link", { name: "Workloads" })
       .parentElement as HTMLElement,
-    new MouseEvent("mouseleave", { bubbles: false }),
   );
   await waitFor(() =>
     expect(document.querySelector(".rail-tooltip")).toBeNull(),

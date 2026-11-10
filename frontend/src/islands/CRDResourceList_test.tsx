@@ -134,13 +134,11 @@ test("the search box filters rows by name", async () => {
   await waitFor(() => body().getByText("alpha"));
 
   const input = body().getByPlaceholderText("Search widgets...");
-  (input as HTMLInputElement).value = "alp";
-  fireEvent.input(input);
+  fireEvent.input(input, { target: { value: "alp" } });
   await waitFor(() => expect(body().queryByText("beta")).toBeNull());
   expect(body().getByText("alpha")).toBeTruthy();
 
-  (input as HTMLInputElement).value = "zzz";
-  fireEvent.input(input);
+  fireEvent.input(input, { target: { value: "zzz" } });
   await waitFor(() => body().getByText("No matching results"));
 });
 
@@ -181,8 +179,10 @@ test("confirming a delete sends one DELETE, drops the row and toasts", async () 
   expect(confirm).toBeTruthy();
   const target = confirm as HTMLElement;
   // A double click must still send a single request.
-  fireEvent.click(target);
-  fireEvent.click(target);
+  act(() => {
+    fireEvent.click(target);
+    fireEvent.click(target);
+  });
 
   await waitFor(() => expect(body().queryByText("alpha")).toBeNull());
   const deletes = calls.filter((c) => c.method === "DELETE");

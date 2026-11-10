@@ -123,6 +123,26 @@ const expected: Record<string, Record<string, string>> = {
   },
 };
 
+// The recorded markup came from another renderer, which writes a trailing ";"
+// after the last style declaration and keeps attributes in source order. React
+// drops the ";" and orders them differently. Same DOM either way, so compare
+// each tag with its style trimmed and its attributes sorted.
+function canonical(html: string): string {
+  return html.replace(
+    /<([a-z0-9]+)((?:\s+[a-z-]+="[^"]*")*)\s*>/g,
+    (_m, tag, attrs) => {
+      const list = [...String(attrs).matchAll(/([a-z-]+)="([^"]*)"/g)]
+        .map(([, name, value]) =>
+          name === "style"
+            ? `style="${value.replace(/;$/, "")}"`
+            : `${name}="${value}"`,
+        )
+        .sort();
+      return `<${tag}${list.map((a) => ` ${a}`).join("")}>`;
+    },
+  );
+}
+
 for (const [kind, cells] of Object.entries(expected)) {
   test(`${kind} cells render the recorded markup`, () => {
     const item = fixtures[kind] as K8sResource;
@@ -132,7 +152,7 @@ for (const [kind, cells] of Object.entries(expected)) {
       const html = renderToString(
         createElement(Fragment, null, col.render?.(item)),
       );
-      expect(html).toBe(cells[col.key]);
+      expect(canonical(html)).toBe(canonical(cells[col.key]));
     }
   });
 }

@@ -1,7 +1,13 @@
 /** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
-import { act, render, settle, setupDom } from "@/src/test-utils/render.tsx";
+import {
+  act,
+  fireEvent,
+  render,
+  settle,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
 /**
  * The per-cluster metrics binding form (#608 PR 4a). The island only runs its
@@ -170,8 +176,7 @@ function input(root: HTMLElement, placeholder: string): HTMLInputElement {
 
 async function type(el: HTMLInputElement, value: string) {
   await act(async () => {
-    el.value = value;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    fireEvent.input(el, { target: { value } });
   });
 }
 
@@ -488,8 +493,7 @@ async function typeText(
   value: string,
 ) {
   await act(async () => {
-    el.value = value;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    fireEvent.input(el, { target: { value } });
   });
 }
 

@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
 import { afterEach, expect, test } from "bun:test";
 import type { NoteView } from "@/lib/incident-types.ts";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 
@@ -94,10 +94,7 @@ const click = async (root: HTMLElement, label: string) => {
   await flush();
 };
 const type = (el: HTMLTextAreaElement, value: string) =>
-  act(() => {
-    el.value = value;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  fireEvent.input(el, { target: { value } });
 const editor = (root: HTMLElement, id: string) =>
   root.querySelector(`textarea#note-edit-${id}`) as HTMLTextAreaElement | null;
 const conflict = (current: number) =>

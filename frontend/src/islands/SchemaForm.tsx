@@ -873,8 +873,7 @@ export default function SchemaForm({
                   }
                 }}
                 placeholder="# Enter spec YAML..."
-                // Preact types lack spellCheck; compat maps it to the attribute.
-                spellcheck={false}
+                spellCheck={false}
               />
             </div>
           )}

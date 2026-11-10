@@ -1,7 +1,5 @@
 /** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-// Loads preact/compat, as ToastProvider does on every ChromeLayout page, so
-// `onChange` on text inputs listens to `input` events as it does in the app.
 import { useContext, useEffect } from "react";
 import { wizardBusy } from "@/lib/wizard-busy.ts";
 import { WizardPrimaryActionContext } from "@/lib/wizard-primary-action.ts";
@@ -76,8 +74,7 @@ const posts = () => calls.filter((c) => c.method === "POST");
 
 /** Typing: an `input` event, which is what text inputs listen to. */
 function type(el: Element, value: string) {
-  (el as HTMLInputElement | HTMLTextAreaElement).value = value;
-  fireEvent.input(el);
+  fireEvent.input(el, { target: { value } });
 }
 
 // ── WizardShell ─────────────────────────────────────────────────────────

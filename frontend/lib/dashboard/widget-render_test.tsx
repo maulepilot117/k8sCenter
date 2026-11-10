@@ -1,6 +1,6 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { render } from "preact-render-to-string";
+import { renderToString } from "react-dom/server";
 // Registers every widget. Without it the registry is empty and each lookup
 // below would return undefined, so these tests would pass vacuously.
 import "@/components/dashboard/widgets/index.ts";
@@ -15,6 +15,11 @@ import {
   sourceKeyFor,
 } from "./params.ts";
 import { getWidget } from "./registry.ts";
+
+/** React server output separates adjacent text nodes with comment markers; drop them so assertions read the visible text. */
+function render(node: Parameters<typeof renderToString>[0]): string {
+  return renderToString(node).replaceAll("<!-- -->", "");
+}
 
 /**
  * Render coverage for the widget bodies.
@@ -36,10 +41,9 @@ import { getWidget } from "./registry.ts";
  * card, and a card whose absence arrives as a status code rather than a
  * discovery route.
  *
- * `preact-render-to-string` rather than a DOM harness: these branches are
- * static output, no events and no effects, so a DOM adds a dependency and a
- * global registrator for nothing. It was already in the tree via
- * @astrojs/preact; this file is why it is now declared directly.
+ * `react-dom/server` rather than a DOM harness: these branches are static
+ * output, no events and no effects, so a DOM adds a global registrator for
+ * nothing.
  */
 
 /** Seeds one source key's state, the way a landed fetch would. */

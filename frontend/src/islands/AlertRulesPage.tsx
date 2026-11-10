@@ -212,9 +212,7 @@ export default function AlertRulesPage() {
           <textarea
             value={editorContent}
             onChange={(e) => setEditorContent(e.currentTarget.value)}
-            // Preact's JSX types, in force until the runtime switch, only know
-            // the lowercase name; rename to spellCheck when React's arrive.
-            spellcheck={false}
+            spellCheck={false}
             style={{
               width: "100%",
               height: "384px",
