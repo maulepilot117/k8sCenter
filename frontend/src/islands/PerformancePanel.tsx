@@ -1,5 +1,18 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Area, AreaChart } from "recharts";
+import {
+  ChartTooltip,
+  TimeXAxis,
+  ValueYAxis,
+} from "@/components/charts/ChartAxes.tsx";
+import ChartFrame from "@/components/charts/ChartFrame.tsx";
+import {
+  AXIS_CHART_PROPS,
+  CHART_TOKENS,
+  formatValue,
+  type ValueUnit,
+} from "@/components/charts/chart-theme.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
@@ -30,186 +43,435 @@ interface QueryRangeResult {
  * The backend enforces RBAC per slug — no raw PromQL is sent from the client.
  * Finding P2-4 of the 2026-05-22 security audit.
  */
-const QUERIES: Record<string, { title: string; slug: string }[]> = {
+const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
+
+interface QueryDef {
+  title: string;
+  slug: string;
+  unit: ValueUnit;
+  /** Multiplier from the value the backend reports (MB, GiB) to the unit's base (bytes). */
+  scale?: number;
+}
+
+const QUERIES: Record<string, QueryDef[]> = {
   deployments: [
-    { title: "CPU Usage (cores)", slug: "deployments/cpu" },
-    { title: "Memory Usage (MB)", slug: "deployments/memory" },
-    { title: "Network Rx (KB/s)", slug: "deployments/network-rx" },
-    { title: "Network Tx (KB/s)", slug: "deployments/network-tx" },
-    { title: "Replicas", slug: "deployments/replicas" },
-    { title: "Unavailable Replicas", slug: "deployments/replicas-unavailable" },
-    { title: "CPU Request (cores)", slug: "deployments/cpu-request" },
-    { title: "Memory Request (MB)", slug: "deployments/memory-request" },
+    { title: "CPU Usage (cores)", slug: "deployments/cpu", unit: "cores" },
+    {
+      title: "Memory Usage (MB)",
+      slug: "deployments/memory",
+      unit: "bytes",
+      scale: MIB,
+    },
+    {
+      title: "Network Rx (KB/s)",
+      slug: "deployments/network-rx",
+      unit: "number",
+    },
+    {
+      title: "Network Tx (KB/s)",
+      slug: "deployments/network-tx",
+      unit: "number",
+    },
+    { title: "Replicas", slug: "deployments/replicas", unit: "number" },
+    {
+      title: "Unavailable Replicas",
+      slug: "deployments/replicas-unavailable",
+      unit: "number",
+    },
+    {
+      title: "CPU Request (cores)",
+      slug: "deployments/cpu-request",
+      unit: "cores",
+    },
+    {
+      title: "Memory Request (MB)",
+      slug: "deployments/memory-request",
+      unit: "bytes",
+      scale: MIB,
+    },
   ],
   pods: [
-    { title: "CPU Usage (cores)", slug: "pods/cpu" },
-    { title: "Memory Usage (MB)", slug: "pods/memory" },
-    { title: "Network Rx (KB/s)", slug: "pods/network-rx" },
-    { title: "Network Tx (KB/s)", slug: "pods/network-tx" },
-    { title: "Container Restarts", slug: "pods/restarts" },
-    { title: "Cilium Policy Drops", slug: "pods/cilium-drops" },
+    { title: "CPU Usage (cores)", slug: "pods/cpu", unit: "cores" },
+    {
+      title: "Memory Usage (MB)",
+      slug: "pods/memory",
+      unit: "bytes",
+      scale: MIB,
+    },
+    { title: "Network Rx (KB/s)", slug: "pods/network-rx", unit: "number" },
+    { title: "Network Tx (KB/s)", slug: "pods/network-tx", unit: "number" },
+    { title: "Container Restarts", slug: "pods/restarts", unit: "number" },
+    { title: "Cilium Policy Drops", slug: "pods/cilium-drops", unit: "number" },
   ],
   nodes: [
-    { title: "CPU Usage %", slug: "nodes/cpu" },
-    { title: "Memory Usage %", slug: "nodes/memory" },
-    { title: "Load Average (5m)", slug: "nodes/load" },
-    { title: "Network Rx (MB/s)", slug: "nodes/network-rx" },
-    { title: "Network Tx (MB/s)", slug: "nodes/network-tx" },
-    { title: "Disk Read (MB/s)", slug: "nodes/disk-read" },
-    { title: "Disk Write (MB/s)", slug: "nodes/disk-write" },
+    { title: "CPU Usage %", slug: "nodes/cpu", unit: "percent" },
+    { title: "Memory Usage %", slug: "nodes/memory", unit: "percent" },
+    { title: "Load Average (5m)", slug: "nodes/load", unit: "number" },
+    { title: "Network Rx (MB/s)", slug: "nodes/network-rx", unit: "number" },
+    { title: "Network Tx (MB/s)", slug: "nodes/network-tx", unit: "number" },
+    { title: "Disk Read (MB/s)", slug: "nodes/disk-read", unit: "number" },
+    { title: "Disk Write (MB/s)", slug: "nodes/disk-write", unit: "number" },
   ],
   statefulsets: [
-    { title: "CPU Usage (cores)", slug: "statefulsets/cpu" },
-    { title: "Memory Usage (MB)", slug: "statefulsets/memory" },
-    { title: "Network Rx (KB/s)", slug: "statefulsets/network-rx" },
-    { title: "Network Tx (KB/s)", slug: "statefulsets/network-tx" },
-    { title: "Ready Replicas", slug: "statefulsets/replicas-ready" },
-    { title: "CPU Request (cores)", slug: "statefulsets/cpu-request" },
-    { title: "Memory Request (MB)", slug: "statefulsets/memory-request" },
+    { title: "CPU Usage (cores)", slug: "statefulsets/cpu", unit: "cores" },
+    {
+      title: "Memory Usage (MB)",
+      slug: "statefulsets/memory",
+      unit: "bytes",
+      scale: MIB,
+    },
+    {
+      title: "Network Rx (KB/s)",
+      slug: "statefulsets/network-rx",
+      unit: "number",
+    },
+    {
+      title: "Network Tx (KB/s)",
+      slug: "statefulsets/network-tx",
+      unit: "number",
+    },
+    {
+      title: "Ready Replicas",
+      slug: "statefulsets/replicas-ready",
+      unit: "number",
+    },
+    {
+      title: "CPU Request (cores)",
+      slug: "statefulsets/cpu-request",
+      unit: "cores",
+    },
+    {
+      title: "Memory Request (MB)",
+      slug: "statefulsets/memory-request",
+      unit: "bytes",
+      scale: MIB,
+    },
   ],
   daemonsets: [
-    { title: "CPU Usage (cores)", slug: "daemonsets/cpu" },
-    { title: "Memory Usage (MB)", slug: "daemonsets/memory" },
-    { title: "Network Rx (KB/s)", slug: "daemonsets/network-rx" },
-    { title: "Ready / Desired", slug: "daemonsets/ready" },
-    { title: "CPU Request (cores)", slug: "daemonsets/cpu-request" },
-    { title: "Memory Request (MB)", slug: "daemonsets/memory-request" },
+    { title: "CPU Usage (cores)", slug: "daemonsets/cpu", unit: "cores" },
+    {
+      title: "Memory Usage (MB)",
+      slug: "daemonsets/memory",
+      unit: "bytes",
+      scale: MIB,
+    },
+    {
+      title: "Network Rx (KB/s)",
+      slug: "daemonsets/network-rx",
+      unit: "number",
+    },
+    { title: "Ready / Desired", slug: "daemonsets/ready", unit: "number" },
+    {
+      title: "CPU Request (cores)",
+      slug: "daemonsets/cpu-request",
+      unit: "cores",
+    },
+    {
+      title: "Memory Request (MB)",
+      slug: "daemonsets/memory-request",
+      unit: "bytes",
+      scale: MIB,
+    },
   ],
   replicasets: [
-    { title: "CPU Usage (cores)", slug: "replicasets/cpu" },
-    { title: "Memory Usage (MB)", slug: "replicasets/memory" },
+    { title: "CPU Usage (cores)", slug: "replicasets/cpu", unit: "cores" },
+    {
+      title: "Memory Usage (MB)",
+      slug: "replicasets/memory",
+      unit: "bytes",
+      scale: MIB,
+    },
   ],
   jobs: [
-    { title: "CPU Usage (cores)", slug: "jobs/cpu" },
-    { title: "Memory Usage (MB)", slug: "jobs/memory" },
+    { title: "CPU Usage (cores)", slug: "jobs/cpu", unit: "cores" },
+    {
+      title: "Memory Usage (MB)",
+      slug: "jobs/memory",
+      unit: "bytes",
+      scale: MIB,
+    },
   ],
   cronjobs: [
-    { title: "Last Job CPU (cores)", slug: "cronjobs/cpu" },
-    { title: "Last Job Memory (MB)", slug: "cronjobs/memory" },
+    { title: "Last Job CPU (cores)", slug: "cronjobs/cpu", unit: "cores" },
+    {
+      title: "Last Job Memory (MB)",
+      slug: "cronjobs/memory",
+      unit: "bytes",
+      scale: MIB,
+    },
   ],
   services: [
-    { title: "Endpoint Pods CPU (cores)", slug: "services/endpoint-cpu" },
+    {
+      title: "Endpoint Pods CPU (cores)",
+      slug: "services/endpoint-cpu",
+      unit: "cores",
+    },
   ],
   storageclasses: [
-    { title: "PV Count", slug: "storageclasses/pv-count" },
-    { title: "PVC Count", slug: "storageclasses/pvc-count" },
-    { title: "Total Provisioned (GiB)", slug: "storageclasses/provisioned" },
-    { title: "Total Used (GiB)", slug: "storageclasses/used" },
+    { title: "PV Count", slug: "storageclasses/pv-count", unit: "number" },
+    { title: "PVC Count", slug: "storageclasses/pvc-count", unit: "number" },
+    {
+      title: "Total Provisioned (GiB)",
+      slug: "storageclasses/provisioned",
+      unit: "bytes",
+      scale: GIB,
+    },
+    {
+      title: "Total Used (GiB)",
+      slug: "storageclasses/used",
+      unit: "bytes",
+      scale: GIB,
+    },
   ],
   pvs: [
-    { title: "Capacity (GiB)", slug: "pvs/capacity" },
-    { title: "Phase", slug: "pvs/phase" },
-    { title: "Bound PVC Usage (GiB)", slug: "pvs/pvc-usage" },
-    { title: "Bound PVC Inodes Used", slug: "pvs/pvc-inodes" },
+    {
+      title: "Capacity (GiB)",
+      slug: "pvs/capacity",
+      unit: "bytes",
+      scale: GIB,
+    },
+    { title: "Phase", slug: "pvs/phase", unit: "number" },
+    {
+      title: "Bound PVC Usage (GiB)",
+      slug: "pvs/pvc-usage",
+      unit: "bytes",
+      scale: GIB,
+    },
+    { title: "Bound PVC Inodes Used", slug: "pvs/pvc-inodes", unit: "number" },
   ],
   pvcs: [
-    { title: "Volume Usage (GiB)", slug: "pvcs/usage" },
-    { title: "Volume Capacity (GiB)", slug: "pvcs/capacity" },
-    { title: "Inodes Used", slug: "pvcs/inodes" },
+    {
+      title: "Volume Usage (GiB)",
+      slug: "pvcs/usage",
+      unit: "bytes",
+      scale: GIB,
+    },
+    {
+      title: "Volume Capacity (GiB)",
+      slug: "pvcs/capacity",
+      unit: "bytes",
+      scale: GIB,
+    },
+    { title: "Inodes Used", slug: "pvcs/inodes", unit: "number" },
   ],
   hpas: [
-    { title: "Current Replicas", slug: "hpas/current-replicas" },
-    { title: "Desired Replicas", slug: "hpas/desired-replicas" },
+    {
+      title: "Current Replicas",
+      slug: "hpas/current-replicas",
+      unit: "number",
+    },
+    {
+      title: "Desired Replicas",
+      slug: "hpas/desired-replicas",
+      unit: "number",
+    },
   ],
   ingresses: [
-    { title: "Request Rate (req/s)", slug: "ingresses/request-rate" },
-    { title: "Error Rate (5xx/s)", slug: "ingresses/error-rate" },
+    {
+      title: "Request Rate (req/s)",
+      slug: "ingresses/request-rate",
+      unit: "number",
+    },
+    {
+      title: "Error Rate (5xx/s)",
+      slug: "ingresses/error-rate",
+      unit: "number",
+    },
   ],
   namespaces: [
-    { title: "Total CPU (cores)", slug: "namespaces/cpu" },
-    { title: "Total Memory (MB)", slug: "namespaces/memory" },
-    { title: "Network Rx (KB/s)", slug: "namespaces/network-rx" },
-    { title: "Network Tx (KB/s)", slug: "namespaces/network-tx" },
-    { title: "Pod Count", slug: "namespaces/pod-count" },
-    { title: "Cilium Policy Drops", slug: "namespaces/cilium-drops" },
+    { title: "Total CPU (cores)", slug: "namespaces/cpu", unit: "cores" },
+    {
+      title: "Total Memory (MB)",
+      slug: "namespaces/memory",
+      unit: "bytes",
+      scale: MIB,
+    },
+    {
+      title: "Network Rx (KB/s)",
+      slug: "namespaces/network-rx",
+      unit: "number",
+    },
+    {
+      title: "Network Tx (KB/s)",
+      slug: "namespaces/network-tx",
+      unit: "number",
+    },
+    { title: "Pod Count", slug: "namespaces/pod-count", unit: "number" },
+    {
+      title: "Cilium Policy Drops",
+      slug: "namespaces/cilium-drops",
+      unit: "number",
+    },
   ],
   networkpolicies: [
     {
       title: "Cilium Forwarded Flows",
       slug: "networkpolicies/cilium-forwarded",
+      unit: "number",
     },
-    { title: "Cilium Dropped Flows", slug: "networkpolicies/cilium-dropped" },
-    { title: "Policy Denied Drops", slug: "networkpolicies/policy-denied" },
-    { title: "TCP Connections (SYN/s)", slug: "networkpolicies/tcp-syn" },
+    {
+      title: "Cilium Dropped Flows",
+      slug: "networkpolicies/cilium-dropped",
+      unit: "number",
+    },
+    {
+      title: "Policy Denied Drops",
+      slug: "networkpolicies/policy-denied",
+      unit: "number",
+    },
+    {
+      title: "TCP Connections (SYN/s)",
+      slug: "networkpolicies/tcp-syn",
+      unit: "number",
+    },
   ],
   ciliumnetworkpolicies: [
     {
       title: "Cilium Forwarded Flows",
       slug: "ciliumnetworkpolicies/cilium-forwarded",
+      unit: "number",
     },
     {
       title: "Cilium Dropped Flows",
       slug: "ciliumnetworkpolicies/cilium-dropped",
+      unit: "number",
     },
     {
       title: "Policy Denied Drops",
       slug: "ciliumnetworkpolicies/policy-denied",
+      unit: "number",
     },
     {
       title: "Policy Verdicts",
       slug: "ciliumnetworkpolicies/policy-verdicts",
+      unit: "number",
     },
   ],
   pdbs: [
-    { title: "Current Healthy", slug: "pdbs/current-healthy" },
-    { title: "Desired Healthy", slug: "pdbs/desired-healthy" },
-    { title: "Disruptions Allowed", slug: "pdbs/disruptions-allowed" },
-    { title: "Expected Pods", slug: "pdbs/expected-pods" },
+    { title: "Current Healthy", slug: "pdbs/current-healthy", unit: "number" },
+    { title: "Desired Healthy", slug: "pdbs/desired-healthy", unit: "number" },
+    {
+      title: "Disruptions Allowed",
+      slug: "pdbs/disruptions-allowed",
+      unit: "number",
+    },
+    { title: "Expected Pods", slug: "pdbs/expected-pods", unit: "number" },
   ],
   resourcequotas: [
-    { title: "CPU Requests Used", slug: "resourcequotas/cpu-used" },
-    { title: "CPU Requests Hard Limit", slug: "resourcequotas/cpu-hard" },
-    { title: "Memory Requests Used (MB)", slug: "resourcequotas/memory-used" },
+    {
+      title: "CPU Requests Used",
+      slug: "resourcequotas/cpu-used",
+      unit: "cores",
+    },
+    {
+      title: "CPU Requests Hard Limit",
+      slug: "resourcequotas/cpu-hard",
+      unit: "cores",
+    },
+    {
+      title: "Memory Requests Used (MB)",
+      slug: "resourcequotas/memory-used",
+      unit: "bytes",
+      scale: MIB,
+    },
     {
       title: "Memory Requests Hard Limit (MB)",
       slug: "resourcequotas/memory-hard",
+      unit: "bytes",
+      scale: MIB,
     },
-    { title: "Pods Used", slug: "resourcequotas/pods-used" },
-    { title: "Pods Hard Limit", slug: "resourcequotas/pods-hard" },
+    { title: "Pods Used", slug: "resourcequotas/pods-used", unit: "number" },
+    {
+      title: "Pods Hard Limit",
+      slug: "resourcequotas/pods-hard",
+      unit: "number",
+    },
   ],
   limitranges: [
-    { title: "Default CPU Limit", slug: "limitranges/cpu-default" },
-    { title: "Default Memory Limit (MB)", slug: "limitranges/memory-default" },
-    { title: "Min CPU Request", slug: "limitranges/cpu-min" },
-    { title: "Max CPU Limit", slug: "limitranges/cpu-max" },
-    { title: "Min Memory Request (MB)", slug: "limitranges/memory-min" },
-    { title: "Max Memory Limit (MB)", slug: "limitranges/memory-max" },
+    {
+      title: "Default CPU Limit",
+      slug: "limitranges/cpu-default",
+      unit: "cores",
+    },
+    {
+      title: "Default Memory Limit (MB)",
+      slug: "limitranges/memory-default",
+      unit: "bytes",
+      scale: MIB,
+    },
+    { title: "Min CPU Request", slug: "limitranges/cpu-min", unit: "cores" },
+    { title: "Max CPU Limit", slug: "limitranges/cpu-max", unit: "cores" },
+    {
+      title: "Min Memory Request (MB)",
+      slug: "limitranges/memory-min",
+      unit: "bytes",
+      scale: MIB,
+    },
+    {
+      title: "Max Memory Limit (MB)",
+      slug: "limitranges/memory-max",
+      unit: "bytes",
+      scale: MIB,
+    },
   ],
   endpoints: [
-    { title: "Available Addresses", slug: "endpoints/available" },
-    { title: "Not Ready Addresses", slug: "endpoints/not-ready" },
+    {
+      title: "Available Addresses",
+      slug: "endpoints/available",
+      unit: "number",
+    },
+    {
+      title: "Not Ready Addresses",
+      slug: "endpoints/not-ready",
+      unit: "number",
+    },
   ],
   endpointslices: [
-    { title: "Ready Endpoints", slug: "endpointslices/ready" },
-    { title: "Serving Endpoints", slug: "endpointslices/serving" },
-    { title: "Terminating Endpoints", slug: "endpointslices/terminating" },
+    { title: "Ready Endpoints", slug: "endpointslices/ready", unit: "number" },
+    {
+      title: "Serving Endpoints",
+      slug: "endpointslices/serving",
+      unit: "number",
+    },
+    {
+      title: "Terminating Endpoints",
+      slug: "endpointslices/terminating",
+      unit: "number",
+    },
   ],
   validatingwebhookconfigurations: [
     {
       title: "Admission Latency (p99, ms)",
       slug: "validatingwebhookconfigurations/latency-p99",
+      unit: "number",
     },
     {
       title: "Request Rate (req/s)",
       slug: "validatingwebhookconfigurations/request-rate",
+      unit: "number",
     },
     {
       title: "Rejection Rate (req/s)",
       slug: "validatingwebhookconfigurations/rejection-rate",
+      unit: "number",
     },
   ],
   mutatingwebhookconfigurations: [
     {
       title: "Admission Latency (p99, ms)",
       slug: "mutatingwebhookconfigurations/latency-p99",
+      unit: "number",
     },
     {
       title: "Request Rate (req/s)",
       slug: "mutatingwebhookconfigurations/request-rate",
+      unit: "number",
     },
     {
       title: "Rejection Rate (req/s)",
       slug: "mutatingwebhookconfigurations/rejection-rate",
+      unit: "number",
     },
   ],
 };
@@ -236,9 +498,16 @@ interface Resource {
   namespace?: string;
 }
 
+/** The last hour, in epoch milliseconds, that the panel queries. */
+const RANGE_MS = 3600 * 1000;
+
 interface ChartData {
   title: string;
-  values: { time: Date; value: number }[];
+  unit: ValueUnit;
+  /** Time span of the query, which the chart's time axis covers. */
+  start: number;
+  end: number;
+  values: { time: number; value: number }[];
   loading: boolean;
   error: string | null;
 }
@@ -320,12 +589,17 @@ export default function PerformancePanel({
     if (!slugDefs || generation !== generationRef.current) return;
 
     const now = new Date();
+    const endMs = now.getTime();
+    const startMs = endMs - RANGE_MS;
     const end = now.toISOString();
-    const start = new Date(now.getTime() - 3600 * 1000).toISOString();
+    const start = new Date(startMs).toISOString();
     const step = "60s";
 
     const initial: ChartData[] = slugDefs.map((t) => ({
       title: t.title,
+      unit: t.unit,
+      start: startMs,
+      end: endMs,
       values: [],
       loading: true,
       error: null,
@@ -377,8 +651,8 @@ export default function PerformancePanel({
 
         const values =
           res.data.result?.[0]?.values?.map(([ts, val]: [number, string]) => ({
-            time: new Date(ts * 1000),
-            value: parseFloat(val),
+            time: ts * 1000,
+            value: parseFloat(val) * (t.scale ?? 1),
           })) || [];
 
         return { index: i, values };
@@ -488,7 +762,7 @@ export default function PerformancePanel({
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {charts.map((chart, i) => (
+          {charts.map((chart) => (
             <div
               key={chart.title}
               className="rounded-lg border border-border-primary bg-surface p-4"
@@ -497,19 +771,19 @@ export default function PerformancePanel({
                 {chart.title}
               </h3>
               {chart.loading ? (
-                <div className="flex h-32 items-center justify-center">
+                <div className="flex h-[232px] items-center justify-center">
                   <Spinner size="sm" className="text-brand" />
                 </div>
               ) : chart.error ? (
-                <div className="flex h-32 items-center justify-center text-sm text-error">
+                <div className="flex h-[232px] items-center justify-center text-sm text-error">
                   {chart.error}
                 </div>
               ) : chart.values.length === 0 ? (
-                <div className="flex h-32 items-center justify-center text-sm text-text-muted">
+                <div className="flex h-[232px] items-center justify-center text-sm text-text-muted">
                   No data
                 </div>
               ) : (
-                <MiniChart values={chart.values} chartId={`${kind}-${i}`} />
+                <MiniChart chart={chart} />
               )}
             </div>
           ))}
@@ -519,84 +793,60 @@ export default function PerformancePanel({
   );
 }
 
-/** Simple SVG sparkline chart */
-function MiniChart({
-  values,
-  chartId,
-}: {
-  values: { time: Date; value: number }[];
-  chartId?: string;
-}) {
-  if (values.length < 2)
-    return <div className="h-32 text-text-muted">No data</div>;
+/** The big readout above a chart: the latest value, to a useful precision. */
+function readout(value: number, unit: ValueUnit): string {
+  if (unit !== "number") return formatValue(value, unit);
+  if (value < 1) return value.toFixed(3);
+  return value < 100 ? value.toFixed(1) : Math.round(value).toString();
+}
 
-  const width = 400;
-  const height = 120;
-  const padding = 4;
-
-  const minVal = Math.min(...values.map((v) => v.value));
-  const maxVal = Math.max(...values.map((v) => v.value));
-  const range = maxVal - minVal || 1;
-
-  const points = values.map((v, i) => {
-    const x = padding + (i / (values.length - 1)) * (width - padding * 2);
-    const y =
-      height - padding - ((v.value - minVal) / range) * (height - padding * 2);
-    return `${x},${y}`;
-  });
-
-  const currentValue = values[values.length - 1].value;
-  const displayValue =
-    currentValue < 1
-      ? currentValue.toFixed(3)
-      : currentValue < 100
-        ? currentValue.toFixed(1)
-        : Math.round(currentValue).toString();
+/** One metric over the queried hour, with time and value axes and a tooltip. */
+function MiniChart({ chart }: { chart: ChartData }) {
+  const gradientId = `area-${useId()}`;
+  const { title, unit, start, end, values } = chart;
+  const rows = values.map((v) => ({ t: v.time, v: v.value }));
+  const latest = values[values.length - 1].value;
 
   return (
     <div>
-      <div className="mb-1 text-right text-lg font-semibold text-text-primary">
-        {displayValue}
+      <div className="mb-1 text-right text-lg font-semibold leading-7 text-text-primary">
+        {readout(latest, unit)}
       </div>
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="h-28 w-full"
-        preserveAspectRatio="none"
+      <ChartFrame
+        preset="axis"
+        kind="metric"
+        label={`${title} over the last hour`}
       >
-        <defs>
-          <linearGradient
-            id={`grad-${chartId ?? "default"}`}
-            x1="0"
-            y1="0"
-            x2="0"
-            y2="1"
-          >
-            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.3" />
-            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        {/* Area fill */}
-        <polygon
-          points={`${points[0].split(",")[0]},${height} ${points.join(" ")} ${
-            points[points.length - 1].split(",")[0]
-          },${height}`}
-          fill={`url(#grad-${chartId ?? "default"})`}
-        />
-        {/* Line */}
-        <polyline
-          points={points.join(" ")}
-          fill="none"
-          stroke="var(--accent)"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
-      <div className="mt-1 flex justify-between text-xs text-text-muted">
-        <span>{values[0].time.toLocaleTimeString()}</span>
-        <span>{values[values.length - 1].time.toLocaleTimeString()}</span>
-      </div>
+        <AreaChart {...AXIS_CHART_PROPS} data={rows}>
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop
+                offset="0%"
+                stopColor={CHART_TOKENS.line}
+                stopOpacity={0.3}
+              />
+              <stop
+                offset="100%"
+                stopColor={CHART_TOKENS.line}
+                stopOpacity={0}
+              />
+            </linearGradient>
+          </defs>
+          <TimeXAxis dataKey="t" start={start} end={end} />
+          <ValueYAxis unit={unit} values={rows.map((r) => r.v)} />
+          <Area
+            dataKey="v"
+            name={title}
+            type="linear"
+            stroke={CHART_TOKENS.line}
+            strokeWidth={2}
+            fill={`url(#${gradientId})`}
+            isAnimationActive={false}
+            dot={rows.length === 1}
+          />
+          <ChartTooltip unit={unit} rangeMs={end - start} />
+        </AreaChart>
+      </ChartFrame>
     </div>
   );
 }
