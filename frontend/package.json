@@ -42,7 +42,7 @@
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
     "@babel/parser": "7.29.8",
-    "@biomejs/biome": "2.5.12",
+    "@biomejs/biome": "2.6.4",
     "@happy-dom/global-registrator": "21.0.3",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",
