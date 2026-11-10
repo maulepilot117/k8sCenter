@@ -1,16 +1,9 @@
 import { expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 const { default: Donut } = await import("./Donut.tsx");
-
-/** Lets Recharts measure its container and draw. */
-async function settle() {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 30));
-  });
-}
 
 /** Drawn sectors: Recharts gives every pie sector this class. */
 function sectors(container: HTMLElement) {

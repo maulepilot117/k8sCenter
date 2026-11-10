@@ -1,17 +1,11 @@
 import { expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 const { SparklineChart } = await import("./SparklineChart.tsx");
 const { NetworkTile } = await import("./NetworkTile.tsx");
 const { MetricTile } = await import("./MetricTile.tsx");
-
-async function settle() {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 30));
-  });
-}
 
 test("the chart fills its container at the given height and is named for the series", async () => {
   const { container, getByRole } = render(

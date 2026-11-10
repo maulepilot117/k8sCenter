@@ -59,6 +59,7 @@ export default function RadialGauge({
         startAngle={90}
         endAngle={-270}
         margin={NO_MARGIN}
+        barCategoryGap={0}
       >
         {secondaryColor && (
           <defs>

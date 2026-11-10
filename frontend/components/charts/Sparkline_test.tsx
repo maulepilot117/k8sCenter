@@ -1,16 +1,9 @@
 import { expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 const { default: Sparkline } = await import("./Sparkline.tsx");
-
-/** Lets Recharts measure its container and draw. */
-async function settle() {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 30));
-  });
-}
 
 function frameOf(container: HTMLElement): HTMLElement {
   return container.querySelector("[data-chart-frame]") as HTMLElement;

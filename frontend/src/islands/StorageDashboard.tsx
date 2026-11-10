@@ -125,13 +125,17 @@ export default function StorageDashboard({
   // Overview donut: show total PVCs as a single neutral segment
   // (no invented phase split — real phases require a list fetch that's
   // preserved in the ResourceTable below).
-  const pvcDonutSegments = [
-    {
-      value: Math.max(totalPVCs, 1),
-      color: "var(--accent)",
-      label: "Total",
-    },
-  ];
+  const pvcDonutSegments =
+    totalPVCs > 0
+      ? [{ value: totalPVCs, color: "var(--accent)", label: "Total" }]
+      : [
+          {
+            value: 1,
+            color: "var(--accent)",
+            label: "No PVCs",
+            placeholder: true,
+          },
+        ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>

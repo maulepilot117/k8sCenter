@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
-import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
+import {
+  act,
+  fireEvent,
+  render,
+  settle,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 const { default: ChartFrame } = await import("./ChartFrame.tsx");
@@ -15,13 +21,6 @@ const ROWS = Array.from({ length: 31 }, (_, i) => ({
   t: START + i * 2 * MINUTE,
   v: 40 + (i % 4),
 }));
-
-/** Lets Recharts measure its container and draw. */
-async function settle() {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 30));
-  });
-}
 
 function AxisChart() {
   return (

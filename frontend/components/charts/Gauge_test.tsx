@@ -1,15 +1,9 @@
 import { expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 const { default: Gauge } = await import("./Gauge.tsx");
-
-async function settle() {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 30));
-  });
-}
 
 test("a gauge is one image whose label states the value and the caption", async () => {
   const { container } = render(<Gauge value={73} sublabel="Healthy" />);
