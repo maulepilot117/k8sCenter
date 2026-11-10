@@ -71,8 +71,8 @@ export function maxTickCount(widthPx: number): number {
   return Math.max(2, Math.floor(widthPx / MIN_TICK_SPACING_PX));
 }
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
+export const MINUTE = 60_000;
+export const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 const MINUTE_STEPS = [1, 2, 5, 10, 15, 30].map((m) => m * MINUTE);

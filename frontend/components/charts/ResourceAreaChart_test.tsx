@@ -1,70 +1,180 @@
 /** @jsxImportSource react */
 import { expect, test } from "bun:test";
-import { render, setupDom } from "@/src/test-utils/render.tsx";
+import {
+  act,
+  fireEvent,
+  render,
+  settle,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 const { ResourceAreaChart } = await import("./ResourceAreaChart.tsx");
 
-test("renders a placeholder when neither series has two points", () => {
+// 14:00 local, so tick and tooltip labels do not depend on the machine's zone.
+const END = new Date(2026, 10, 10, 14, 0).getTime();
+
+const series = (n: number, base: number) =>
+  Array.from({ length: n }, (_, i) => base + i);
+
+async function openTooltip(container: HTMLElement) {
+  const chart = container.querySelector('[tabindex="0"]') as Element;
+  expect(chart).not.toBeNull();
+  await act(async () => {
+    fireEvent.focus(chart);
+  });
+  return {
+    chart,
+    tip: container.querySelector('[role="status"]') as HTMLElement,
+  };
+}
+
+test("shows the placeholder when neither series has a sample", () => {
   const { container } = render(
-    <ResourceAreaChart cpuData={[10]} memData={null} />,
+    <ResourceAreaChart cpuData={null} memData={[]} end={END} />,
+  );
+  expect(container.textContent).toContain(
+    "Trend data unavailable (Prometheus not connected)",
   );
   expect(container.querySelector("svg")).toBeNull();
-  expect(container.textContent).toContain("Trend data unavailable");
 });
 
-test("renders both series with hyphenated SVG attributes", () => {
+test("a single sample is drawn rather than treated as no data", async () => {
   const { container } = render(
-    <ResourceAreaChart cpuData={[0, 50, 100]} memData={[20, 40]} />,
+    <ResourceAreaChart cpuData={[42]} memData={null} end={END} />,
   );
-  const svg = container.querySelector("svg") as SVGElement;
-  expect(svg.getAttribute("viewBox")).toBe("0 0 400 80");
-  expect(svg.getAttribute("preserveAspectRatio")).toBe("none");
-  expect(svg.getAttribute("height")).toBe("80");
+  await settle();
+  expect(container.textContent).not.toContain("Trend data unavailable");
+  const { tip } = await openTooltip(container);
+  expect(tip.textContent).toContain("14:00");
+  expect(tip.textContent).toContain("42%");
+});
 
-  const stops = [...svg.querySelectorAll("stop")];
-  expect(stops).toHaveLength(4);
-  expect(stops[0].getAttribute("stop-color")).toBe("var(--accent)");
-  expect(stops[0].getAttribute("stop-opacity")).toBe("0.35");
-  expect(stops[2].getAttribute("stop-color")).toBe("var(--accent-secondary)");
-
-  const gradients = [...svg.querySelectorAll("linearGradient")];
-  const cpuId = gradients[0].getAttribute("id") as string;
-  const memId = gradients[1].getAttribute("id") as string;
-  expect(cpuId).not.toBe("");
-  expect(cpuId).not.toBe(memId);
-
-  const paths = [...svg.querySelectorAll("path")];
-  expect(paths).toHaveLength(4);
-  // memory is drawn first, CPU on top
-  expect(paths[0].getAttribute("fill")).toBe(`url(#${memId})`);
-  expect(paths[1].getAttribute("d")).toBe("M4.0,61.6 L396.0,47.2");
-  expect(paths[1].getAttribute("stroke")).toBe("var(--accent-secondary)");
-  expect(paths[1].getAttribute("stroke-width")).toBe("1.8");
-  expect(paths[1].getAttribute("stroke-linecap")).toBe("round");
-  expect(paths[1].getAttribute("stroke-linejoin")).toBe("round");
-  expect(paths[1].getAttribute("vector-effect")).toBe("non-scaling-stroke");
-  expect(paths[2].getAttribute("fill")).toBe(`url(#${cpuId})`);
-  expect(paths[3].getAttribute("d")).toBe("M4.0,76.0 L200.0,40.0 L396.0,4.0");
-  expect(paths[2].getAttribute("d")).toBe(
-    "M4.0,76.0 L200.0,40.0 L396.0,4.0 L396.0,76.0 L4.0,76.0 Z",
+test("is a labelled figure that says what it shows", async () => {
+  const { getByRole } = render(
+    <ResourceAreaChart
+      cpuData={series(30, 10)}
+      memData={series(30, 30)}
+      window="1h0m0s"
+      step="2m0s"
+      end={END}
+    />,
+  );
+  await settle();
+  const figure = getByRole("figure");
+  expect(figure.getAttribute("aria-label")).toBe(
+    "CPU and memory utilization over the last hour",
   );
 });
 
-test("one series alone leaves out the other's paths", () => {
+test("a one hour window of 30 points on a 2m step runs from 13:02 to now", async () => {
   const { container } = render(
-    <ResourceAreaChart cpuData={null} memData={[1, 2, 3]} />,
+    <ResourceAreaChart
+      cpuData={series(30, 10)}
+      memData={series(30, 30)}
+      window="1h0m0s"
+      step="2m0s"
+      end={END}
+    />,
   );
-  expect(container.querySelectorAll("path")).toHaveLength(2);
+  await settle();
+  // The axis starts an hour before now: its first tick is 13:00.
+  const labels = [...container.querySelectorAll("text")].map(
+    (t) => t.textContent,
+  );
+  expect(labels).toContain("13:00");
+
+  // Oldest sample sits 58 minutes before now, with both series' values.
+  const { chart, tip } = await openTooltip(container);
+  expect(tip.textContent).toContain("13:02");
+  expect(tip.textContent).toContain("CPU");
+  expect(tip.textContent).toContain("10%");
+  expect(tip.textContent).toContain("Memory");
+  expect(tip.textContent).toContain("30%");
+
+  // Stepping once moves two minutes on.
+  await act(async () => {
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+  });
+  expect(tip.textContent).toContain("13:04");
+  expect(tip.textContent).toContain("11%");
+  expect(tip.textContent).toContain("31%");
 });
 
-test("gradient ids stay stable across re-renders", () => {
-  const { container, rerender } = render(
-    <ResourceAreaChart cpuData={[1, 2]} memData={[1, 2]} />,
+test("the newest sample lands on now", async () => {
+  const { container } = render(
+    <ResourceAreaChart
+      cpuData={[10, 20, 77]}
+      memData={[30, 40, 66]}
+      window="15m0s"
+      step="30s"
+      end={END}
+    />,
   );
-  const id = container.querySelector("linearGradient")?.getAttribute("id");
-  rerender(<ResourceAreaChart cpuData={[1, 5]} memData={[1, 2]} />);
-  expect(container.querySelector("linearGradient")?.getAttribute("id")).toBe(
-    id ?? "",
+  await settle();
+  const { chart, tip } = await openTooltip(container);
+  expect(tip.textContent).toContain("13:59");
+  await act(async () => {
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+  });
+  expect(tip.textContent).toContain("14:00");
+  expect(tip.textContent).toContain("77%");
+  expect(tip.textContent).toContain("66%");
+});
+
+test("a missing memory series draws CPU alone", async () => {
+  const { container } = render(
+    <ResourceAreaChart
+      cpuData={series(5, 20)}
+      memData={null}
+      window="1h0m0s"
+      step="2m0s"
+      end={END}
+    />,
   );
+  await settle();
+  const { tip } = await openTooltip(container);
+  expect(tip.textContent).toContain("CPU");
+  expect(tip.textContent).toContain("20%");
+  expect(tip.textContent).not.toContain("Memory");
+});
+
+test("without window and step it uses the one hour, two minute grid", async () => {
+  const { container } = render(
+    <ResourceAreaChart
+      cpuData={series(30, 10)}
+      memData={series(30, 30)}
+      end={END}
+    />,
+  );
+  await settle();
+  const { tip } = await openTooltip(container);
+  expect(tip.textContent).toContain("13:02");
+});
+
+test("a window given as 24h on a 48m step spans the day in 48-minute steps", async () => {
+  const { container, getByRole } = render(
+    <ResourceAreaChart
+      cpuData={series(31, 10)}
+      memData={null}
+      window="24h0m0s"
+      step="48m0s"
+      end={END}
+    />,
+  );
+  await settle();
+  expect(getByRole("figure").getAttribute("aria-label")).toBe(
+    "CPU and memory utilization over the last 24 hours",
+  );
+  // The oldest of 31 samples is a day before the newest, and the next is
+  // one 48-minute step after it.
+  const { chart, tip } = await openTooltip(container);
+  expect(tip.textContent).toContain("14:00");
+  expect(tip.textContent).toContain("10%");
+  await act(async () => {
+    fireEvent.keyDown(chart, { key: "ArrowRight" });
+  });
+  expect(tip.textContent).toContain("14:48");
+  expect(tip.textContent).toContain("11%");
 });

@@ -1,11 +1,24 @@
 /** @jsxImportSource react */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  type MouseEvent,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceDot,
+  ReferenceLine,
+  Tooltip,
+  YAxis,
+} from "recharts";
+import { TimeXAxis } from "@/components/charts/ChartAxes.tsx";
+import ChartFrame from "@/components/charts/ChartFrame.tsx";
+import {
+  AXIS_CHART_PROPS,
+  AXIS_TICK_STYLE,
+  CHART_TOKENS,
+  formatValue,
+  TOOLTIP_PROPS,
+  timeTickFormatter,
+} from "@/components/charts/chart-theme.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
@@ -50,7 +63,7 @@ interface FilledPoint {
 
 type TimeRange = 7 | 30 | 90;
 
-/** One plain sentence per gap reason the recorder writes (KTD4). */
+/** One plain sentence per gap reason the recorder writes. */
 export const GAP_MESSAGES: Readonly<Record<string, string>> = {
   unreachable: "The cluster could not be reached that day.",
   credentials_invalid:
@@ -139,266 +152,226 @@ export function fillDateGaps(
   return result;
 }
 
-function buildSegments(
-  points: FilledPoint[],
-  width: number,
-  height: number,
-): { x: number; y: number }[][] {
-  const segments: { x: number; y: number }[][] = [];
-  let current: { x: number; y: number }[] = [];
-  for (let i = 0; i < points.length; i++) {
-    const p = points[i];
-    if (p.score === null) {
-      if (current.length > 0) {
-        segments.push(current);
-        current = [];
-      }
-      continue;
+type MarkerKind = "partial" | "gap" | "identity-change";
+
+/** A day the chart flags, with the sentence its marker and list entry carry. */
+interface Marker {
+  key: string;
+  kind: MarkerKind;
+  date: string;
+  /** Local midnight of the day, the marker's place on the time axis. */
+  t: number;
+  /** Where the marker sits on the value axis; a gap sits on the baseline. */
+  y: number;
+  text: string;
+}
+
+/** Local midnight of a calendar-day string, so axis ticks land on that day. */
+function dayStart(dateStr: string): number {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d).getTime();
+}
+
+function buildMarkers(points: FilledPoint[]): Marker[] {
+  const markers: Marker[] = [];
+  for (const p of points) {
+    const t = dayStart(p.date);
+    if (p.score !== null && p.identityChanged) {
+      markers.push({
+        key: `identity-change-${p.date}`,
+        kind: "identity-change",
+        date: p.date,
+        t,
+        y: p.score,
+        text: `${formatDate(p.date)}: the background identity changed here, so the view may differ from earlier points`,
+      });
     }
-    const x =
-      points.length === 1 ? width / 2 : (i / (points.length - 1)) * width;
-    const y = height - (p.score / 100) * height;
-    current.push({ x, y });
+    if (p.score !== null && p.partial) {
+      markers.push({
+        key: `partial-${p.date}`,
+        kind: "partial",
+        date: p.date,
+        t,
+        y: p.score,
+        text: `${formatDate(p.date)}: ${p.score.toFixed(1)}% (${partialNote(p)})`,
+      });
+    }
+    if (p.gapReason !== undefined) {
+      markers.push({
+        key: `gap-${p.date}`,
+        kind: "gap",
+        date: p.date,
+        t,
+        y: 0,
+        text: `${formatDate(p.date)}: ${gapMessage(p.gapReason)}`,
+      });
+    }
   }
-  if (current.length > 0) segments.push(current);
-  return segments;
+  return markers;
+}
+
+const SCORE_TICKS = [0, 25, 50, 75, 100];
+
+function MarkerGlyph({ kind }: { kind: MarkerKind }) {
+  if (kind === "partial") {
+    return (
+      <circle
+        r={4}
+        fill="var(--bg-surface)"
+        stroke="var(--warning)"
+        strokeWidth={2}
+      />
+    );
+  }
+  if (kind === "identity-change") {
+    return <circle r={3} fill="var(--warning)" />;
+  }
+  return (
+    <g stroke="var(--error)" strokeWidth={2}>
+      <line x1={-3} y1={-9} x2={3} y2={-3} />
+      <line x1={3} y1={-9} x2={-3} y2={-3} />
+    </g>
+  );
 }
 
 function TrendChart({
   points,
-  hoverIdx,
-  onHover,
+  range,
 }: {
   points: FilledPoint[];
-  hoverIdx: number | null;
-  onHover: (idx: number | null) => void;
+  range: TimeRange;
 }) {
-  const W = 600;
-  const H = 250;
-  const PAD = { top: 10, right: 10, bottom: 30, left: 40 };
-  const chartW = W - PAD.left - PAD.right;
-  const chartH = H - PAD.top - PAD.bottom;
+  const [shownMarkerKey, setShownMarkerKey] = useState<string | null>(null);
 
-  const segments = buildSegments(points, chartW, chartH);
+  const markers = useMemo(() => buildMarkers(points), [points]);
+  const shown = markers.find((m) => m.key === shownMarkerKey);
 
-  const gridLines = [0, 25, 50, 75, 100];
+  // Showing a marker's text changes only `shownMarkerKey`, so the chart is
+  // built once per data change rather than on every hover.
+  const chart = useMemo(() => {
+    const lastDate = points[points.length - 1].date;
+    const end = dayStart(lastDate);
+    // The window the operator picked, widened if a record falls before it.
+    const start = Math.min(
+      dayStart(points[0].date),
+      dayStart(addDays(lastDate, -(range - 1))),
+    );
+    const rows = points.map((p) => ({ t: dayStart(p.date), score: p.score }));
+    const dateLabel = timeTickFormatter(end - start);
+    const hide = (key: string) =>
+      setShownMarkerKey((k) => (k === key ? null : k));
 
-  const labelCount = Math.min(7, points.length);
-  const labelIndices: number[] = [];
-  if (points.length > 0) {
-    for (let i = 0; i < labelCount; i++) {
-      labelIndices.push(
-        labelCount === 1
-          ? 0
-          : Math.round((i / (labelCount - 1)) * (points.length - 1)),
-      );
-    }
-  }
-
-  const xAt = (i: number) =>
-    points.length === 1 ? chartW / 2 : (i / (points.length - 1)) * chartW;
-
-  const hoveredPoint = hoverIdx !== null ? points[hoverIdx] : null;
-  const hoveredX = hoverIdx !== null ? xAt(hoverIdx) : null;
-  const hoveredY =
-    hoveredPoint?.score !== null && hoveredPoint?.score !== undefined
-      ? chartH - (hoveredPoint.score / 100) * chartH
-      : null;
-
-  function handleMouseMove(e: MouseEvent<SVGSVGElement>) {
-    const svg = e.currentTarget.getBoundingClientRect();
-    const relX = e.clientX - svg.left - (PAD.left / W) * svg.width;
-    const pct = relX / ((chartW / W) * svg.width);
-    const idx = Math.round(pct * (points.length - 1));
-    if (idx >= 0 && idx < points.length && points[idx].score !== null) {
-      onHover(idx);
-    } else {
-      onHover(null);
-    }
-  }
+    return (
+      <ChartFrame
+        preset="axis"
+        kind="compliance-trend"
+        label={`Compliance score by day, ${formatDate(points[0].date)} to ${formatDate(points[points.length - 1].date)}`}
+      >
+        <LineChart {...AXIS_CHART_PROPS} data={rows}>
+          <CartesianGrid
+            vertical={false}
+            stroke={CHART_TOKENS.grid}
+            strokeDasharray="4 4"
+          />
+          <TimeXAxis dataKey="t" start={start} end={end} />
+          <YAxis
+            type="number"
+            domain={[0, 100]}
+            ticks={SCORE_TICKS}
+            tickFormatter={(v: number) => formatValue(v, "percent")}
+            tick={AXIS_TICK_STYLE}
+            tickLine={false}
+            axisLine={false}
+            width={48}
+          />
+          <Tooltip
+            {...TOOLTIP_PROPS}
+            labelFormatter={(t) => dateLabel(Number(t))}
+            formatter={(v) => formatValue(Number(v), "percent")}
+          />
+          <Line
+            dataKey="score"
+            name="Score"
+            stroke={CHART_TOKENS.line}
+            strokeWidth={2}
+            dot={{ r: 2.5, fill: CHART_TOKENS.line, stroke: "none" }}
+            connectNulls={false}
+            isAnimationActive={false}
+          />
+          {markers
+            .filter((m) => m.kind === "identity-change")
+            .map((m) => (
+              <ReferenceLine
+                key={`line-${m.key}`}
+                x={m.t}
+                stroke="var(--warning)"
+                strokeDasharray="2 3"
+                ifOverflow="visible"
+              />
+            ))}
+          {markers.map((m) => (
+            <ReferenceDot
+              key={m.key}
+              x={m.t}
+              y={m.y}
+              r={4}
+              ifOverflow="visible"
+              shape={(p: { cx?: number; cy?: number }) => (
+                <g
+                  data-testid={`compliance-trend-marker-${m.kind}-${m.date}`}
+                  transform={`translate(${p.cx ?? 0},${p.cy ?? 0})`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={m.text}
+                  className="cursor-pointer"
+                  onFocus={() => setShownMarkerKey(m.key)}
+                  onBlur={() => hide(m.key)}
+                  onMouseEnter={() => setShownMarkerKey(m.key)}
+                  onMouseLeave={() => hide(m.key)}
+                  onClick={() => setShownMarkerKey(m.key)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setShownMarkerKey(null);
+                  }}
+                >
+                  <circle r={10} fill="transparent" />
+                  <MarkerGlyph kind={m.kind} />
+                </g>
+              )}
+            />
+          ))}
+        </LineChart>
+      </ChartFrame>
+    );
+  }, [points, range, markers]);
 
   return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      className="w-full"
-      style={{ maxHeight: "250px" }}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={() => onHover(null)}
-    >
-      <defs>
-        <linearGradient id="trend-grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.3" />
-          <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <g transform={`translate(${PAD.left},${PAD.top})`}>
-        {gridLines.map((v) => {
-          const y = chartH - (v / 100) * chartH;
-          return (
-            <g key={v}>
-              <line
-                x1={0}
-                y1={y}
-                x2={chartW}
-                y2={y}
-                stroke="var(--border-primary)"
-                strokeWidth="1"
-                strokeDasharray="4,4"
-              />
-              <text
-                x={-8}
-                y={y + 4}
-                fill="var(--text-muted)"
-                fontSize="10"
-                textAnchor="end"
-              >
-                {v}%
-              </text>
-            </g>
-          );
-        })}
+    <>
+      {chart}
 
-        {segments.map((seg) => {
-          if (seg.length < 2) return null;
-          const linePath = seg
-            .map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`)
-            .join(" ");
-          const areaPath =
-            linePath +
-            ` L${seg[seg.length - 1].x},${chartH} L${seg[0].x},${chartH} Z`;
-          return (
-            <g key={seg[0].x}>
-              <path d={areaPath} fill="url(#trend-grad)" />
-              <polyline
-                points={seg.map((p) => `${p.x},${p.y}`).join(" ")}
-                fill="none"
-                stroke="var(--accent)"
-                strokeWidth="2"
-                strokeLinejoin="round"
-              />
-            </g>
-          );
-        })}
-
-        {points.map((p, i) =>
-          p.identityChanged && p.score !== null ? (
-            <g key={`id-${p.date}`}>
-              <line
-                data-testid={`compliance-trend-identity-change-${p.date}`}
-                x1={xAt(i)}
-                y1={0}
-                x2={xAt(i)}
-                y2={chartH}
-                stroke="var(--warning)"
-                strokeWidth="1"
-                strokeDasharray="2,3"
-              />
-              <title>{`${formatDate(p.date)}: the background identity changed here, so the view may differ from earlier points`}</title>
-            </g>
-          ) : null,
-        )}
-
-        {points.map((p, i) =>
-          p.partial && p.score !== null ? (
-            <circle
-              key={`partial-${p.date}`}
-              data-testid={`compliance-trend-partial-${p.date}`}
-              cx={xAt(i)}
-              cy={chartH - (p.score / 100) * chartH}
-              r={4}
-              fill="var(--bg-surface)"
-              stroke="var(--warning)"
-              strokeWidth="2"
-            >
-              <title>{`${formatDate(p.date)}: ${p.score.toFixed(1)}% (${partialNote(p)})`}</title>
-            </circle>
-          ) : null,
-        )}
-
-        {points.map((p, i) =>
-          p.gapReason !== undefined ? (
-            <g
-              key={`gap-${p.date}`}
-              data-testid={`compliance-trend-gap-${p.date}`}
-            >
-              <line
-                x1={xAt(i) - 3}
-                y1={chartH - 6}
-                x2={xAt(i) + 3}
-                y2={chartH}
-                stroke="var(--error)"
-                strokeWidth="2"
-              />
-              <line
-                x1={xAt(i) + 3}
-                y1={chartH - 6}
-                x2={xAt(i) - 3}
-                y2={chartH}
-                stroke="var(--error)"
-                strokeWidth="2"
-              />
-              <title>{`${formatDate(p.date)}: ${gapMessage(p.gapReason)}`}</title>
-            </g>
-          ) : null,
-        )}
-
-        {hoveredX !== null && hoveredY !== null && hoveredPoint && (
-          <g>
-            <line
-              x1={hoveredX}
-              y1={0}
-              x2={hoveredX}
-              y2={chartH}
-              stroke="var(--text-muted)"
-              strokeWidth="1"
-              strokeDasharray="3,3"
-            />
-            <circle
-              cx={hoveredX}
-              cy={hoveredY}
-              r={4}
-              fill="var(--accent)"
-              stroke="var(--bg-surface)"
-              strokeWidth="2"
-            />
-            <rect
-              x={hoveredX - 50}
-              y={hoveredY - 32}
-              width={100}
-              height={24}
-              rx={4}
-              fill="var(--bg-elevated)"
-              stroke="var(--border-primary)"
-              strokeWidth="1"
-            />
-            <text
-              x={hoveredX}
-              y={hoveredY - 16}
-              fill="var(--text-primary)"
-              fontSize="11"
-              textAnchor="middle"
-            >
-              {formatDate(hoveredPoint.date)} &mdash;{" "}
-              {hoveredPoint.score?.toFixed(1)}%
-              {hoveredPoint.partial ? " (partial)" : ""}
-            </text>
-          </g>
-        )}
-
-        {labelIndices.map((idx) => (
-          <text
-            key={idx}
-            x={xAt(idx)}
-            y={chartH + 20}
-            fill="var(--text-muted)"
-            fontSize="10"
-            textAnchor="middle"
+      <div className="mt-2 min-h-8">
+        {shown && (
+          <p
+            data-testid="compliance-trend-marker-tip"
+            className="inline-block rounded-md border border-border-primary bg-elevated px-3 py-1.5 text-xs text-text-primary"
           >
-            {formatDate(points[idx].date)}
-          </text>
-        ))}
-      </g>
-    </svg>
+            {shown.text}
+          </p>
+        )}
+      </div>
+
+      {markers.length > 0 && (
+        <ul className="sr-only">
+          {markers.map((m) => (
+            <li
+              key={m.key}
+              data-testid={`compliance-trend-${m.kind}-${m.date}`}
+            >
+              {m.text}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
@@ -417,7 +390,7 @@ function isRemoteHistoryUnsupported(err: unknown): boolean {
 }
 
 /**
- * Whether err is a remote cluster with no named background identity (R4):
+ * Whether err is a remote cluster with no named background identity:
  * 404 `compliance_history_not_configured`. Also a standing fact, not a failure.
  */
 function isNotConfigured(err: unknown): boolean {
@@ -435,7 +408,6 @@ export default function ComplianceTrendChart() {
   const [unsupported, setUnsupported] = useState(false);
   const [notConfigured, setNotConfigured] = useState(false);
   const [range, setRange] = useState<TimeRange>(30);
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   // A late reply for a range or cluster the operator has left must not
   // overwrite the current one.
   const requestSeq = useRef(0);
@@ -479,7 +451,7 @@ export default function ComplianceTrendChart() {
   }, [fetchData, range, clusterId]);
 
   const realPoints = points.filter((p) => p.score !== null);
-  // Trend figures count from the latest identity change (KTD9); earlier
+  // Trend figures count from the latest identity change; earlier
   // points stay drawn.
   const trendPoints = realPoints.slice(trendStartIndex(realPoints));
   const identityChanged = trendPoints.length < realPoints.length;
@@ -640,13 +612,7 @@ export default function ComplianceTrendChart() {
             </p>
           )}
 
-          <TrendChart
-            points={points}
-            hoverIdx={hoverIdx}
-            onHover={(idx) => {
-              setHoverIdx(idx);
-            }}
-          />
+          <TrendChart points={points} range={range} />
 
           {gapDays.length > 0 && (
             <ul
