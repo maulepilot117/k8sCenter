@@ -54,6 +54,10 @@ export interface DashboardTrends {
   // whichever time-range tab is active.
   networkRx: number[] | null;
   networkTx: number[] | null;
+  // Span and sample spacing of the series above, as Go durations ("1h0m0s",
+  // "2m0s"). Optional: older backends omit them and the chart assumes 1h / 2m.
+  window?: string;
+  step?: string;
 }
 
 /**
