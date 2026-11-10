@@ -74,7 +74,7 @@ test("any other failure is still a failed read with a retry", async () => {
   ).toBeNull();
 });
 
-// ---- remote history: not-configured, partial, markers, gaps (U8) ----
+// ---- remote history: not-configured, partial, markers, gaps ----
 
 const { addDays, fillDateGaps, GAP_MESSAGES } = await import(
   "./ComplianceTrendChart.tsx"
@@ -287,4 +287,155 @@ test("choosing a range refetches that many days", async () => {
 
   expect(urls.at(-1)).toContain("days=7");
   expect(sevenDays.className).toContain("text-brand");
+});
+
+// ---- Recharts chart: figure, gaps in the line, focusable markers ----
+
+const { settle } = await import("@/src/test-utils/render.tsx");
+
+// Put the prototype back exactly as it was: leaving an own property behind
+// would shadow stubs other test files set on Element.prototype.
+const ownRect = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  "getBoundingClientRect",
+);
+afterEach(() => {
+  if (ownRect) {
+    Object.defineProperty(
+      HTMLElement.prototype,
+      "getBoundingClientRect",
+      ownRect,
+    );
+  } else {
+    delete (HTMLElement.prototype as Partial<HTMLElement>)
+      .getBoundingClientRect;
+  }
+});
+
+async function mountChart(body: unknown): Promise<HTMLElement> {
+  serve(200, body);
+  const root = (await mountUntil("Current:")) as HTMLElement;
+  await settle();
+  return root;
+}
+
+function marker(root: HTMLElement, kind: string, date: string): Element {
+  const el = root.querySelector(
+    `[data-testid="compliance-trend-marker-${kind}-${date}"]`,
+  );
+  expect(el).not.toBeNull();
+  return el as Element;
+}
+
+function markerTip(root: HTMLElement): string | undefined {
+  return root.querySelector('[data-testid="compliance-trend-marker-tip"]')
+    ?.textContent;
+}
+
+test("the chart is a figure named for what it shows", async () => {
+  const root = await mountChart({
+    data: [pt(today(-2), 80), pt(today(-1), 82)],
+    gaps: [],
+  });
+  const figure = root.querySelector('[role="figure"]');
+  expect(figure).not.toBeNull();
+  expect(figure?.getAttribute("aria-label")).toMatch(/compliance score/i);
+  expect(figure?.querySelector("svg")).not.toBeNull();
+});
+
+test("a gap day breaks the line in two", async () => {
+  const root = await mountChart({
+    data: [
+      pt(today(-5), 80),
+      pt(today(-4), 82),
+      pt(today(-2), 70),
+      pt(today(-1), 71),
+    ],
+    gaps: [{ date: today(-3), reason: "unreachable" }],
+  });
+  const d = root.querySelector(".recharts-line-curve")?.getAttribute("d") ?? "";
+  expect(d.match(/M/g)?.length).toBe(2);
+});
+
+test("the gap marker names the reason when focused", async () => {
+  const gapDay = today(-3);
+  const root = await mountChart({
+    data: [pt(today(-5), 80), pt(today(-4), 82), pt(today(-2), 70)],
+    gaps: [{ date: gapDay, reason: "credentials_invalid" }],
+  });
+  expect(markerTip(root)).toBeUndefined();
+
+  const el = marker(root, "gap", gapDay);
+  expect(el.getAttribute("tabindex")).toBe("0");
+  await act(async () => {
+    fireEvent.focus(el);
+  });
+  expect(markerTip(root)).toContain(GAP_MESSAGES.credentials_invalid);
+});
+
+test("an identity-change marker shows its text on focus; Escape and blur close it", async () => {
+  const sw = today(-1);
+  const root = await mountChart({
+    data: [pt(today(-3), 90), pt(sw, 50, { identityChanged: true })],
+    gaps: [],
+  });
+  const el = marker(root, "identity-change", sw);
+  expect(el.getAttribute("aria-label")).toContain(
+    "background identity changed",
+  );
+
+  await act(async () => {
+    fireEvent.focus(el);
+  });
+  expect(markerTip(root)).toContain("background identity changed");
+
+  await act(async () => {
+    fireEvent.keyDown(el, { key: "Escape" });
+  });
+  expect(markerTip(root)).toBeUndefined();
+
+  await act(async () => {
+    fireEvent.focus(el);
+  });
+  expect(markerTip(root)).toContain("background identity changed");
+  await act(async () => {
+    fireEvent.blur(el);
+  });
+  expect(markerTip(root)).toBeUndefined();
+});
+
+test("hover and tap open a partial marker's text", async () => {
+  const d = today(-1);
+  const root = await mountChart({
+    data: [
+      pt(today(-2), 80),
+      pt(d, 70.5, { partial: true, unreadable: ["kyverno"] }),
+    ],
+    gaps: [],
+  });
+  const el = marker(root, "partial", d);
+  await act(async () => {
+    fireEvent.mouseEnter(el);
+  });
+  expect(markerTip(root)).toContain("Kyverno");
+  expect(markerTip(root)).toContain("70.5%");
+  await act(async () => {
+    fireEvent.mouseLeave(el);
+  });
+  expect(markerTip(root)).toBeUndefined();
+  await act(async () => {
+    fireEvent.click(el);
+  });
+  expect(markerTip(root)).toContain("Kyverno");
+});
+
+test("the time axis labels days over the selected range", async () => {
+  const root = await mountChart({ data: [pt(today(), 70)], gaps: [] });
+  const labels = [...root.querySelectorAll("text")]
+    .map((t) => t.textContent ?? "")
+    .filter((s) => /^[A-Z][a-z]{2} \d{1,2}$/.test(s));
+  expect(labels.length).toBeGreaterThanOrEqual(2);
+  const yLabels = [...root.querySelectorAll("text")].map((t) => t.textContent);
+  expect(yLabels).toContain("0%");
+  expect(yLabels).toContain("100%");
 });
