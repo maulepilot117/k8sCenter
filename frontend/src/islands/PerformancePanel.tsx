@@ -1,5 +1,12 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Area, AreaChart } from "recharts";
 import {
   ChartTooltip,
@@ -11,6 +18,7 @@ import {
   AXIS_CHART_PROPS,
   CHART_TOKENS,
   formatValue,
+  HOUR,
   type ValueUnit,
 } from "@/components/charts/chart-theme.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -498,13 +506,9 @@ interface Resource {
   namespace?: string;
 }
 
-/** The last hour, in epoch milliseconds, that the panel queries. */
-const RANGE_MS = 3600 * 1000;
-
 interface ChartData {
   title: string;
   unit: ValueUnit;
-  /** Time span of the query, which the chart's time axis covers. */
   start: number;
   end: number;
   values: { time: number; value: number }[];
@@ -590,7 +594,7 @@ export default function PerformancePanel({
 
     const now = new Date();
     const endMs = now.getTime();
-    const startMs = endMs - RANGE_MS;
+    const startMs = endMs - HOUR;
     const end = now.toISOString();
     const start = new Date(startMs).toISOString();
     const step = "60s";
@@ -804,7 +808,7 @@ function readout(value: number, unit: ValueUnit): string {
 function MiniChart({ chart }: { chart: ChartData }) {
   const gradientId = `area-${useId()}`;
   const { title, unit, start, end, values } = chart;
-  const rows = values.map((v) => ({ t: v.time, v: v.value }));
+  const plotted = useMemo(() => values.map((v) => v.value), [values]);
   const latest = values[values.length - 1].value;
 
   return (
@@ -817,7 +821,7 @@ function MiniChart({ chart }: { chart: ChartData }) {
         kind="metric"
         label={`${title} over the last hour`}
       >
-        <AreaChart {...AXIS_CHART_PROPS} data={rows}>
+        <AreaChart {...AXIS_CHART_PROPS} data={values}>
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
               <stop
@@ -832,17 +836,17 @@ function MiniChart({ chart }: { chart: ChartData }) {
               />
             </linearGradient>
           </defs>
-          <TimeXAxis dataKey="t" start={start} end={end} />
-          <ValueYAxis unit={unit} values={rows.map((r) => r.v)} />
+          <TimeXAxis dataKey="time" start={start} end={end} />
+          <ValueYAxis unit={unit} values={plotted} />
           <Area
-            dataKey="v"
+            dataKey="value"
             name={title}
             type="linear"
             stroke={CHART_TOKENS.line}
             strokeWidth={2}
             fill={`url(#${gradientId})`}
             isAnimationActive={false}
-            dot={rows.length === 1}
+            dot={values.length === 1}
           />
           <ChartTooltip unit={unit} rangeMs={end - start} />
         </AreaChart>

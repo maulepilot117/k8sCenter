@@ -3,14 +3,10 @@ import { useId, useMemo } from "react";
 import { Area, AreaChart } from "recharts";
 import { ChartTooltip, TimeXAxis, ValueYAxis } from "./ChartAxes.tsx";
 import ChartFrame from "./ChartFrame.tsx";
-import { AXIS_CHART_PROPS } from "./chart-theme.ts";
-
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
+import { AXIS_CHART_PROPS, HOUR, MINUTE } from "./chart-theme.ts";
 
 // The one-hour tab: what the backend uses when it is not told a range.
-const DEFAULT_WINDOW_MS = HOUR_MS;
-const DEFAULT_STEP_MS = 2 * MINUTE_MS;
+const DEFAULT_GRID = { windowMs: HOUR, stepMs: 2 * MINUTE };
 
 // A minimum-size dashboard card (4 rows of 40px, 3 gaps of 16px) leaves about
 // 132px for the body once padding and the title row are taken out. The axis
@@ -19,23 +15,36 @@ const CHART_HEIGHT = 128;
 
 const EMPTY_MESSAGE = "Trend data unavailable (Prometheus not connected)";
 
-/** Parses a Go duration such as "1h0m0s" or "30s" to milliseconds, or null. */
 function parseGoDuration(value: string | undefined): number | null {
   if (!value) return null;
   const match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(value);
   if (!match || !(match[1] || match[2] || match[3])) return null;
   const ms =
-    Number(match[1] ?? 0) * HOUR_MS +
-    Number(match[2] ?? 0) * MINUTE_MS +
+    Number(match[1] ?? 0) * HOUR +
+    Number(match[2] ?? 0) * MINUTE +
     Number(match[3] ?? 0) * 1000;
   return ms > 0 ? ms : null;
 }
 
+/**
+ * The window and sample spacing from the response's Go durations. Both must
+ * parse, else both take the default: half a grid would put the samples at the
+ * wrong spacing.
+ */
+function resolveGrid(
+  span: string | undefined,
+  step: string | undefined,
+): { windowMs: number; stepMs: number } {
+  const windowMs = parseGoDuration(span);
+  const stepMs = parseGoDuration(step);
+  return windowMs && stepMs ? { windowMs, stepMs } : DEFAULT_GRID;
+}
+
 /** "hour", "15 minutes", "6 hours": the window as the label names it. */
 function describeWindow(ms: number): string {
-  if (ms === HOUR_MS) return "hour";
-  if (ms > HOUR_MS && ms % HOUR_MS === 0) return `${ms / HOUR_MS} hours`;
-  const minutes = Math.round(ms / MINUTE_MS);
+  if (ms === HOUR) return "hour";
+  if (ms > HOUR && ms % HOUR === 0) return `${ms / HOUR} hours`;
+  const minutes = Math.round(ms / MINUTE);
   return minutes === 1 ? "minute" : `${minutes} minutes`;
 }
 
@@ -89,23 +98,20 @@ export function ResourceAreaChart({
   step,
   end,
 }: ResourceAreaChartProps) {
-  const cpuGradId = `cpu-grad-${useId()}`;
-  const memGradId = `mem-grad-${useId()}`;
+  const id = useId();
+  const cpuGradId = `cpu-grad-${id}`;
+  const memGradId = `mem-grad-${id}`;
 
-  // Both must be usable, else the pair falls back together: half a grid
-  // would put the samples at the wrong spacing.
-  const parsedWindow = parseGoDuration(span);
-  const parsedStep = parseGoDuration(step);
-  const windowMs =
-    parsedWindow && parsedStep ? parsedWindow : DEFAULT_WINDOW_MS;
-  const stepMs = parsedWindow && parsedStep ? parsedStep : DEFAULT_STEP_MS;
-
-  const rows = useMemo(
-    () => buildRows(cpuData ?? [], memData ?? [], end, stepMs),
-    [cpuData, memData, end, stepMs],
-  );
-  const hasCpu = rows.some((r) => r.cpu !== undefined);
-  const hasMemory = rows.some((r) => r.memory !== undefined);
+  const { windowMs, stepMs } = resolveGrid(span, step);
+  const { rows, values, hasCpu, hasMemory } = useMemo(() => {
+    const rows = buildRows(cpuData ?? [], memData ?? [], end, stepMs);
+    return {
+      rows,
+      values: rows.flatMap((r) => [r.cpu, r.memory]).filter(isNumber),
+      hasCpu: rows.some((r) => r.cpu !== undefined),
+      hasMemory: rows.some((r) => r.memory !== undefined),
+    };
+  }, [cpuData, memData, end, stepMs]);
 
   return (
     <ChartFrame
@@ -136,10 +142,7 @@ export function ResourceAreaChart({
           </linearGradient>
         </defs>
         <TimeXAxis dataKey="t" start={end - windowMs} end={end} />
-        <ValueYAxis
-          unit="percent"
-          values={rows.flatMap((r) => [r.cpu, r.memory]).filter(isNumber)}
-        />
+        <ValueYAxis unit="percent" values={values} />
         {hasMemory && (
           <Area
             dataKey="memory"

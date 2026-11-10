@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -241,24 +241,27 @@ function TrendChart({
   points: FilledPoint[];
   range: TimeRange;
 }) {
-  // Which marker's text is showing: set by hover, focus or tap, cleared by
-  // leaving, blur or Escape.
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [shownMarkerKey, setShownMarkerKey] = useState<string | null>(null);
 
-  const markers = buildMarkers(points);
-  const open = markers.find((m) => m.key === openKey);
-  const end = dayStart(points[points.length - 1].date);
-  const first = dayStart(points[0].date);
-  // The window the operator picked, widened if a record falls before it.
-  const start = Math.min(
-    first,
-    dayStart(addDays(points[points.length - 1].date, -(range - 1))),
-  );
-  const rows = points.map((p) => ({ t: dayStart(p.date), score: p.score }));
-  const dateLabel = timeTickFormatter(end - start);
+  const markers = useMemo(() => buildMarkers(points), [points]);
+  const shown = markers.find((m) => m.key === shownMarkerKey);
 
-  return (
-    <>
+  // Showing a marker's text changes only `shownMarkerKey`, so the chart is
+  // built once per data change rather than on every hover.
+  const chart = useMemo(() => {
+    const lastDate = points[points.length - 1].date;
+    const end = dayStart(lastDate);
+    // The window the operator picked, widened if a record falls before it.
+    const start = Math.min(
+      dayStart(points[0].date),
+      dayStart(addDays(lastDate, -(range - 1))),
+    );
+    const rows = points.map((p) => ({ t: dayStart(p.date), score: p.score }));
+    const dateLabel = timeTickFormatter(end - start);
+    const hide = (key: string) =>
+      setShownMarkerKey((k) => (k === key ? null : k));
+
+    return (
       <ChartFrame
         preset="axis"
         kind="compliance-trend"
@@ -321,15 +324,13 @@ function TrendChart({
                   tabIndex={0}
                   aria-label={m.text}
                   className="cursor-pointer"
-                  onFocus={() => setOpenKey(m.key)}
-                  onBlur={() => setOpenKey((k) => (k === m.key ? null : k))}
-                  onMouseEnter={() => setOpenKey(m.key)}
-                  onMouseLeave={() =>
-                    setOpenKey((k) => (k === m.key ? null : k))
-                  }
-                  onClick={() => setOpenKey(m.key)}
+                  onFocus={() => setShownMarkerKey(m.key)}
+                  onBlur={() => hide(m.key)}
+                  onMouseEnter={() => setShownMarkerKey(m.key)}
+                  onMouseLeave={() => hide(m.key)}
+                  onClick={() => setShownMarkerKey(m.key)}
                   onKeyDown={(e) => {
-                    if (e.key === "Escape") setOpenKey(null);
+                    if (e.key === "Escape") setShownMarkerKey(null);
                   }}
                 >
                   <circle r={10} fill="transparent" />
@@ -340,14 +341,20 @@ function TrendChart({
           ))}
         </LineChart>
       </ChartFrame>
+    );
+  }, [points, range, markers]);
+
+  return (
+    <>
+      {chart}
 
       <div className="mt-2 min-h-8">
-        {open && (
+        {shown && (
           <p
             data-testid="compliance-trend-marker-tip"
             className="inline-block rounded-md border border-border-primary bg-elevated px-3 py-1.5 text-xs text-text-primary"
           >
-            {open.text}
+            {shown.text}
           </p>
         )}
       </div>
