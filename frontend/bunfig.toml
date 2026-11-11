@@ -5,13 +5,6 @@
 # the "install something brand new" hole.
 [install]
 minimumReleaseAge = 604800 # 7 days, in seconds
-# User-approved exceptions for the React runtime switch (2026-11-09): these
-# exact releases were under 7 days old on install day. Each passed an npm
-# provenance check (built from withastro/astro or vitejs/vite main by GitHub
-# Actions trusted publishing) and is pinned exactly in package.json
-# (@astrojs/internal-helpers through overrides). Remove the list once every
-# entry is past the cooldown.
-minimumReleaseAgeExcludes = ["@astrojs/react", "@astrojs/internal-helpers", "vite"]
 
 # Loads react-dom once, with a document present, before any test file runs.
 # It registers happy-dom only for that load and removes it again; see the
