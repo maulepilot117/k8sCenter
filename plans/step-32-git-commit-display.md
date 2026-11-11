@@ -1,5 +1,7 @@
 # Step 32: Git Commit Display
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 ## Overview
 
 Enrich Argo CD revision history with actual git commit messages, authors, and web URLs by calling the GitHub API. The revision history table in the app detail page currently shows SHAs with an empty Message column ("-"). This feature populates that column with real commit data fetched asynchronously.

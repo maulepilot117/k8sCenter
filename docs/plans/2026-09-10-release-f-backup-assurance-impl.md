@@ -7,6 +7,8 @@ migration_sequence: 000022
 date: 2026-09-10
 ---
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 # Release F — Backup Assurance and Recovery Readiness — Implementation Plan
 
 **Scope.** Requirements R3, R22, R23 (shippable) and R24, R25 (documentation only).

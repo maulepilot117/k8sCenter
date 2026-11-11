@@ -1,5 +1,7 @@
 # Step 5: Resource Browser — Implementation Plan
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 ## Overview
 
 Add a real-time resource browser to KubeCenter: a Go WebSocket hub backed by informer events, a generic sortable/filterable/paginated table island in the frontend, and route pages for all 19 sidebar navigation entries. This is the step that transforms KubeCenter from a dashboard into a management tool.

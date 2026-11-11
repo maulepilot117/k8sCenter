@@ -10,6 +10,8 @@ origin: docs/ideation/2026-09-10-feature-opportunities-ideation.html
 reviewed_revision: b9eb8171
 ---
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 # k8sCenter Feature Expansion - Plan
 
 ## Goal Capsule

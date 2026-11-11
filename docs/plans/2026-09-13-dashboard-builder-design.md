@@ -7,6 +7,8 @@ baseline_revision: 78d9881e
 status: design-approved
 ---
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 # Personal Dashboard Builder — Design
 
 This document resolves **Q5** and replaces the Release A deferred appendix

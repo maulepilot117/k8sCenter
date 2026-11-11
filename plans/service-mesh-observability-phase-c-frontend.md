@@ -6,6 +6,8 @@ date: 2026-04-28
 origin: plans/service-mesh-observability.md
 ---
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 # feat: Service Mesh Observability Phase C (frontend)
 
 ## Overview

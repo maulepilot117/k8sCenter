@@ -9,6 +9,8 @@ q1_policy: resolved — owner + explicit grant + current-authorization re-check 
 status: complete
 ---
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 # Release D — Persistent Incident Investigations — Implementation Plan
 
 Covers master-plan requirements **R1, R2, R3, R14, R15, R16, R17**, decisions **KTD3** and **KTD8**, the Incidents row of *Proposed Data and API Boundaries*, delivery row **D**, and acceptance example **AE6**.

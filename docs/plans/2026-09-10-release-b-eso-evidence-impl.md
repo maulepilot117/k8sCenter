@@ -7,6 +7,8 @@ migration_sequence: 000019
 date: 2026-09-10
 ---
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 # Release B — ESO Evidence Completion
 
 Implements master-plan Release B (`U13`–`U19`) covering R1, R2, R3, R11, R12, R13
