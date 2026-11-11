@@ -348,7 +348,7 @@ func projectReason(reason string, lvl projectionLevel) string {
 //     "…", and truncated reports whether that happened.
 //
 // It does not HTML-escape. The web client renders text children, which
-// Preact escapes; escaping here too would show "&lt;" to the user.
+// React escapes; escaping here too would show "&lt;" to the user.
 func sanitizeControllerText(s string, maxBytes int) (string, bool) {
 	s = strings.ToValidUTF8(s, "�")
 
