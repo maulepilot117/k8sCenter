@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { age } from "@/lib/format.ts";
 
 export interface ConditionsGridProps {

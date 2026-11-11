@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { LE_PROD_ACME, LE_STAGING_ACME } from "@/lib/wizard-constants.ts";

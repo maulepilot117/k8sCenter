@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { SectionHeader } from "@/components/ui/Field.tsx";
 import { withUniqueKeys } from "@/lib/unique-keys.ts";
 

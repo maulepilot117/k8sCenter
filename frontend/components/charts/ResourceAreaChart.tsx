@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useId, useMemo } from "react";
 import { Area, AreaChart } from "recharts";
 import type { TrendSeries } from "@/lib/dashboard/wire-types.ts";

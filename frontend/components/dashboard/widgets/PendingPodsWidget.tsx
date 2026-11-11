@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The classification and the ranking live in lib/, under test, and are shared
 // with pod-restarts so the two cards cannot disagree about the same pod

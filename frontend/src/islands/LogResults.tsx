@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { LogLine } from "@/lib/types/logs.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 

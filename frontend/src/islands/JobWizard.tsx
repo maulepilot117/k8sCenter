@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useRef, useState } from "react";
 import { Select } from "@/components/ui/Select.tsx";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";

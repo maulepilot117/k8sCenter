@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { PresetKey } from "@/lib/namespace-presets.ts";
 import { PRESETS } from "@/lib/namespace-presets.ts";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";

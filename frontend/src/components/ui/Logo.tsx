@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 interface LogoProps {
   size?: number;
   className?: string;

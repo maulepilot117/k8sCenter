@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type { K8sResource, PersistentVolumeClaim } from "@/lib/k8s-types.ts";
 import { statusColor } from "@/lib/status-colors.ts";

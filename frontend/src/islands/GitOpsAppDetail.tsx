@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useEffect, useState } from "react";
 import DetailShell from "@/components/k8s/DetailShell.tsx";
 import { Button } from "@/components/ui/Button.tsx";

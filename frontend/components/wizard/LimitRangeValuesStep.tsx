@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useState } from "react";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type {

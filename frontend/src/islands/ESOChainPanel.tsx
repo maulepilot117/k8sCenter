@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useState } from "react";
 import NamespaceTopology from "@/src/islands/NamespaceTopology.tsx";
 import { selectedNamespace } from "@/src/lib/namespace.ts";

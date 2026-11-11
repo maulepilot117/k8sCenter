@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, type ReactNode } from "react";

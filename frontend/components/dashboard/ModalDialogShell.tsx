@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ReactNode } from "react";
 import { useModalDialogKeys } from "@/lib/hooks/use-modal-dialog-keys.ts";
 

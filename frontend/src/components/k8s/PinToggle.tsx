@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useState } from "react";
 import type { ApiError } from "@/lib/api.ts";
 import {

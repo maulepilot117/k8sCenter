@@ -1,5 +1,3 @@
-/** @jsxImportSource react */
-
 import type { Condition } from "@/lib/gateway-types.ts";
 import { withUniqueKeys } from "@/lib/unique-keys.ts";
 

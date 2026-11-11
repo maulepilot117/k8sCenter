@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useState } from "react";
 import { StatusBadge } from "@/components/ui/NotificationBadges.tsx";
 import {

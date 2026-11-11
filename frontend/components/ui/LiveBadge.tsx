@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { wsStatus } from "@/lib/ws.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";

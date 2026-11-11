@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";

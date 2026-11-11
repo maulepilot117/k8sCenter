@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** Badge components for Service Mesh views (mesh, mTLS state, mTLS source, kind).
  *
  *  Color sourcing: `lib/badge-colors.ts` covers the SEVERITY scale

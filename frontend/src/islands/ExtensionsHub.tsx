@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ChangeEvent, useEffect, useState } from "react";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";

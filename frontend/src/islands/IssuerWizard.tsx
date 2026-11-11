@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useRef, useState } from "react";
 import { IssuerFormStep } from "@/components/wizard/IssuerFormStep.tsx";
 import { IssuerTypePickerStep } from "@/components/wizard/IssuerTypePickerStep.tsx";

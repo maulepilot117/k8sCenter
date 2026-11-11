@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useRef, useState } from "react";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
 import { apiPost } from "@/lib/api.ts";

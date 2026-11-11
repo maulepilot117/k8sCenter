@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useRef, useState } from "react";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { apiGet } from "@/lib/api.ts";

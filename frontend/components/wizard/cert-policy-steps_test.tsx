@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, mock, test } from "bun:test";
 import type { Issuer } from "@/lib/certmanager-types.ts";
 import type { EngineStatus } from "@/lib/policy-types.ts";

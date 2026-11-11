@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useMemo } from "react";
 import { escapeHtml } from "@/lib/schema-to-yaml.ts";
 

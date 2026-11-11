@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import "react";
 import {

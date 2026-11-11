@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 

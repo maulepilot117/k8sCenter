@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { NetworkTile } from "@/components/ui/NetworkTile.tsx";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import { useSourceState } from "@/lib/dashboard/use-source-state.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import BarRow from "@/components/charts/BarRow.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";

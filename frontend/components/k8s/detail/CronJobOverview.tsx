@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { age } from "@/lib/format.ts";
 import type { CronJob, K8sResource } from "@/lib/k8s-types.ts";

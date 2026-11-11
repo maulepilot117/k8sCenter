@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { ColorBadge } from "@/components/ui/PolicyBadges.tsx";
 import type { HealthStatus, SyncStatus } from "@/lib/gitops-types.ts";
 

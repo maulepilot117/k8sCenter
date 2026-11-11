@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 type SelectOption = string | { value: string; label: string };
 
 export default function Select({

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";

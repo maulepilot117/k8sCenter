@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ComponentType, useRef, useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";

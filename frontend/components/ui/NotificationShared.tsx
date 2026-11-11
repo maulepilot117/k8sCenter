@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ReactNode, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";

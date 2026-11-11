@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import type { ReactNode } from "react";
 import { act, render, setupDom } from "@/src/test-utils/render.tsx";

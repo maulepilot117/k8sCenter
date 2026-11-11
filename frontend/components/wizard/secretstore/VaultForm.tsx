@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 import type { ProviderFormProps } from "@/lib/eso-types.ts";

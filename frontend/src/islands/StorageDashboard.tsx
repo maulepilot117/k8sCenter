@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import BarRow from "@/components/charts/BarRow.tsx";
 import Donut from "@/components/charts/Donut.tsx";

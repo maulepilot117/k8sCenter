@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useRef, useState } from "react";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 

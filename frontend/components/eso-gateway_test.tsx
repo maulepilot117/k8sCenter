@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import type { DriftUnknownReason } from "@/lib/eso-types.ts";
 import { body, render, setupDom } from "@/src/test-utils/render.tsx";

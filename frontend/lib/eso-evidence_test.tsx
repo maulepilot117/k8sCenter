@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import { renderToString as render } from "react-dom/server";
 import ESOEvidencePanel from "@/src/islands/ESOEvidencePanel.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** Backup assurance — recovery readiness page (Release F U36).
  *
  * Reads the U35 API under /v1/velero/assurance: the collector's status, the

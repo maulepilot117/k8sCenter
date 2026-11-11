@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Card } from "@/components/ui/Card.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";

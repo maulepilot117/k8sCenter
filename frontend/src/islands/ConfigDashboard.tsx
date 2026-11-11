@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ComponentType, useEffect, useState } from "react";
 import ConfigMapWizard from "@/src/islands/ConfigMapWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";

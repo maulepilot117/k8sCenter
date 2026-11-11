@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useRef, useState } from "react";
 import type { KeyValueEntry } from "@/components/ui/KeyValueListEditor.tsx";
 import { apiPost } from "@/lib/api.ts";

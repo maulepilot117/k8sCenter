@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
 import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";

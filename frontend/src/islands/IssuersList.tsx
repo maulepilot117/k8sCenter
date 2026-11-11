@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import { IssuerTypeBadge } from "@/components/ui/CertificateBadges.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";

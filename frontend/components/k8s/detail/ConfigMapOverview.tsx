@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { SectionHeader } from "@/components/ui/Field.tsx";
 import type { ConfigMap, K8sResource } from "@/lib/k8s-types.ts";
 

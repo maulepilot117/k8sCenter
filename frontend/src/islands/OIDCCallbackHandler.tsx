@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { handleOIDCCallback } from "@/lib/auth.ts";

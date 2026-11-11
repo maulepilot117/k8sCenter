@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { describe, expect, test } from "bun:test";
 import { type ReactElement, useState } from "react";
 import type { EngineStatus } from "@/lib/policy-types.ts";

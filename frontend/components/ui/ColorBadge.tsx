@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** Generic tinted badge — color text on a color-mix background. */
 export function ColorBadge({ label, color }: { label: string; color: string }) {
   return (

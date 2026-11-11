@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useEffect, useState } from "react";
 import { stringify as yamlStringify } from "yaml";
 import { Button } from "@/components/ui/Button.tsx";

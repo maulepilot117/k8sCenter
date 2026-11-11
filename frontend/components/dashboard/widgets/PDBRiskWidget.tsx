@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The blocked/no-pods/unknown distinction lives in lib/, under test, because
 // telling a budget that blocks a drain apart from one that merely covers

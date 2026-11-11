@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ReactNode } from "react";
 
 /** Reusable label/value field pair for detail views. */

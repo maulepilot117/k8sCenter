@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, expect, jest, test } from "bun:test";
 import type { ReactElement } from "react";
 import { ApiError, setAccessToken } from "@/lib/api.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /**
  * MetricsRail — 300px glass right-rail showing up to 4 live sparkline KPI
  * tiles for the current resource.  Rendered by ResourceDetail when metrics

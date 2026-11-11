@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 
 export { SEVERITY_COLORS } from "@/lib/badge-colors.ts";

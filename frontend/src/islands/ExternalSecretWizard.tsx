@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useRef, useState } from "react";
 import { ExternalSecretForm } from "@/components/wizard/ExternalSecretForm.tsx";
 import { esoApi } from "@/lib/eso-api.ts";

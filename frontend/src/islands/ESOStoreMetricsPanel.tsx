@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** Per-store rate + cost-tier panel — Phase F Unit 16.
  *
  * Embedded in ESOStoreDetail / ESOClusterStoreDetail. Hits

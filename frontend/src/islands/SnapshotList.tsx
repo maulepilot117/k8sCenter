@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";

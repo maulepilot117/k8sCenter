@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useLayoutEffect, useRef } from "react";
 import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 // Which layouts are offered, and what taking one would lose, is decided in

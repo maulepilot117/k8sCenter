@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ChangeEvent, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { apiPost } from "@/lib/api.ts";

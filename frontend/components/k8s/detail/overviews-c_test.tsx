@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import type { K8sResource } from "@/lib/k8s-types.ts";
 import { body, render, setupDom } from "@/src/test-utils/render.tsx";

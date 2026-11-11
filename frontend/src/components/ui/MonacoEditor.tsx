@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { useIsClient } from "@/src/lib/use-is-client.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import Gauge from "@/components/charts/Gauge.tsx";
 import { CheckItem, type CheckItemProps } from "@/components/ui/CheckItem.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";

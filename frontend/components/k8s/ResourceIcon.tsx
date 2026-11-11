@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** SVG icons for Kubernetes resource types. Sized at 20x20 by default. */
 import type { ReactElement } from "react";
 

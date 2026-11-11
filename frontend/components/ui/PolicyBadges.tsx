@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 
 export { ColorBadge } from "@/components/ui/ColorBadge.tsx";

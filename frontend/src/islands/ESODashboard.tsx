@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** External Secrets Operator dashboard — Liquid Glass re-skin (Phase 8).
  *
  * Surfaces sync health at a glance:

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect } from "react";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";

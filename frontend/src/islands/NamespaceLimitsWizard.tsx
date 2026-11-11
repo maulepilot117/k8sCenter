@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useRef, useState } from "react";
 import { LimitRangeValuesStep } from "@/components/wizard/LimitRangeValuesStep.tsx";
 import { NamespacePresetStep } from "@/components/wizard/NamespacePresetStep.tsx";

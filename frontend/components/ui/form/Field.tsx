@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ReactNode } from "react";
 
 /** Label + optional hint wrapper used by every wizard/form field. */

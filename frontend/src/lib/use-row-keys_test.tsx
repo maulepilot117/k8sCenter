@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 import type { RowKeys } from "./use-row-keys.ts";

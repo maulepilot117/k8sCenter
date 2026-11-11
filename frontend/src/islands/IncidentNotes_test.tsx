@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, expect, test } from "bun:test";
 import type { NoteView } from "@/lib/incident-types.ts";
 import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";

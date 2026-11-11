@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { K8sResource, Role } from "@/lib/k8s-types.ts";
 import { RulesTable } from "./RulesTable.tsx";
 

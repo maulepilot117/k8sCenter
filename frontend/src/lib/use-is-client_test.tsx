@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import { type Signal, signal } from "@preact/signals-core";
 import { useEffect, useId, useRef } from "react";

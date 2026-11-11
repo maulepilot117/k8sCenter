@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { MeshBadge, MTLSStateBadge } from "@/components/ui/MeshBadges.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";

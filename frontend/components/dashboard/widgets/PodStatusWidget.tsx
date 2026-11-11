@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import Donut from "@/components/charts/Donut.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { podStatusSegments } from "@/lib/dashboard/pod-status.ts";

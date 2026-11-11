@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { computed } from "@preact/signals-core";
 import {
   type CSSProperties,

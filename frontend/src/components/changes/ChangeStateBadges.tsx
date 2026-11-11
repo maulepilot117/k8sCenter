@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { executionBadge, verificationBadge } from "@/lib/change-copy.ts";
 import type { ReceiptState, VerificationState } from "@/lib/change-types.ts";

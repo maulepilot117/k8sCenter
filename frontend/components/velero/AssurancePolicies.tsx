@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** Backup assurance — freshness policy form model, editor and table
  * (Release F U36). Admin only; the island decides whether to render them.
  *

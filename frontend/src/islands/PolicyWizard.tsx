@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PolicyConfigStep } from "@/components/wizard/PolicyConfigStep.tsx";
 import { PolicyTemplateStep } from "@/components/wizard/PolicyTemplateStep.tsx";

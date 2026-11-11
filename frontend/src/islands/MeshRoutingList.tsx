@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { KindBadge, MeshBadge } from "@/components/ui/MeshBadges.tsx";

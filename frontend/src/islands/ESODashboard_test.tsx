@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { esoApi } from "@/lib/eso-api.ts";
 import type { ExternalSecret, SecretStore, Status } from "@/lib/eso-types.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Alert } from "@/components/ui/Alert.tsx";
 import { receiptHref, sameCluster, shortId } from "@/lib/change-copy.ts";
 import type { RepairState } from "@/lib/change-tracking.ts";

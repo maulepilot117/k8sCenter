@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ChangeEvent } from "react";
 
 interface SearchBarProps {

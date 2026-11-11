@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import PDBWizard from "@/src/islands/PDBWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";

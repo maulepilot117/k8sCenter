@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, describe, expect, test } from "bun:test";
 import type { SourceState } from "@/lib/dashboard/data.ts";
 import { PARAM_KEY_NAMESPACE, sourceKeyFor } from "@/lib/dashboard/params.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import type { Schedule } from "@/lib/velero-types.ts";
 import { render, setupDom } from "@/src/test-utils/render.tsx";

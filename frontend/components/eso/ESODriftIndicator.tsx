@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { DriftBadge } from "@/components/eso/ESOBadges.tsx";
 import type { DriftStatus, DriftUnknownReason } from "@/lib/eso-types.ts";
 

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import {
   HealthStatusBadge,
   SyncStatusBadge,

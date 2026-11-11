@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 export function ProtocolBadge({ protocol }: { protocol: string }) {
   const colorClass =
     protocol === "HTTPS" || protocol === "TLS"

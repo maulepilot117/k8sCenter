@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The partial-answer accounting, the zero-versus-absent rule and the error-rate
 // rounding live in lib/, under test (D-10, KTD8). The first of those especially:

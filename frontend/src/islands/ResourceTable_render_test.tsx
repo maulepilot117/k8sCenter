@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { within } from "@testing-library/react";
 import { setAccessToken } from "@/lib/api.ts";

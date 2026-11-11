@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 export interface StepRailStep {
   label: string;
   /** optional secondary line (vertical rail only) */

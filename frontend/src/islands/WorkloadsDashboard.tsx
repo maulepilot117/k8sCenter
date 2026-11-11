@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ComponentType, useEffect, useState } from "react";
 import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
 import CronJobWizard from "@/src/islands/CronJobWizard.tsx";

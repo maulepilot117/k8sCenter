@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** "ESO not installed" tile shared between the dashboard and list islands.
  *
  * Backend Phase A returns `{detected: false}` from `/externalsecrets/status`

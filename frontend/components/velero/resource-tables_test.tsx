@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import type { Backup, Restore } from "@/lib/velero-types.ts";
 import { body, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";

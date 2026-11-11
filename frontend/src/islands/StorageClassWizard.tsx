@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useRef, useState } from "react";
 import Field from "@/components/ui/form/Field.tsx";
 import Select from "@/components/ui/form/Select.tsx";

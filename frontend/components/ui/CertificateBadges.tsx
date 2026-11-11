@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 import type { CertStatus, Issuer } from "@/lib/certmanager-types.ts";
 

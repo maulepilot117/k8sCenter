@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ComponentProps } from "react";
 
 // Exactly what `<input>` itself accepts, so the spread below stays assignable.

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useRef, useState } from "react";
 import { ServiceBasicsStep } from "@/components/wizard/ServiceBasicsStep.tsx";
 import { ServicePortsStep } from "@/components/wizard/ServicePortsStep.tsx";

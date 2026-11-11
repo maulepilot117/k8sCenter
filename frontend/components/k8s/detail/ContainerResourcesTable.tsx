@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { SectionHeader } from "@/components/ui/Field.tsx";
 
 interface Container {

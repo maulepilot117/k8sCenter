@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { getWidget, registerWidget } from "@/lib/dashboard/registry.ts";
 import type { LayoutItem } from "@/lib/dashboard/types.ts";

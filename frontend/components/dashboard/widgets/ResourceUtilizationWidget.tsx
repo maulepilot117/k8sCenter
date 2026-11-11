@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useMemo } from "react";
 import { ResourceAreaChart } from "@/components/charts/ResourceAreaChart.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
