@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ValidateResponse } from "@/lib/yaml-apply.ts";
 
 /**

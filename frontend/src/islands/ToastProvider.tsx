@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { CSSProperties } from "react";
 import { dismissToast, type Toast, toasts } from "@/src/lib/toast-store.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";

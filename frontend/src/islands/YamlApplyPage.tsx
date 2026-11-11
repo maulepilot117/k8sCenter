@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type CSSProperties, useEffect, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import {
   memo,
   type ReactElement,

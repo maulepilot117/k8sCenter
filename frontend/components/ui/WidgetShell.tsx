@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type CSSProperties, type ReactNode, useContext } from "react";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import GlassCard from "@/components/ui/GlassCard.tsx";

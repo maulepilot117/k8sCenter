@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useLayoutEffect, useRef, useState } from "react";
 import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 // Every rule this dialog enforces lives in lib/, under test, because this repo

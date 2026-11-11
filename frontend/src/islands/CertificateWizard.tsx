@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useRef, useState } from "react";
 import { CertificateForm } from "@/components/wizard/CertificateForm.tsx";
 import { apiGet, apiPost } from "@/lib/api.ts";

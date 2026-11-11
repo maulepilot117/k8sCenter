@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The verdict tally, the blocked share and the worst-first ranking live in

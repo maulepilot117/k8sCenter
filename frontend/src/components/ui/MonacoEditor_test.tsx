@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, mock, test } from "bun:test";
 import { act, setBrowser, setupDom } from "@/src/test-utils/render.tsx";
 

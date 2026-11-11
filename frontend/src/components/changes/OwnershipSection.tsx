@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import {
   MAX_OWNERSHIP_REFS,
   type OwnershipState,

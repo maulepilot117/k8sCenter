@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** Backup assurance — shared chips and time display (Release F U36).
  *
  * Small presentational primitives the BackupAssurance island and its panels

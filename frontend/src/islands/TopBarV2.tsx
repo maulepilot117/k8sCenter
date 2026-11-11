@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useRef, useState } from "react";
 import { initAnimationPrefs } from "@/lib/animation-prefs.ts";
 import { useAuth } from "@/lib/auth.ts";

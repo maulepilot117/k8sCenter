@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { clusterLabel, useClusterNames } from "@/src/lib/cluster-label.ts";
 
 /**

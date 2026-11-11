@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { SecretStoreProvider } from "@/lib/eso-types.ts";
 import {
   isTemplateOnlyProvider,

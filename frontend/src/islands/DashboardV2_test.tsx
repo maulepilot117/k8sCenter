@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import type { ClusterInfoData } from "@/lib/dashboard/wire-types.ts";
 import type { LayoutResponse } from "@/lib/preferences.ts";

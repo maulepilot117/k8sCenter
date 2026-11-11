@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ReactElement } from "react";
 import { ClusterRoleBindingOverview } from "@/components/k8s/detail/ClusterRoleBindingOverview.tsx";
 import { ClusterRoleOverview } from "@/components/k8s/detail/ClusterRoleOverview.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { batch } from "@preact/signals-core";
 import {
   type ReactNode,

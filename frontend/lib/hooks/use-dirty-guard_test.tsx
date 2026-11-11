@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 // A static import, so the hook module loads before setupDom registers a DOM,
 // as it does when another test file (or a server render) imports it first:

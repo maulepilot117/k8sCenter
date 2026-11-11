@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { ApiError } from "@/lib/api.ts";
 import { esoApi } from "@/lib/eso-api.ts";

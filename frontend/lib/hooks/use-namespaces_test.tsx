@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, render, settle, setupDom } from "@/src/test-utils/render.tsx";
 

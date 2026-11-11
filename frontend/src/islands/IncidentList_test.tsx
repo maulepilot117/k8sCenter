@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import type { EditorView as EditorViewType } from "@codemirror/view";
 import { useState } from "react";

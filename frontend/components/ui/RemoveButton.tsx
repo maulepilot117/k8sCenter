@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 interface RemoveButtonProps {
   onClick: () => void;
   title?: string;

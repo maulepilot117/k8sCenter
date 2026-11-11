@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
 // Registers every widget. Without it the registry is empty and each lookup

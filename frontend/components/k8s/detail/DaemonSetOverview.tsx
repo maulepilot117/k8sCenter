@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type { DaemonSet, K8sResource } from "@/lib/k8s-types.ts";
 import { ContainerResourcesTable } from "./ContainerResourcesTable.tsx";

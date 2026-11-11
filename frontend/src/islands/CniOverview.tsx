@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { Card } from "@/components/ui/Card.tsx";

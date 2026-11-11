@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, expect, mock, test } from "bun:test";
 import type { ReactNode } from "react";
 import { setAccessToken } from "@/lib/api.ts";

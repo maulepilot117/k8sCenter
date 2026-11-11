@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { MAX_PROBE_PATH_LENGTH } from "@/lib/wizard-constants.ts";

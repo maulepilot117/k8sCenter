@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, expect, test } from "bun:test";
 import { dashboardData, type SourceState } from "@/lib/dashboard/data.ts";
 import type { WidgetDef } from "@/lib/dashboard/types.ts";

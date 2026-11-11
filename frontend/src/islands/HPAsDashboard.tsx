@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import HPAWizard from "@/src/islands/HPAWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";

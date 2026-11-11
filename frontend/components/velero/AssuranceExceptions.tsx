@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** Backup assurance — exception cards and the grouped, paged exception list
  * (Release F U36).
  *

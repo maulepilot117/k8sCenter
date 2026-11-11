@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The four-condition selection, the silent/not-ready distinction and the
 // ranking live in lib/, under test, because none of them is a field read

@@ -7,6 +7,8 @@ product_contract_source: ce-plan-bootstrap
 execution: code
 ---
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 # Preact 11 Upgrade - Plan
 
 ## Goal Capsule

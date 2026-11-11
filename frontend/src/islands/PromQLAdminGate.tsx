@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ReactNode } from "react";
 import { useAuth } from "@/lib/auth.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { useState } from "react";
 import { hydrate } from "@/src/test-utils/hydrate.tsx";

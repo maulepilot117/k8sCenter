@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ComponentProps, ReactNode } from "react";
 
 // Exactly what `<select>` itself accepts, so the spread below stays assignable.

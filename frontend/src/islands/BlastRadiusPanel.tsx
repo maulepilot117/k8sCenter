@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { KIND_ROUTE_MAP } from "@/lib/types/diagnostics.ts";
 
 export interface AffectedResource {

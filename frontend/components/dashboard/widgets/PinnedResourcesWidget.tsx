@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { selectedCluster } from "@/lib/cluster.ts";
 // The per-cluster filter, the other-cluster accounting and the href

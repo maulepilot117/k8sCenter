@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect } from "react";
 import { applyTheme, theme, toggleTheme } from "@/lib/theme.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";

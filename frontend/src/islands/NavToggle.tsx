@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { navCollapsed, toggleNav } from "@/lib/nav.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 

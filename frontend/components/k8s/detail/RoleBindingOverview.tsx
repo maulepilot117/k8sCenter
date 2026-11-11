@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type { K8sResource, RoleBinding } from "@/lib/k8s-types.ts";
 import { resolveRoleHref } from "@/lib/rbac-utils.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { LOCAL_CLUSTER_ID } from "@/lib/cluster.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { logout } from "@/lib/auth.ts";

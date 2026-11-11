@@ -1,5 +1,7 @@
 # Frontend Redesign Follow-Up: Deferred Items
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Address deferred P2/P3 review findings from the Phase 6 Frontend Redesign that require backend work, design decisions, or significant refactoring.

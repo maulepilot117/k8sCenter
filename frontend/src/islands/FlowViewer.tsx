@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";

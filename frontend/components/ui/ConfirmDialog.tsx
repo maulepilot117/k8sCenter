@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import {
   type ChangeEvent,
   type ReactNode,

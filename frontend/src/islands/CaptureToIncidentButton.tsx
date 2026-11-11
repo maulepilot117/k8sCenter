@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useRef, useState } from "react";
 import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";

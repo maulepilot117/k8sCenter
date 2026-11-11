@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";

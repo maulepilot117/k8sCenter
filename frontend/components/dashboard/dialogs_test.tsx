@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, describe, expect, mock, test } from "bun:test";
 import type { CopyableLayout } from "@/lib/dashboard/layout-store.ts";
 import type { LayoutItem, WidgetDef } from "@/lib/dashboard/types.ts";

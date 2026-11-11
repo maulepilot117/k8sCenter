@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useState } from "react";
 import NamespaceTopology from "@/src/islands/NamespaceTopology.tsx";
 import { useIsClient } from "@/src/lib/use-is-client.ts";

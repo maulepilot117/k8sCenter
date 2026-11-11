@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Alert } from "@/components/ui/Alert.tsx";
 import type { PanelState } from "@/lib/networking-state.ts";
 

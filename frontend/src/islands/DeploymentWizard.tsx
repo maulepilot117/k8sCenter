@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useRef, useState } from "react";
 import { DeploymentBasicsStep } from "@/components/wizard/DeploymentBasicsStep.tsx";
 import { DeploymentNetworkStep } from "@/components/wizard/DeploymentNetworkStep.tsx";

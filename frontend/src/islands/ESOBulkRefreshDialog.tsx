@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /**
  * ESO bulk-refresh dialog (Phase E Unit 15).
  *

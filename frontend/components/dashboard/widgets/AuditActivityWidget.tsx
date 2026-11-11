@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, mock, test } from "bun:test";
 import { body, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 

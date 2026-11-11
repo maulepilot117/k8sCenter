@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import ConditionsTable from "@/components/gateway/ConditionsTable.tsx";
 import { ProtocolBadge } from "@/components/ui/GatewayBadges.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 interface KeyValueTableProps {
   title: string;
   data: Record<string, string>;

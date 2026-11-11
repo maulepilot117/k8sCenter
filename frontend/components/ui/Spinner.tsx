@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 interface SpinnerProps {
   className?: string;
   size?: "sm" | "md";

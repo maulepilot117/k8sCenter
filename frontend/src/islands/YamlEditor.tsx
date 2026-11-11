@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import {
   MonacoEditor,
   type MonacoEditorProps,

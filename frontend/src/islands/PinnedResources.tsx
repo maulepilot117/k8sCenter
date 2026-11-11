@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import type { ApiError } from "@/lib/api.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";

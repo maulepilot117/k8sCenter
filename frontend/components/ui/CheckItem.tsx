@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 export interface CheckItemProps {
   label: string;
   value: string;

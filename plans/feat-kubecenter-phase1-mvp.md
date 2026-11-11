@@ -1,5 +1,7 @@
 # feat: k8sCenter Phase 1 MVP — Full Implementation Plan
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 ## Overview
 
 k8sCenter is a web-based Kubernetes management platform delivering vCenter-level functionality for Kubernetes clusters. This plan covers the complete Phase 1 MVP: a working single-cluster management UI with GUI wizards, real-time updates, monitoring integration, and RBAC-aware multi-tenancy.

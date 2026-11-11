@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { refreshSession, setAccessToken } from "@/lib/api.ts";
 import {

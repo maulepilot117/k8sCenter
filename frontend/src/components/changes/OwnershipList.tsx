@@ -1,5 +1,3 @@
-/** @jsxImportSource react */
-
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ownershipCopy } from "@/lib/change-copy.ts";
 import type { ObjectRef, OwnershipView } from "@/lib/change-types.ts";

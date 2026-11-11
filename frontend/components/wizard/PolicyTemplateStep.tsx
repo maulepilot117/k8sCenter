@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { EngineBadge, SeverityBadge } from "@/components/ui/PolicyBadges.tsx";
 import type { PolicyTemplateInfo } from "@/lib/policy-templates.ts";
 import {

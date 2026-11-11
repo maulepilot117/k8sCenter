@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { MetricTile } from "@/components/ui/MetricTile.tsx";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import { useSourceState } from "@/lib/dashboard/use-source-state.ts";

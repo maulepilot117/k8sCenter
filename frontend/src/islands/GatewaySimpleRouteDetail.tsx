@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import BackendRefsTable from "@/components/gateway/BackendRefsTable.tsx";
 import ConditionsTable from "@/components/gateway/ConditionsTable.tsx";

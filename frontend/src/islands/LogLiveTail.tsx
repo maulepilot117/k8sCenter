@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import {
   type Dispatch,
   type SetStateAction,

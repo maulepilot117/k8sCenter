@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ComponentType, useEffect, useState } from "react";
 import FlowViewer from "@/src/islands/FlowViewer.tsx";
 import IngressWizard from "@/src/islands/IngressWizard.tsx";

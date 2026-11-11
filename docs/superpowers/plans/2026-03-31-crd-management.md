@@ -1,5 +1,7 @@
 # CRD Management (Extensions Hub) Implementation Plan
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a generic CRD management system to k8sCenter — auto-discover CRDs, list/view/create/edit/delete custom resource instances, with a progressive schema-driven form for editing.

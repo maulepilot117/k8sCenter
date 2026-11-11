@@ -10,6 +10,8 @@ execution: code
 deepened: 2026-09-14
 ---
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 # Bun + Astro Frontend Migration - Plan
 
 ## Goal Capsule

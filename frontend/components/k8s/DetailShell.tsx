@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ReactNode } from "react";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 import StatusBadge, { type Tone } from "@/components/ui/glass/StatusBadge.tsx";

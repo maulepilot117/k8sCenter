@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
 import type { ReactElement } from "react";
 import { ApiError } from "@/lib/api.ts";

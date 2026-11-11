@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ReactNode } from "react";
 
 type AlertVariant = "error" | "warning" | "info" | "success";

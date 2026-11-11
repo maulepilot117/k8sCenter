@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type KeyboardEvent, type ReactNode, useCallback } from "react";
 
 export interface TabDef {

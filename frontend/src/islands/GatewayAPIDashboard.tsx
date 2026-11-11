@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { CSSProperties } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";

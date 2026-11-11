@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { RemoteRefreshHint } from "@/components/ui/LiveBadge.tsx";

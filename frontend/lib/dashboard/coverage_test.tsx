@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
 import WidgetHost from "@/components/dashboard/WidgetHost.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";

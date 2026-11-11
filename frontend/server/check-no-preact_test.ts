@@ -48,21 +48,25 @@ test("signals-core and React imports pass", () => {
   expect(messages(code)).toEqual([]);
 });
 
-test("a jsxImportSource pragma other than react fails", () => {
+test("any jsxImportSource pragma fails, react included", () => {
   expect(
     messages("/** @jsxImportSource preact */\nexport const A = () => <div />;"),
   ).toEqual([
-    "1: sets \"@jsxImportSource preact\"; the frontend's JSX is React's",
+    '1: sets "@jsxImportSource preact"; tsconfig.json sets the JSX runtime, and it is React',
   ]);
   expect(
     messages("/** @jsxImportSource react */\nexport const A = () => <div />;"),
-  ).toEqual([]);
+  ).toEqual([
+    '1: sets "@jsxImportSource react"; tsconfig.json sets the JSX runtime, and it is React',
+  ]);
 });
 
-test("a pragma after the first statement is not a pragma", () => {
+test("a pragma after the first statement fails too; Bun still reads it", () => {
   expect(
     messages("export const A = 1;\n/** @jsxImportSource preact */"),
-  ).toEqual([]);
+  ).toEqual([
+    '2: sets "@jsxImportSource preact"; tsconfig.json sets the JSX runtime, and it is React',
+  ]);
 });
 
 test("Preact-only attributes on DOM elements fail, naming React's spelling", () => {

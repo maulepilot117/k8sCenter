@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type MouseEvent, type ReactNode, useEffect, useState } from "react";
 import type { DomainSection } from "@/lib/constants.ts";
 

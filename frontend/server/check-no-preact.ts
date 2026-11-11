@@ -9,8 +9,10 @@
  *    from the two cannot render each other. `@preact/signals-core` is not
  *    Preact: it has no UI runtime, and the shared stores are built on it.
  *
- * 2. No file sets a `@jsxImportSource` pragma other than `react`. Such a
- *    file's JSX would compile against another runtime's element factory.
+ * 2. No file sets a `@jsxImportSource` pragma. `tsconfig.json` sets React's
+ *    JSX runtime for every file, so a `react` pragma only repeats it, and any
+ *    other pragma would compile that file's JSX against another runtime's
+ *    element factory.
  *
  * 3. No JSX uses an attribute only Preact understands: `class`, `for`,
  *    `onFocusOut`/`onFocusIn`, or a hyphenated or namespaced SVG attribute
@@ -136,17 +138,15 @@ export function checkSource(code: string, file: string): Finding[] {
   }
 
   const findings: Finding[] = [];
-  // The pragma counts only where JSX tools read it: in a comment before the
-  // first statement.
-  const firstStatement = ast.program.body[0]?.start ?? Number.POSITIVE_INFINITY;
+  // Every comment counts, not only those before the first statement: Bun's
+  // transpiler still honours a pragma placed later in the file.
   for (const comment of ast.comments ?? []) {
-    if (comment.end > firstStatement) continue;
     const pragma = JSX_IMPORT_SOURCE.exec(comment.value);
-    if (pragma && pragma[1] !== "react") {
+    if (pragma) {
       findings.push({
         file,
         line: comment.loc.start.line,
-        message: `sets "@jsxImportSource ${pragma[1]}"; the frontend's JSX is React's`,
+        message: `sets "@jsxImportSource ${pragma[1]}"; tsconfig.json sets the JSX runtime, and it is React`,
       });
     }
   }
@@ -236,13 +236,13 @@ function main(): void {
       console.error(`  ${f.file}:${f.line}  ${f.message}`);
     }
     console.error(
-      "The frontend runs on React: no Preact import, no other JSX runtime, " +
+      "The frontend runs on React: no Preact import, no @jsxImportSource pragma, " +
         "and React's JSX vocabulary only.",
     );
     process.exit(1);
   }
   console.log(
-    "No-Preact guard: no Preact import, no other JSX runtime, and no " +
+    "No-Preact guard: no Preact import, no @jsxImportSource pragma, and no " +
       "Preact-only JSX attribute.",
   );
 }

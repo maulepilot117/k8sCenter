@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { useState } from "react";
 

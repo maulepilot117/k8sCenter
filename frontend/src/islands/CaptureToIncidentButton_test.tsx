@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { ApiError, setAccessToken } from "@/lib/api.ts";
 import type { DiagnosticResult } from "@/lib/types/diagnostics.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { toasts } from "@/src/lib/toast-store.ts";

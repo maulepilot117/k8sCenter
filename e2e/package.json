@@ -4,13 +4,10 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
-    "test:smoke": "playwright test --grep @smoke",
-    "spotcheck": "node ktd14-spotcheck.mjs"
+    "test:smoke": "playwright test --grep @smoke"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
-    "@types/node": "^22.0.0",
-    "pixelmatch": "^7.2.0",
-    "pngjs": "^7.0.0"
+    "@types/node": "^22.0.0"
   }
 }

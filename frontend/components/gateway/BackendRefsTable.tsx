@@ -1,5 +1,3 @@
-/** @jsxImportSource react */
-
 import type { BackendRef } from "@/lib/gateway-types.ts";
 import { withUniqueKeys } from "@/lib/unique-keys.ts";
 

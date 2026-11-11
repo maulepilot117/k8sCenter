@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ReactNode, useState } from "react";
 import YamlView from "@/components/ui/YamlView.tsx";
 import StepRail from "@/components/wizard/StepRail.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { ButtonHTMLAttributes } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 

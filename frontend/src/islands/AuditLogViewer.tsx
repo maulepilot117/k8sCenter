@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The severity mapping and the counting live in lib/, under test, because
 // this repo has no component test harness (D-10) and the direction the

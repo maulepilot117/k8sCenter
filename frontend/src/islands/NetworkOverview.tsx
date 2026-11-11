@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useEffect, useState } from "react";
 import { apiGet } from "@/lib/api.ts";
 import BgpStatus from "@/src/islands/BgpStatus.tsx";

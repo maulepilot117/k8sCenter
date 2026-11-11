@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { notifApi } from "@/lib/api.ts";
 import type {

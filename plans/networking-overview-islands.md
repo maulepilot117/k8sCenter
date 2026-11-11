@@ -1,5 +1,7 @@
 # Networking Overview Islands — Implementation Plan
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 **Spec:** `docs/superpowers/specs/2026-04-09-networking-overview-islands-design.md`
 **Branch:** `feat/networking-overview-islands`
 **Estimated Steps:** 6

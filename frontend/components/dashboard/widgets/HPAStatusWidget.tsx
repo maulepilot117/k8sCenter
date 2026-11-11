@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The ceiling rule, the metric pairing and the unknown/at-ceiling/saturated
 // distinction all live in lib/, under test, because none of them is a field

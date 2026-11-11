@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** Backup assurance — collection freshness, per-condition counts and the
  * admin-only collector panel (Release F U36).
  *

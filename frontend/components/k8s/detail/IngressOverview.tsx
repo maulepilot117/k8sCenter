@@ -1,5 +1,3 @@
-/** @jsxImportSource react */
-
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type { Ingress, K8sResource } from "@/lib/k8s-types.ts";
 import { withUniqueKeys } from "@/lib/unique-keys.ts";

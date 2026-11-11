@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import type { CSSProperties, ReactNode } from "react";
 
 interface GlassCardProps {

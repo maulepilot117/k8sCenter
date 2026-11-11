@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ReactNode, useEffect, useRef } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Tabs } from "@/components/ui/Tabs.tsx";

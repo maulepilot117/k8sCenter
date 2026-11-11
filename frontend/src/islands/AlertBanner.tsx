@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback, useEffect, useState } from "react";
 import { apiGet } from "@/lib/api.ts";
 import type { AlertEvent } from "@/lib/k8s-types.ts";

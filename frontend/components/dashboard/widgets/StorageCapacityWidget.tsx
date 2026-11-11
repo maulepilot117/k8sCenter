@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The vector parsing, the ranking and the band arithmetic live in lib/, under
 // test, because none of them is a field read (D-10, KTD8). The slug is named

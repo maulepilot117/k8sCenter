@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import {
   NOTIF_SEVERITY_COLORS,
   type NotifSeverity,

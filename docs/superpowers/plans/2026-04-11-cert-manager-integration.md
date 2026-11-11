@@ -1,5 +1,7 @@
 # Cert-Manager Integration Implementation Plan (Phase 11A) — Revised
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship cert-manager observatory + lifecycle actions — Certificates/Issuers/ClusterIssuers list + detail (nested CertificateRequests/Orders/Challenges), force-renew and re-issue, and a background expiry poller emitting threshold events to Notification Center.

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { age } from "@/lib/format.ts";
 import { statusColor } from "@/lib/status-colors.ts";
 

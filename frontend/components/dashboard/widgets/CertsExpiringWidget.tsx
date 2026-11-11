@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The readable/empty distinction, the kind-to-page routing and the
 // unreadable-row accounting live in lib/, under test (D-10, KTD8).

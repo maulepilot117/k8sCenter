@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { age } from "@/lib/format.ts";
 import type { Deployment, K8sResource } from "@/lib/k8s-types.ts";
 import { ConditionsGrid, SectionTitle } from "./ConditionsGrid.tsx";

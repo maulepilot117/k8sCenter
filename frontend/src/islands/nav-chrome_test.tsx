@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, expect, test } from "bun:test";
 import "react";
 import type { PinRecord } from "@/lib/preferences.ts";

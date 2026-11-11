@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** iOS-style switch. Booleans in wizards/settings (expose, enable, etc.). */
 export default function Toggle({
   checked,

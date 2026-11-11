@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import type { Capability, ReasonCode } from "@/lib/capability-types.ts";

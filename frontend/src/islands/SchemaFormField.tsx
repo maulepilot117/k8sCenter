@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ChangeEvent, type ReactNode, useCallback, useState } from "react";
 import { parse, stringify } from "yaml";
 import type { SchemaProperty } from "@/lib/crd-types.ts";

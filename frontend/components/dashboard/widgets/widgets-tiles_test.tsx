@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import {
   act,

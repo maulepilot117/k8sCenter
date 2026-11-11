@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { useCallback } from "react";
 import type { ParamField } from "@/lib/policy-templates.ts";
 import { getTemplate } from "@/lib/policy-templates.ts";

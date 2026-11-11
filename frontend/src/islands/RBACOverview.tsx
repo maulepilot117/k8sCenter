@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type ChangeEvent, useEffect, useState } from "react";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";

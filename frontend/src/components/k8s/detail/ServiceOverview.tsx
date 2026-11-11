@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { KeyValueTable } from "@/components/k8s/detail/KeyValueTable.tsx";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type { K8sResource, Service } from "@/lib/k8s-types.ts";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 /** Golden Signals card for the Service detail page (Phase D3).
  *
  *  Lazy-fetches RPS, error rate, and p50/p95/p99 latency from the mesh

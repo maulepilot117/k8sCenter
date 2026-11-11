@@ -1,5 +1,7 @@
 # Step 24: E2E Tests with Playwright
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 ## Overview
 
 Add end-to-end browser tests using Playwright against a real kind cluster. Tests cover the full user journey: setup/login, resource browsing, wizard creation flows, YAML tools, WebSocket live updates, settings, and monitoring pages. Tests run in CI via GitHub Actions.

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { asEventList, formatEventLabel } from "@/lib/dashboard/event-format.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";

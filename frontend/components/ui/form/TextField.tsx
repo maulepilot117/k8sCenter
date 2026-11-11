@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 interface TextFieldProps {
   value: string;
   onInput: (v: string) => void;

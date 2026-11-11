@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { expect, mock, test } from "bun:test";
 import type { OwnershipState, RepairState } from "@/lib/change-tracking.ts";
 import type {

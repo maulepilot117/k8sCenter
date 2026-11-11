@@ -1,5 +1,3 @@
-/** @jsxImportSource react */
-
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type {
   K8sResource,

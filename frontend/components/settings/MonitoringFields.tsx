@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import Field from "@/components/ui/form/Field.tsx";
 import TextField from "@/components/ui/form/TextField.tsx";
 

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { afterEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { act, render, setupDom, waitFor } from "@/src/test-utils/render.tsx";

@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type { K8sResource, Node } from "@/lib/k8s-types.ts";
 import { ConditionsTable } from "./ConditionsTable.tsx";

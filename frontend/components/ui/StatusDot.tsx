@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 export type StatusValue = "success" | "warning" | "error" | "info" | "neutral";
 
 export interface StatusDotProps {

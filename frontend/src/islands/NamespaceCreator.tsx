@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type FormEvent, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";

@@ -6,6 +6,8 @@ date: 2026-05-06
 origin: plans/mobile-app.md
 ---
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 # Mobile App M1 — PR sequence
 
 ## Summary

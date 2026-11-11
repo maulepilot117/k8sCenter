@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import { Select } from "@/components/ui/Select.tsx";

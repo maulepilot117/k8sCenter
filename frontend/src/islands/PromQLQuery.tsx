@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import { type KeyboardEvent, useState } from "react";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";

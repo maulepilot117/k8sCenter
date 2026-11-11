@@ -1,5 +1,7 @@
 # Liquid Glass UI Refactor — Implementation Plan
 
+> **Stack note (2026-11-11):** this plan predates the frontend's move to React 19 islands on Astro. Its Preact references describe the stack at the time; the app no longer uses Preact.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Per repo `CLAUDE.md`: launch parallel sub-agents for any task touching >5 independent files (Rule 5), re-read files before editing after context decay (Rule 6/9), and run repo-wide verification before declaring done (Rule 4).
 
 **Goal:** Refactor the entire k8sCenter web frontend (Deno 2.x / Fresh 2.x / Preact / Tailwind v4) to the "Liquid Glass" design system from `design_handoff_ui_refactor/`, pixel-faithfully, across all 192 route files, 28 wizards, and the special screens — with zero behavioral regressions.

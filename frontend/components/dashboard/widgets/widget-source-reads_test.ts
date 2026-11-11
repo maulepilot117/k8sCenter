@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * A widget on React APIs must read its data sources with `useSourceState`.
+ * A widget must read its data sources with `useSourceState`.
  * `dashboardData.state(key)` in render shows the first value and never
  * updates, because nothing subscribes the component to the key.
  *
@@ -13,20 +13,18 @@ import { join } from "node:path";
  * re-rendered it.
  */
 const DIR = import.meta.dir;
-const PRAGMA = "@jsxImportSource react";
 
-const converted = readdirSync(DIR)
+const widgets = readdirSync(DIR)
   .filter((f) => f.endsWith("Widget.tsx"))
-  .map((f) => ({ file: f, src: readFileSync(join(DIR, f), "utf8") }))
-  .filter(({ src }) => src.includes(PRAGMA));
+  .map((f) => ({ file: f, src: readFileSync(join(DIR, f), "utf8") }));
 
-describe("widgets on React APIs read sources through useSourceState", () => {
-  test("there are converted widgets to check", () => {
-    expect(converted.length).toBeGreaterThan(0);
+describe("widgets read sources through useSourceState", () => {
+  test("there are widgets to check", () => {
+    expect(widgets.length).toBeGreaterThan(0);
   });
 
-  test("no converted widget calls dashboardData.state", () => {
-    const offenders = converted
+  test("no widget calls dashboardData.state", () => {
+    const offenders = widgets
       .filter(({ src }) => /dashboardData\s*\.\s*state\s*[<(]/.test(src))
       .map(({ file }) => file);
     expect(offenders).toEqual([]);

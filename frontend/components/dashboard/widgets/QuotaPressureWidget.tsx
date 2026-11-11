@@ -1,4 +1,3 @@
-/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 // The ranking, the no-quota exclusion and the band arithmetic live in lib/,
 // under test, because none of them is a field read (D-10, KTD8). Do not
