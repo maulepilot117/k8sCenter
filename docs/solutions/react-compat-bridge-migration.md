@@ -1,7 +1,7 @@
 ---
 title: Moving the frontend from Preact to React 19 through a compat bridge, and what broke at the switch
 date: 2026-11-10
-last_updated: 2026-11-10
+last_updated: 2026-11-11
 category: docs/solutions
 module: frontend
 problem_type: migration
@@ -43,7 +43,11 @@ both `react` and Preact, or using a Preact-only JSX attribute (`class=`,
 `react`; Preact's types accept all of those, so only the guard stopped them.
 It printed the count of files still on Preact APIs as progress. With no
 baseline file, parallel conversion PRs never conflicted on it. At the switch
-it became `check-no-preact`.
+it became `check-no-preact`. During the bridge each converted file opened with
+`/** @jsxImportSource react */`; once `tsconfig.json` set React's runtime for
+every file those pragmas only repeated it, so the cleanup PR deleted all of
+them, and the guard now fails on any `@jsxImportSource` pragma anywhere in a
+file (Bun still honours one placed after the first statement).
 
 **Stores stayed signals, read through one hook.** Store modules use
 `@preact/signals-core`, read in render only through `useSignalValue`

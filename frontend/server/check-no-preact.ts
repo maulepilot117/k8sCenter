@@ -138,11 +138,9 @@ export function checkSource(code: string, file: string): Finding[] {
   }
 
   const findings: Finding[] = [];
-  // The pragma counts only where JSX tools read it: in a comment before the
-  // first statement.
-  const firstStatement = ast.program.body[0]?.start ?? Number.POSITIVE_INFINITY;
+  // Every comment counts, not only those before the first statement: Bun's
+  // transpiler still honours a pragma placed later in the file.
   for (const comment of ast.comments ?? []) {
-    if (comment.end > firstStatement) continue;
     const pragma = JSX_IMPORT_SOURCE.exec(comment.value);
     if (pragma) {
       findings.push({
