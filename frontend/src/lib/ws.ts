@@ -2,8 +2,9 @@
  * Client-only module — MUST NOT be imported in server-rendered components.
  * WebSocket client with auth, subscribe/unsubscribe, and reconnect with backoff.
  */
-import { signal } from "@preact/signals-core";
+
 import { getAccessToken, readyAccessToken, setAccessToken } from "@/lib/api.ts";
+import { signal } from "@/src/lib/signals.ts";
 
 export type WSStatus = "connecting" | "connected" | "disconnected";
 export const wsStatus = signal<WSStatus>("disconnected");

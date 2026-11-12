@@ -1,6 +1,6 @@
 // Shared signal for the collapsible secondary nav panel.
 // Mirrors the pattern used by lib/namespace.ts (selectedNamespace).
-import { signal } from "@preact/signals-core";
+import { signal } from "@/src/lib/signals.ts";
 
 // Inlined rather than imported from "fresh/runtime": this file is shared by
 // both the Fresh tree (frontend/islands/) and the Astro/Bun port

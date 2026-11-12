@@ -1,4 +1,4 @@
-import { signal } from "@preact/signals-core";
+import { signal } from "@/src/lib/signals.ts";
 
 /**
  * True while a wizard's server-side apply (`/v1/yaml/apply`) is in flight.

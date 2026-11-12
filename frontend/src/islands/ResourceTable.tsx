@@ -1,4 +1,3 @@
-import { batch } from "@preact/signals-core";
 import {
   type ReactNode,
   useCallback,
@@ -39,6 +38,7 @@ import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import { batch } from "@/src/lib/signals.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";

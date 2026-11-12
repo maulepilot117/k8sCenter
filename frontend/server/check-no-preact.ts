@@ -2,12 +2,15 @@
  * Build-time guard: the frontend runs on React, and nothing may bring Preact
  * back.
  *
- * 1. No file imports Preact: `preact`, `preact/*`, `@preact/signals`,
+ * 1. No file imports Preact: `preact`, `preact/*`, any `@preact/*` package,
  *    `@testing-library/preact` or `preact-render-to-string`, as an import, a
  *    re-export or a dynamic import, type-only imports included. A second UI
  *    runtime would load its own copy of hooks and context, and components
- *    from the two cannot render each other. `@preact/signals-core` is not
- *    Preact: it has no UI runtime, and the shared stores are built on it.
+ *    from the two cannot render each other. `@preact/signals-core` has no UI
+ *    runtime but is banned too: the shared stores use the in-repo
+ *    `src/lib/signals.ts`, and a store built on a second signal library
+ *    would not see the first one's signals, so updates would stop crossing
+ *    between islands.
  *
  * 2. No file sets a `@jsxImportSource` pragma. `tsconfig.json` sets React's
  *    JSX runtime for every file, so a `react` pragma only repeats it, and any
@@ -58,7 +61,7 @@ export function isPreactSpecifier(s: string): boolean {
   return (
     s === "preact" ||
     s.startsWith("preact/") ||
-    s === "@preact/signals" ||
+    s.startsWith("@preact/") ||
     s === "@testing-library/preact" ||
     s === "preact-render-to-string" ||
     s.startsWith("preact-render-to-string/")

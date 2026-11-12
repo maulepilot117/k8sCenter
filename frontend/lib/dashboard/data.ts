@@ -11,14 +11,15 @@
  * failure behavior can be unit-tested. lib/api.ts has no injectable fetch, and
  * lib/preferences_test.ts shows what testing around that looks like.
  */
-import type { Signal } from "@preact/signals-core";
-import { signal } from "@preact/signals-core";
+
 import { ApiError, api } from "@/lib/api.ts";
 import {
   METRICS_NOT_CONFIGURED_MESSAGE,
   METRICS_NOT_CONFIGURED_REASON,
 } from "@/lib/metrics-reasons.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
+import type { Signal } from "@/src/lib/signals.ts";
+import { signal } from "@/src/lib/signals.ts";
 import { HUBBLE_FLOW_BATCH } from "./networking.ts";
 import { decodeSourceKey } from "./params.ts";
 import { COMPLIANCE_HISTORY_DAYS } from "./severity.ts";

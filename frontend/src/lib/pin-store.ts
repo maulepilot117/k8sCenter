@@ -14,7 +14,7 @@
  * Shared so SecondaryNav and the resource detail page read one list instead of
  * fetching their own copies and disagreeing about what is pinned.
  */
-import { computed, signal } from "@preact/signals-core";
+
 import type { PinConfig } from "@/lib/preference-types.ts";
 import {
   type PinRecord,
@@ -23,6 +23,7 @@ import {
   preferencesApi,
 } from "@/lib/preferences.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
+import { computed, signal } from "@/src/lib/signals.ts";
 
 /** Every pin the user owns, across all clusters. Filter before rendering. */
 export const pins = signal<PinRecord[]>([]);

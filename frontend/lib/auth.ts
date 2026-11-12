@@ -3,7 +3,7 @@
  * Module-level signals are process-global singletons in Deno; importing
  * this server-side would leak auth state across SSR requests.
  */
-import { computed, signal } from "@preact/signals-core";
+
 import { api, getAccessToken, onForbidden, setAccessToken } from "@/lib/api.ts";
 import {
   LOCAL_CLUSTER_ID,
@@ -14,6 +14,7 @@ import { clearPendingCaptures } from "@/lib/incident-create.ts";
 import type { RBACSummary, UserInfo } from "@/lib/k8s-types.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { clearPendingApplies } from "@/lib/pending-apply.ts";
+import { computed, signal } from "@/src/lib/signals.ts";
 
 /** Reactive user state. */
 const userSignal = signal<UserInfo | null>(null);

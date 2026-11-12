@@ -112,7 +112,7 @@ k8sCenter is a web-based Kubernetes management platform that delivers vCenter-le
 | Layer | Technology |
 |---|---|
 | Backend API | Go 1.27, chi router, client-go v0.35.2 |
-| Frontend | Bun 1.4.x, Astro 7.x (React 19 islands via `@astrojs/react`), Tailwind v4, Monaco Editor |
+| Frontend | Bun 1.4.x, Astro 7.x (React 19 islands via `@astrojs/react`), Tailwind v4, Monaco Editor; shared state in the in-repo signal store (`frontend/src/lib/signals.ts`), no Preact package |
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack subchart) |
 | Auth | JWT (HMAC-SHA256) + OIDC / LDAP / local (Argon2id, PostgreSQL-backed) |
@@ -281,7 +281,7 @@ make helm-lint / helm-template                    # Helm validation
 make check-dashboards                             # Verify Grafana JSON sync
 ```
 
-**Astro 7.x config notes:** `output: "server"` with `@astrojs/node` in **middleware mode** — `frontend/server/prod.ts` owns the socket so it can also own WebSocket upgrades and security headers (KTD2/KTD3). Dev serves on 5173, not Astro's 4321 default. No `tailwind.config.ts` (Tailwind v4 is CSS-first). `react`, `react-dom`, `@preact/signals-core` and `@codemirror/*` must stay in `vite.resolve.dedupe` — two resolved copies break hooks, signal subscriptions and `Facet` identity checks.
+**Astro 7.x config notes:** `output: "server"` with `@astrojs/node` in **middleware mode** — `frontend/server/prod.ts` owns the socket so it can also own WebSocket upgrades and security headers (KTD2/KTD3). Dev serves on 5173, not Astro's 4321 default. No `tailwind.config.ts` (Tailwind v4 is CSS-first). `react`, `react-dom` and `@codemirror/*` must stay in `vite.resolve.dedupe` — two resolved copies break hooks and `Facet` identity checks.
 
 ---
 

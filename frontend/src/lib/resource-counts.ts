@@ -9,12 +9,13 @@
  * Module-level signals are process-global singletons in Deno; importing
  * server-side would leak state across SSR requests.
  */
-import { computed, effect, signal } from "@preact/signals-core";
+
 import { api } from "@/lib/api.ts";
 import { apiResourceForKind } from "@/lib/constants.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { computed, effect, signal } from "@/src/lib/signals.ts";
 
 /** Raw count map from the backend batch endpoint. null = not yet loaded. */
 export const resourceCounts = signal<Record<string, number> | null>(null);

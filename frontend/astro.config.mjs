@@ -34,10 +34,8 @@ export default defineConfig({
     resolve: {
       // The failure mode this guards against is not Astro but two resolved
       // copies of an identity-checked package. Two copies of React break
-      // hooks ("Invalid hook call") and context; two copies of
-      // @preact/signals-core mean a computed() built from one copy cannot see
-      // a signal() from the other, and islands share every store through
-      // module-scope signals. Each must dedupe to one copy.
+      // hooks ("Invalid hook call") and context, so each must dedupe to one
+      // copy.
       //
       // U14: the same failure mode, one dependency family over. Vite's dev
       // optimizer was pre-bundling @codemirror/state into two separate
@@ -55,7 +53,6 @@ export default defineConfig({
       dedupe: [
         "react",
         "react-dom",
-        "@preact/signals-core",
         "@codemirror/state",
         "@codemirror/view",
         "@codemirror/commands",

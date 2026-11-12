@@ -1,14 +1,14 @@
-import type { ReadonlySignal } from "@preact/signals-core";
 import { useCallback, useSyncExternalStore } from "react";
+import type { ReadonlySignal } from "@/src/lib/signals.ts";
 
 /**
  * Reads a shared store signal in a component and re-renders it when the
  * signal changes. Every store module (cluster, namespace, auth, pins, counts,
- * layout, toasts) keeps its state in @preact/signals-core signals; this is
- * the one way a component on React APIs reads them.
+ * layout, toasts) keeps its state in the signals of `./signals.ts`; this is
+ * the one way a component reads them.
  *
  * - The snapshot is read with `peek()`, so a read here never registers as a
- *   dependency of an enclosing signals-core `effect` or `computed`. The
+ *   dependency of an enclosing `effect` or `computed`. The
  *   subscription below is the only one, and one write causes one render.
  * - The server snapshot is the signal's current value, not a fixed default.
  *   With a default, the hydration render would run its effects against it:
