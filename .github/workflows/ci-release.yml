@@ -38,47 +38,135 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     permissions:
       contents: write
+    # `backend` / `frontend` say which images this run builds. They start
+    # from the paths filter and drop any component a newer release already
+    # rebuilt (see the step below). The image and release jobs read these,
+    # not the `changes` outputs, so a superseded run builds only what no
+    # newer release covers.
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
+      backend: ${{ steps.resolve.outputs.backend }}
+      frontend: ${{ steps.resolve.outputs.frontend }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Resolve version
+      # Resolve and push in one step so a lost race can be retried.
+      # Merges landing seconds apart start concurrent runs that see the
+      # same tag set and pick the same next tag; the remote rejects the
+      # second push because tags are never force-pushed here. On that
+      # rejection, refresh the tags and try again. A `concurrency:` group
+      # is not used: GitHub keeps one pending run per group and cancels
+      # the rest, which would skip their image builds.
+      #
+      # A retry must not hand an older commit a higher version than a
+      # newer one, or the highest image tag would carry older code. So
+      # before claiming a number, find releases on newer commits that
+      # already contain this one. Each such commit's run rebuilt the
+      # components its own commit touched (one commit per push: main is
+      # squash-merged), from a tree that includes this change, so this
+      # run drops those components. If nothing is left, it is fully
+      # superseded: no tag, no images, no release. Otherwise it builds
+      # the rest under the next number, and for each of those components
+      # that image is still the newest code. The check runs on every
+      # attempt, so it also covers a run that starts late.
+      - name: Resolve and create version tag
         id: resolve
+        env:
+          CHANGED_BACKEND: ${{ needs.changes.outputs.backend }}
+          CHANGED_FRONTEND: ${{ needs.changes.outputs.frontend }}
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           # Read appVersion from Chart.yaml
           CHART_VERSION=$(grep '^appVersion:' helm/kubecenter/Chart.yaml | sed 's/appVersion: *"\?\([^"]*\)"\?/\1/')
           echo "Chart appVersion: ${CHART_VERSION}"
 
-          # Check if tag already exists for this version
-          if git rev-parse "v${CHART_VERSION}" >/dev/null 2>&1; then
-            echo "Tag v${CHART_VERSION} already exists, falling back to auto-bump"
-            LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1)
-            if [ -z "$LATEST" ]; then
-              LATEST="v0.0.0"
+          HEAD_SHA=$(git rev-parse HEAD)
+          BUILD_BACKEND="${CHANGED_BACKEND}"
+          BUILD_FRONTEND="${CHANGED_FRONTEND}"
+
+          MAX_ATTEMPTS=10
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            git fetch --quiet --force --tags origin
+
+            # Tags on this same commit (a re-run) do not supersede it.
+            for newer in $(git tag -l 'v*' --contains "$HEAD_SHA"); do
+              NEWER_SHA=$(git rev-parse "${newer}^{commit}")
+              [ "$NEWER_SHA" = "$HEAD_SHA" ] && continue
+              if ! git diff --quiet "${NEWER_SHA}^" "$NEWER_SHA" -- backend/; then
+                [ "$BUILD_BACKEND" = "true" ] && echo "Backend image is covered by ${newer}"
+                BUILD_BACKEND=false
+              fi
+              if ! git diff --quiet "${NEWER_SHA}^" "$NEWER_SHA" -- frontend/; then
+                [ "$BUILD_FRONTEND" = "true" ] && echo "Frontend image is covered by ${newer}"
+                BUILD_FRONTEND=false
+              fi
+            done
+            if [ "$BUILD_BACKEND" != "true" ] && [ "$BUILD_FRONTEND" != "true" ]; then
+              echo "::notice::Superseded: newer releases already contain this commit and rebuilt every image it changed. No tag, images or release."
+              {
+                echo "version="
+                echo "tag="
+                echo "backend=false"
+                echo "frontend=false"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-            MAJOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f1)
-            MINOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f2)
-            PATCH=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f3)
-            PATCH=$((PATCH + 1))
-            VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          else
-            VERSION="${CHART_VERSION}"
-          fi
 
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Release version: v${VERSION}"
+            if git rev-parse -q --verify "refs/tags/v${CHART_VERSION}" >/dev/null; then
+              LATEST=$(git for-each-ref --count=1 --sort=-version:refname --format='%(refname:short)' 'refs/tags/v*')
+              if [ -z "$LATEST" ]; then
+                LATEST="v0.0.0"
+              fi
+              MAJOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f1)
+              MINOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f2)
+              PATCH=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f3)
+              PATCH=$((PATCH + 1))
+              VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            else
+              VERSION="${CHART_VERSION}"
+            fi
+            TAG="v${VERSION}"
 
-      - name: Create git tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.resolve.outputs.tag }}"
-          git push origin "${{ steps.resolve.outputs.tag }}"
+            git tag "$TAG"
+            PUSHED=false
+            if git push origin "refs/tags/${TAG}"; then
+              PUSHED=true
+            else
+              git tag -d "$TAG" >/dev/null
+              # The push can fail after the remote stored the tag (the
+              # connection dropped before the reply). A remote tag on this
+              # commit is that push, not another run's.
+              REMOTE_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}" | cut -f1) || REMOTE_SHA=""
+              if [ "$REMOTE_SHA" = "$HEAD_SHA" ]; then
+                PUSHED=true
+              elif [ -z "$REMOTE_SHA" ]; then
+                # Retry only when another run took the tag. Any other push
+                # failure (auth, network) is real and fails the job.
+                echo "::error::Pushing ${TAG} failed and the tag does not exist on the remote"
+                exit 1
+              fi
+            fi
+            if [ "$PUSHED" = "true" ]; then
+              {
+                echo "version=${VERSION}"
+                echo "tag=${TAG}"
+                echo "backend=${BUILD_BACKEND}"
+                echo "frontend=${BUILD_FRONTEND}"
+              } >> "$GITHUB_OUTPUT"
+              echo "Release version: ${TAG} (backend image: ${BUILD_BACKEND}, frontend image: ${BUILD_FRONTEND})"
+              exit 0
+            fi
+            echo "::warning::${TAG} was claimed by a concurrent run (attempt ${attempt}/${MAX_ATTEMPTS}); retrying"
+            sleep $((attempt + RANDOM % 3))
+          done
+
+          echo "::error::Could not claim a free version tag after ${MAX_ATTEMPTS} attempts"
+          exit 1
 
   build-backend-image:
     name: Build Backend Release Image
@@ -87,8 +175,8 @@ jobs:
       contents: read
       packages: write
       security-events: write
-    needs: [changes, version-tag]
-    if: needs.changes.outputs.backend == 'true'
+    needs: [version-tag]
+    if: needs.version-tag.outputs.backend == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -192,8 +280,8 @@ jobs:
       contents: read
       packages: write
       security-events: write
-    needs: [changes, version-tag]
-    if: needs.changes.outputs.frontend == 'true'
+    needs: [version-tag]
+    if: needs.version-tag.outputs.frontend == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -333,6 +421,7 @@ jobs:
     if: |
       always() &&
       needs.version-tag.result == 'success' &&
+      needs.version-tag.outputs.tag != '' &&
       !contains(needs.*.result, 'failure')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
