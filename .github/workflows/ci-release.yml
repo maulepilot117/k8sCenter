@@ -46,39 +46,63 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve version
+      # Resolve and push in one step so a lost race can be retried.
+      # Merges landing seconds apart start concurrent runs that see the
+      # same tag set and pick the same next tag; the remote rejects the
+      # second push because tags are never force-pushed here. On that
+      # rejection, refresh the tags and claim the next free number. A
+      # `concurrency:` group is not used: GitHub keeps one pending run
+      # per group and cancels the rest, which would skip releases.
+      - name: Resolve and create version tag
         id: resolve
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           # Read appVersion from Chart.yaml
           CHART_VERSION=$(grep '^appVersion:' helm/kubecenter/Chart.yaml | sed 's/appVersion: *"\?\([^"]*\)"\?/\1/')
           echo "Chart appVersion: ${CHART_VERSION}"
 
-          # Check if tag already exists for this version
-          if git rev-parse "v${CHART_VERSION}" >/dev/null 2>&1; then
-            echo "Tag v${CHART_VERSION} already exists, falling back to auto-bump"
-            LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1)
-            if [ -z "$LATEST" ]; then
-              LATEST="v0.0.0"
+          MAX_ATTEMPTS=10
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            git fetch --quiet --force --tags origin
+
+            if git rev-parse -q --verify "refs/tags/v${CHART_VERSION}" >/dev/null; then
+              LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1)
+              if [ -z "$LATEST" ]; then
+                LATEST="v0.0.0"
+              fi
+              MAJOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f1)
+              MINOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f2)
+              PATCH=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f3)
+              PATCH=$((PATCH + 1))
+              VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            else
+              VERSION="${CHART_VERSION}"
             fi
-            MAJOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f1)
-            MINOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f2)
-            PATCH=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f3)
-            PATCH=$((PATCH + 1))
-            VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          else
-            VERSION="${CHART_VERSION}"
-          fi
+            TAG="v${VERSION}"
 
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Release version: v${VERSION}"
+            git tag "$TAG"
+            if git push origin "refs/tags/${TAG}"; then
+              echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+              echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+              echo "Release version: ${TAG}"
+              exit 0
+            fi
+            git tag -d "$TAG" >/dev/null
 
-      - name: Create git tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.resolve.outputs.tag }}"
-          git push origin "${{ steps.resolve.outputs.tag }}"
+            # Retry only when another run took the tag. Any other push
+            # failure (auth, network) is real and fails the job.
+            if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null; then
+              echo "::error::Pushing ${TAG} failed and the tag does not exist on the remote"
+              exit 1
+            fi
+            echo "::warning::${TAG} was claimed by a concurrent run (attempt ${attempt}/${MAX_ATTEMPTS}); retrying"
+            sleep $((attempt + RANDOM % 3))
+          done
+
+          echo "::error::Could not claim a free version tag after ${MAX_ATTEMPTS} attempts"
+          exit 1
 
   build-backend-image:
     name: Build Backend Release Image
