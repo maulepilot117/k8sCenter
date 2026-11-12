@@ -342,19 +342,24 @@ test("an effect that keeps waking itself stops with an error and is disposed", (
   expect(linked(a)).toBe(0);
 });
 
-test("effects that keep waking each other stop with an error", () => {
+test("effects that keep waking each other stop with an error, then still run", () => {
   const ping = signal(0);
   const pong = signal(0);
+  let looping = true;
   const disposePing = effect(() => {
     pong.value = ping.value + 1;
   });
   const disposePong = effect(() => {
     const p = pong.value;
-    if (p > 1) ping.value = p + 1;
+    if (looping && p > 1) ping.value = p + 1;
   });
   expect(() => {
     ping.value = 5;
   }).toThrow("kept re-triggering");
+  // The effects dropped when the cycle was cut must run on the next write.
+  looping = false;
+  ping.value = 100;
+  expect(pong.peek()).toBe(101);
   disposePing();
   disposePong();
 });
@@ -385,4 +390,135 @@ test("a throwing effect does not stop the other effects in the flush", () => {
   expect(seen).toEqual([1, 2]);
   disposeBad();
   disposeGood();
+});
+
+test("a computed that throws rethrows on every read and recovers with its inputs", () => {
+  const a = signal(1);
+  let computes = 0;
+  const checked = computed(() => {
+    computes++;
+    if (a.value < 0) throw new Error("negative");
+    return a.value;
+  });
+  expect(checked.value).toBe(1);
+  a.value = -1;
+  expect(() => checked.value).toThrow("negative");
+  expect(() => checked.peek()).toThrow("negative");
+  // The error is cached, not recomputed on every read.
+  expect(computes).toBe(2);
+  a.value = 5;
+  expect(checked.value).toBe(5);
+});
+
+test("a subscriber of a computed that threw still gets later values", () => {
+  const a = signal(1);
+  const checked = computed(() => {
+    if (a.value < 0) throw new Error("negative");
+    return a.value;
+  });
+  const seen: number[] = [];
+  const unsubscribe = checked.subscribe((v) => seen.push(v));
+  expect(() => {
+    a.value = -1;
+  }).toThrow("negative");
+  a.value = 5;
+  a.value = 7;
+  expect(seen).toEqual([1, 5, 7]);
+  unsubscribe();
+  expect(linked(a)).toBe(0);
+});
+
+test("an effect whose read of a computed throws reruns once the input recovers", () => {
+  const a = signal(-1);
+  const checked = computed(() => {
+    if (a.value < 0) throw new Error("negative");
+    return a.value;
+  });
+  const seen: number[] = [];
+  let runs = 0;
+  const dispose = effect(() => {
+    runs++;
+    try {
+      seen.push(checked.value);
+    } catch {
+      // A reader that tolerates the error keeps its dependency.
+    }
+  });
+  expect(runs).toBe(1);
+  a.value = 3;
+  expect(seen).toEqual([3]);
+  dispose();
+});
+
+test("batch releases its depth and still flushes when fn throws", () => {
+  const a = signal(1);
+  const seen: number[] = [];
+  const dispose = effect(() => {
+    seen.push(a.value);
+  });
+  expect(() =>
+    batch(() => {
+      a.value = 2;
+      throw new Error("mid-batch");
+    }),
+  ).toThrow("mid-batch");
+  expect(seen).toEqual([1, 2]);
+  // Not stuck inside a batch: the next write flushes at once.
+  a.value = 3;
+  expect(seen).toEqual([1, 2, 3]);
+  dispose();
+});
+
+test("an effect disposed by an earlier effect in the same flush does not run", () => {
+  const a = signal(1);
+  const seen: string[] = [];
+  let disposeSecond = () => {};
+  const disposeFirst = effect(() => {
+    if (a.value > 1) disposeSecond();
+  });
+  disposeSecond = effect(() => {
+    seen.push(`second ${a.value}`);
+  });
+  a.value = 2;
+  expect(seen).toEqual(["second 1"]);
+  disposeFirst();
+});
+
+test("a listener may subscribe and unsubscribe others during a flush", () => {
+  const a = signal(1);
+  const seen: string[] = [];
+  let unsubscribeLate = () => {};
+  const unsubscribeSibling = a.subscribe((v) => seen.push(`sibling ${v}`));
+  const unsubscribeOwner = a.subscribe((v) => {
+    if (v === 2) {
+      unsubscribeSibling();
+      unsubscribeLate = a.subscribe((late) => seen.push(`late ${late}`));
+    }
+  });
+  a.value = 2;
+  a.value = 3;
+  // The sibling ran before the owner in the flush that removed it; the late
+  // subscriber was called at once, then followed later writes.
+  expect(seen).toEqual(["sibling 1", "sibling 2", "late 2", "late 3"]);
+  unsubscribeOwner();
+  unsubscribeLate();
+  expect(linked(a)).toBe(0);
+});
+
+test("an effect whose first flush throws is disposed and the error rethrown", () => {
+  const a = signal(1);
+  const b = signal(0);
+  const disposeBad = effect(() => {
+    if (b.value > 0) throw new Error("downstream");
+  });
+  expect(() =>
+    effect(() => {
+      b.value = a.value;
+    }),
+  ).toThrow("downstream");
+  // The new effect was disposed: it no longer follows `a`.
+  b.value = 0;
+  a.value = 2;
+  expect(b.peek()).toBe(0);
+  disposeBad();
 });

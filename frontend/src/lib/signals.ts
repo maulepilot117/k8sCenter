@@ -110,6 +110,9 @@ function endBatch(): void {
   try {
     for (let round = 0; pendingEffects.length > 0; round++) {
       if (round === MAX_EFFECT_ROUNDS) {
+        // Unmark what is dropped, or `_notify` would treat it as still
+        // queued and never schedule it again.
+        for (const dropped of pendingEffects) dropped._queued = false;
         pendingEffects = [];
         throw new Error("signals: effects kept re-triggering each other");
       }
@@ -222,7 +225,16 @@ export class Signal<T> implements ReadonlySignal<T>, Source {
 class Computed<T> implements ReadonlySignal<T>, Source, Consumer {
   _fn: () => T;
   _value: T | undefined = undefined;
-  _hasValue = false;
+  /**
+   * What the last run of `fn` threw, held until a later run succeeds. Like
+   * signals-core, a throw is a result: it is cached and rethrown on every
+   * read, it moves the version, and the computed keeps passing notifications
+   * on, so readers recover once its inputs do.
+   */
+  _error: unknown = undefined;
+  _hasError = false;
+  /** Whether `fn` has run to a result (a value or an error) at least once. */
+  _ran = false;
   _version = 0;
   _targets = new Set<Consumer>();
   _sources = new Map<Source, number>();
@@ -239,11 +251,16 @@ class Computed<T> implements ReadonlySignal<T>, Source, Consumer {
   get value(): T {
     this._refresh();
     track(this);
-    return this._value as T;
+    return this._result();
   }
 
   peek(): T {
     this._refresh();
+    return this._result();
+  }
+
+  _result(): T {
+    if (this._hasError) throw this._error;
     return this._value as T;
   }
 
@@ -265,7 +282,7 @@ class Computed<T> implements ReadonlySignal<T>, Source, Consumer {
     if (this._computing) {
       throw new Error("signals: a computed depends on itself");
     }
-    if (this._hasValue) {
+    if (this._ran) {
       if (this._isLinked() && !this._stale) return;
       if (this._validatedAt === globalVersion) {
         this._stale = false;
@@ -298,14 +315,21 @@ class Computed<T> implements ReadonlySignal<T>, Source, Consumer {
     this._computing = true;
     try {
       const next = this._fn();
-      if (!this._hasValue || !Object.is(next, this._value)) {
+      if (!this._ran || this._hasError || !Object.is(next, this._value)) {
         this._value = next;
-        this._hasValue = true;
         this._version++;
       }
+      this._hasError = false;
+      this._error = undefined;
+    } catch (err) {
+      this._value = undefined;
+      this._error = err;
+      this._hasError = true;
+      this._version++;
+    } finally {
+      this._ran = true;
       this._validatedAt = globalVersion;
       this._stale = false;
-    } finally {
       this._computing = false;
       tracking = outer;
       unlinkDropped(this, previous);
