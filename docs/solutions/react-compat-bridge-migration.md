@@ -1,7 +1,7 @@
 ---
 title: Moving the frontend from Preact to React 19 through a compat bridge, and what broke at the switch
 date: 2026-11-10
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 category: docs/solutions
 module: frontend
 problem_type: migration
@@ -49,9 +49,11 @@ every file those pragmas only repeated it, so the cleanup PR deleted all of
 them, and the guard now fails on any `@jsxImportSource` pragma anywhere in a
 file (Bun still honours one placed after the first statement).
 
-**Stores stayed signals, read through one hook.** Store modules use
-`@preact/signals-core`, read in render only through `useSignalValue`
-(`useSyncExternalStore` with a stable `subscribe`). Two details mattered:
+**Stores stayed signals, read through one hook.** Store modules used
+`@preact/signals-core` through the switch (since replaced by an in-repo
+store, see "Replacing signals-core" below), read in render only through
+`useSignalValue` (`useSyncExternalStore` with a stable `subscribe`). Two
+details mattered:
 
 - The hook's server snapshot returns the signal's current value, not a fixed
   default. With a default, the hydration render's effects would fetch for
@@ -73,7 +75,8 @@ nested older copy under `@preact/signals`; two copies mean two signal
 classes, and 19 tests failed. An `overrides` entry pins one copy, and a
 stale nested `node_modules` copy that `bun install` reported as "no changes"
 had to be deleted by hand. The same rule now covers `react`, `react-dom`,
-`@preact/signals-core` and `@codemirror/*` in `vite.resolve.dedupe`.
+`@preact/signals-core` and `@codemirror/*` in `vite.resolve.dedupe`; the
+signal entry left with the package.
 
 **Test isolation.** Bun shares modules across test files in one process, so
 a `mock.module` that is not restored leaks into later files (four island
@@ -165,6 +168,38 @@ server, once with fresh storage and once with a namespace and a remote
 cluster restored, and collects page errors and React hydration messages. The
 restored pass is the one that found the wizard bug; a fresh-storage sweep
 alone reported nothing.
+
+## Replacing signals-core
+
+`@preact/signals-core` outlived the switch as the last Preact package. A
+follow-up replaced it with `frontend/src/lib/signals.ts`, an in-repo store
+with the same surface the stores used: `signal`, `computed`, `effect` and
+`batch`, and `.value`, `.peek()` and `.subscribe()` on a signal. Islands
+changed only their import path. What mattered:
+
+- **The callers needed tracking, not just a value box.** `cluster.ts`,
+  `namespace.ts` and `resource-counts.ts` persist or refetch from
+  auto-tracked `effect`s, four modules derive values with `computed`, and
+  `switchCluster` relies on `batch` so no subscriber sees a new cluster id
+  beside the old generation. A plain value-and-listener store would have
+  meant rewriting each of those by hand.
+- **`subscribe` keeps signals-core's contract**: it calls back at once with
+  the current value, then with each new value. Five callers depend on that
+  first call (`PinnedResources` and `SavedViews` load on it, `ResourceDetail`
+  and `yaml-apply` read the value argument), so `useSignalValue` and
+  `useSourceStates` still skip it.
+- **The switch had to be one change.** A `computed` or `effect` from one
+  library cannot track a signal from the other, so a store moved alone
+  would compile and then silently stop updating the islands that read it
+  through another store.
+- **The lockfile was edited by hand.** `bun install` re-resolves every
+  locked version against the 7-day `minimumReleaseAge` gate and refused a
+  recently published override, so the three `@preact/signals-core` entries
+  were deleted from `bun.lock` instead; `bun install --frozen-lockfile`, as
+  CI runs it, accepts the result.
+
+`check-no-preact` now fails on any `@preact/*` import, signals-core
+included, so a second signal library cannot come back by accident.
 
 ## Cost
 

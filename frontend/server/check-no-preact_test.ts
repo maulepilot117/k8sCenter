@@ -15,6 +15,8 @@ test("every Preact package import fails, naming the specifier and line", () => {
     'import { useSignal } from "@preact/signals";',
     'import { render } from "@testing-library/preact";',
     'import { render as ssr } from "preact-render-to-string";',
+    'import { signal } from "@preact/signals-core";',
+    'import type { Signal } from "@preact/signals-react";',
   ].join("\n");
   expect(messages(code)).toEqual([
     '1: imports "preact/hooks"; the frontend runs on React',
@@ -22,6 +24,8 @@ test("every Preact package import fails, naming the specifier and line", () => {
     '3: imports "@preact/signals"; the frontend runs on React',
     '4: imports "@testing-library/preact"; the frontend runs on React',
     '5: imports "preact-render-to-string"; the frontend runs on React',
+    '6: imports "@preact/signals-core"; the frontend runs on React',
+    '7: imports "@preact/signals-react"; the frontend runs on React',
   ]);
 });
 
@@ -38,9 +42,9 @@ test("re-exports and dynamic imports count as imports", () => {
   ]);
 });
 
-test("signals-core and React imports pass", () => {
+test("React imports and the in-repo signal store pass", () => {
   const code = [
-    'import { signal } from "@preact/signals-core";',
+    'import { signal } from "@/src/lib/signals.ts";',
     'import { useState } from "react";',
     'import { render } from "@testing-library/react";',
     'import { renderToString } from "react-dom/server";',
@@ -112,6 +116,7 @@ test("the tree check covers source, tests, server code and astro callers", () =>
       "components/New.tsx":
         'import { useState } from "react";\nexport const B = () => <div className="b" />;',
       "lib/store.ts": 'import { signal } from "@preact/signals-core";',
+      "lib/new-store.ts": 'import { signal } from "@/src/lib/signals.ts";',
       "src/pages/index.astro": [
         "---",
         'import { Logo } from "../components/ui/Logo.tsx";',
@@ -131,6 +136,7 @@ test("the tree check covers source, tests, server code and astro callers", () =>
       checkTree(root).map((f) => `${f.file}:${f.line} ${f.message}`),
     ).toEqual([
       'lib/old_test.tsx:1 imports "preact-render-to-string"; the frontend runs on React',
+      'lib/store.ts:1 imports "@preact/signals-core"; the frontend runs on React',
       'server/tool.ts:1 imports "preact"; the frontend runs on React',
       'src/islands/Old.tsx:1 imports "preact/hooks"; the frontend runs on React',
       'src/pages/index.astro:6 <Logo> is a React component; pass "className", not "class"',

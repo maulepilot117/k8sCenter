@@ -1,5 +1,5 @@
 // CLIENT-ONLY MODULE — Do NOT import in server-rendered components.
-// This module uses browser APIs (document, localStorage) and signals-core.
+// This module uses browser APIs (document, localStorage) and the signal store.
 
 import { signal } from "@/src/lib/signals.ts";
 
