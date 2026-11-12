@@ -15,6 +15,8 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"k8s.io/apimachinery/pkg/labels"
+	corev1listers "k8s.io/client-go/listers/core/v1"
 )
 
 // maxRequestBody limits JSON request body size to 64KB.
@@ -27,6 +29,9 @@ const maxRequestBody = 64 * 1024
 type Handler struct {
 	Service     *NotificationService
 	RBACChecker *auth.RBACChecker
+	// Namespaces lists the local cluster's namespaces (the informer cache),
+	// which the RBAC summary narrows to a non-admin's feed scope.
+	Namespaces  corev1listers.NamespaceLister
 	AuditLogger audit.Logger
 	Logger      *slog.Logger
 }
@@ -41,18 +46,20 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	namespaces, err := h.accessibleNamespaces(r, user)
+	namespaces, all, err := h.accessibleNamespaces(r, user)
 	if err != nil {
+		h.Logger.Error("notification feed RBAC scope failed", "user", user.KubernetesUsername, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to check RBAC", "")
 		return
 	}
 
 	opts := ListOpts{
-		UserID:     user.KubernetesUsername,
-		Namespaces: namespaces,
-		Source:     Source(r.URL.Query().Get("source")),
-		Severity:   Severity(r.URL.Query().Get("severity")),
-		ReadFilter: r.URL.Query().Get("read"),
+		UserID:        user.KubernetesUsername,
+		Namespaces:    namespaces,
+		AllNamespaces: all,
+		Source:        Source(r.URL.Query().Get("source")),
+		Severity:      Severity(r.URL.Query().Get("severity")),
+		ReadFilter:    r.URL.Query().Get("read"),
 	}
 	if limit := r.URL.Query().Get("limit"); limit != "" {
 		if v, err := strconv.Atoi(limit); err == nil {
@@ -95,13 +102,14 @@ func (h *Handler) HandleUnreadCount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	namespaces, err := h.accessibleNamespaces(r, user)
+	namespaces, all, err := h.accessibleNamespaces(r, user)
 	if err != nil {
+		h.Logger.Error("notification unread RBAC scope failed", "user", user.KubernetesUsername, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to check RBAC", "")
 		return
 	}
 
-	count, err := h.Service.store.UnreadCount(r.Context(), user.KubernetesUsername, namespaces)
+	count, err := h.Service.store.UnreadCount(r.Context(), user.KubernetesUsername, namespaces, all)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to count unread", "")
 		return
@@ -537,23 +545,46 @@ func (h *Handler) HandleListDevices(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"data": devices})
 }
 
-// accessibleNamespaces returns the list of namespaces the user can access.
-// Returns nil for admin users (no namespace filtering needed — store treats nil as "all").
-func (h *Handler) accessibleNamespaces(r *http.Request, user *auth.User) ([]string, error) {
+// accessibleNamespaces returns the feed scope for user: all is true for an
+// admin, otherwise namespaces lists those where the user holds any tracked
+// permission.
+//
+// GetSummary only reviews the namespaces it is handed, so the cluster's
+// namespace list comes from the informer cache. It used to be called with
+// nil, which reviewed none, and the empty result was read by the store as
+// "no filter": every non-admin saw every notification. The store now treats
+// an empty list as "cluster-scoped rows only", and this returns a non-nil
+// list for every non-admin.
+//
+// The summary skips kube-* namespaces, as it does for /auth/me, so a
+// non-admin does not see notifications from them.
+func (h *Handler) accessibleNamespaces(r *http.Request, user *auth.User) (namespaces []string, all bool, err error) {
 	if auth.IsAdmin(user) {
-		return nil, nil
+		return nil, true, nil
+	}
+	if h.Namespaces == nil {
+		return nil, false, errors.New("namespace lister not configured")
 	}
 
-	summary, err := h.RBACChecker.GetSummary(r.Context(), user, nil)
+	nsList, err := h.Namespaces.List(labels.Everything())
 	if err != nil {
-		return nil, fmt.Errorf("get RBAC summary: %w", err)
+		return nil, false, fmt.Errorf("list namespaces: %w", err)
+	}
+	clusterNamespaces := make([]string, len(nsList))
+	for i, ns := range nsList {
+		clusterNamespaces[i] = ns.Name
 	}
 
-	namespaces := make([]string, 0, len(summary.Namespaces))
+	summary, err := h.RBACChecker.GetSummary(r.Context(), user, clusterNamespaces)
+	if err != nil {
+		return nil, false, fmt.Errorf("get RBAC summary: %w", err)
+	}
+
+	namespaces = make([]string, 0, len(summary.Namespaces))
 	for ns := range summary.Namespaces {
 		namespaces = append(namespaces, ns)
 	}
-	return namespaces, nil
+	return namespaces, false, nil
 }
 
 // validateChannelURLs validates webhook/Slack URLs against the SSRF blocklist.

@@ -224,14 +224,21 @@ type Rule struct {
 }
 
 // ListOpts controls notification feed pagination and filtering.
+//
+// Namespace scope: cluster-scoped rows (empty resource_ns) are always listed.
+// Namespaced rows are listed only when their namespace is in Namespaces, or
+// when AllNamespaces is set (admins only). The zero value therefore admits no
+// namespaced rows: an unset or empty Namespaces fails closed rather than
+// reading as "no filter".
 type ListOpts struct {
-	UserID     string
-	Namespaces []string
-	Source     Source
-	Severity   Severity
-	ReadFilter string // "read", "unread", or "" (all)
-	Since      time.Time
-	Until      time.Time
-	Limit      int
-	Offset     int
+	UserID        string
+	Namespaces    []string
+	AllNamespaces bool
+	Source        Source
+	Severity      Severity
+	ReadFilter    string // "read", "unread", or "" (all)
+	Since         time.Time
+	Until         time.Time
+	Limit         int
+	Offset        int
 }
