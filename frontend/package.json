@@ -23,7 +23,6 @@
     "react-is": "19.3.1",
     "recharts": "3.10.1",
     "@babel/core": "^7.29.6",
-    "@preact/signals-core": "1.14.5",
     "@tailwindcss/vite": "^4.1.10",
     "tailwindcss": "^4.1.10",
     "postcss": "^8.5.7",
@@ -56,7 +55,6 @@
   },
   "overrides": {
     "@astrojs/internal-helpers": "0.13.1",
-    "@preact/signals-core": "1.14.5",
     "picomatch@<2.3.2": "2.3.2",
     "picomatch@>=4 <4.0.4": "4.0.4",
     "source-map-js@<1.2.2": "1.2.2",
