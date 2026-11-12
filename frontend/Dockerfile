@@ -10,7 +10,7 @@
 # Deno image's `--platform=linux/amd64` pin, which existed because Deno's WASM
 # loader crashed under QEMU ARM64: there is no emulation here to crash.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM oven/bun:1.4.3-debian@sha256:923bedb355f7746666659f71e724998159a5c8c54bd1cb1030e1975a0698415b AS builder
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.4-debian@sha256:93d5032fe06d163427822dc1598f420363759bb18155c9cc90eb1be05a64a19e AS builder
 
 ARG TARGETARCH
 
