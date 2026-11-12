@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type Signal, signal } from "@preact/signals-core";
+import { type Signal, signal } from "@/src/lib/signals.ts";
 import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom();

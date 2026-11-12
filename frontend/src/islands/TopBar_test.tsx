@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { batch } from "@preact/signals-core";
+import { batch } from "@/src/lib/signals.ts";
 import {
   act,
   body,

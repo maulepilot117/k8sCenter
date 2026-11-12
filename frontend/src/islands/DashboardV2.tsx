@@ -1,4 +1,3 @@
-import { computed } from "@preact/signals-core";
 import {
   type CSSProperties,
   useCallback,
@@ -15,6 +14,7 @@ import WidgetParamDialog from "@/components/dashboard/WidgetParamDialog.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
+import { computed } from "@/src/lib/signals.ts";
 // Registers every shipped widget before first render.
 import "@/components/dashboard/widgets/index.ts";
 import { useAuth } from "@/lib/auth.ts";

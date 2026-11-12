@@ -40,8 +40,9 @@
  * depth rather than a path the product exercises; do not describe epoch-based
  * staleness rejection as something the product currently enforces.
  */
-import { batch, effect, signal } from "@preact/signals-core";
+
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { batch, effect, signal } from "@/src/lib/signals.ts";
 
 /**
  * The local cluster's id. Mirrors `k8s.LocalClusterID` in the backend; an

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { effect } from "@preact/signals-core";
+import { effect } from "@/src/lib/signals.ts";
 import {
   clusterEpoch,
   selectedCluster,

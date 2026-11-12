@@ -1,4 +1,4 @@
-import { signal } from "@preact/signals-core";
+import { signal } from "@/src/lib/signals.ts";
 
 export interface Toast {
   id: number;

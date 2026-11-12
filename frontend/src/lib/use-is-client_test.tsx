@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { type Signal, signal } from "@preact/signals-core";
 import { useEffect, useId, useRef } from "react";
+import { type Signal, signal } from "@/src/lib/signals.ts";
 import { hydrate } from "@/src/test-utils/hydrate.tsx";
 import { act, render, setBrowser, setupDom } from "@/src/test-utils/render.tsx";
 

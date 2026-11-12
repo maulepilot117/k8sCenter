@@ -25,7 +25,7 @@
  * does; that is what covers the ordering rules below, which no pure function
  * can express.
  */
-import { signal } from "@preact/signals-core";
+
 import { selectedCluster } from "@/lib/cluster.ts";
 import {
   type LayoutResponse,
@@ -33,6 +33,7 @@ import {
   preferenceReason,
   preferencesApi,
 } from "@/lib/preferences.ts";
+import { signal } from "@/src/lib/signals.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
 import { missingParamKeys } from "./params.ts";
 import { getWidget } from "./registry.ts";

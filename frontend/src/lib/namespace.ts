@@ -7,9 +7,10 @@
  * restored value until the island has hydrated: read it through
  * useAdoptSelectedNamespace, or behind useIsClient().
  */
-import { effect, signal } from "@preact/signals-core";
+
 import { useEffect } from "react";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { effect, signal } from "@/src/lib/signals.ts";
 
 const STORAGE_KEY = "k8scenter.selectedNamespace";
 

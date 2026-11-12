@@ -1,7 +1,7 @@
 // Light/dark theme signal. Single runtime owner of light/dark mode.
 // `initTheme()` in lib/themes.ts calls `applyTheme()` on TopBarV2 mount
 // so the persisted choice is applied at page load.
-import { signal } from "@preact/signals-core";
+import { signal } from "@/src/lib/signals.ts";
 
 // Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
 // this file is shared by both the Fresh tree and the Astro/Bun port, and the
