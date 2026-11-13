@@ -546,8 +546,10 @@ func (h *Handler) HandleListDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 // accessibleNamespaces returns the feed scope for user: all is true for an
-// admin, otherwise namespaces lists those where the user holds any tracked
-// permission.
+// admin, otherwise namespaces lists those where the user can get or list a
+// namespaced kind (auth.CanReadInNamespace). A namespace's summary entry
+// alone is not enough: it also carries cluster-wide grants on cluster-scoped
+// kinds, such as "list namespaces", which would admit every namespace.
 //
 // GetSummary only reviews the namespaces it is handed, so the cluster's
 // namespace list comes from the informer cache. It used to be called with
@@ -581,8 +583,10 @@ func (h *Handler) accessibleNamespaces(r *http.Request, user *auth.User) (namesp
 	}
 
 	namespaces = make([]string, 0, len(summary.Namespaces))
-	for ns := range summary.Namespaces {
-		namespaces = append(namespaces, ns)
+	for ns, perms := range summary.Namespaces {
+		if auth.CanReadInNamespace(perms) {
+			namespaces = append(namespaces, ns)
+		}
 	}
 	return namespaces, false, nil
 }

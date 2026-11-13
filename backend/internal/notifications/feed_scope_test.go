@@ -104,6 +104,79 @@ func TestAccessibleNamespaces_NoGrantsIsEmptyNotUnfiltered(t *testing.T) {
 	}
 }
 
+// A SelfSubjectRulesReview for a namespace returns that namespace's
+// RoleBindings plus every ClusterRoleBinding, so a cluster-wide grant shows
+// up in every namespace's review. withClusterRule models that: it adds
+// clusterRule to each listed namespace's own rules.
+func withClusterRule(own map[string][]authorizationv1.ResourceRule, clusterRule authorizationv1.ResourceRule, namespaces ...string) map[string][]authorizationv1.ResourceRule {
+	rules := make(map[string][]authorizationv1.ResourceRule, len(namespaces))
+	for _, ns := range namespaces {
+		rules[ns] = append(slices.Clone(own[ns]), clusterRule)
+	}
+	return rules
+}
+
+// A namespace is in the feed scope only when the user can read a namespaced
+// kind there. A cluster-wide grant on a cluster-scoped kind (the namespace
+// picker's "list namespaces", "get nodes") or a write-only grant used to
+// admit a namespace, and with it that namespace's notifications.
+func TestAccessibleNamespaces_AdmitsOnlyNamespacedRead(t *testing.T) {
+	configMapWriter := []authorizationv1.ResourceRule{{Verbs: []string{"create", "update"}, Resources: []string{"configmaps"}}}
+	wildcard := []authorizationv1.ResourceRule{{Verbs: []string{"*"}, Resources: []string{"*"}}}
+	listNamespaces := authorizationv1.ResourceRule{Verbs: []string{"get", "list", "watch"}, Resources: []string{"namespaces"}}
+	getNodes := authorizationv1.ResourceRule{Verbs: []string{"get", "list"}, Resources: []string{"nodes", "persistentvolumes", "storageclasses"}}
+	clusterPodReader := authorizationv1.ResourceRule{Verbs: []string{"list"}, Resources: []string{"pods"}}
+
+	for _, tc := range []struct {
+		name  string
+		rules map[string][]authorizationv1.ResourceRule
+		want  []string
+	}{
+		{
+			name:  "cluster-wide list namespaces admits nothing extra",
+			rules: withClusterRule(map[string][]authorizationv1.ResourceRule{"team-a": podReader}, listNamespaces, "team-a", "team-b"),
+			want:  []string{"team-a"},
+		},
+		{
+			name:  "cluster-wide read on cluster-scoped kinds admits nothing",
+			rules: withClusterRule(nil, getNodes, "team-a", "team-b"),
+			want:  []string{},
+		},
+		{
+			name:  "write-only grant does not admit the namespace",
+			rules: map[string][]authorizationv1.ResourceRule{"team-a": configMapWriter},
+			want:  []string{},
+		},
+		{
+			name:  "wildcard grant admits the namespace",
+			rules: map[string][]authorizationv1.ResourceRule{"team-a": wildcard},
+			want:  []string{"team-a"},
+		},
+		{
+			name:  "cluster-wide read on a namespaced kind admits every namespace",
+			rules: withClusterRule(nil, clusterPodReader, "team-a", "team-b"),
+			want:  []string{"team-a", "team-b"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := scopeHandler(t, tc.rules, namespaceLister(t, "team-a", "team-b"))
+			user := &auth.User{Username: "dana", KubernetesUsername: "dana", Roles: []string{"user"}}
+
+			namespaces, all, err := h.accessibleNamespaces(httptest.NewRequest("GET", "/", nil), user)
+			if err != nil {
+				t.Fatalf("accessibleNamespaces: %v", err)
+			}
+			if all {
+				t.Fatal("a non-admin was given the unfiltered scope")
+			}
+			slices.Sort(namespaces)
+			if !slices.Equal(namespaces, tc.want) {
+				t.Fatalf("namespaces = %v, want %v", namespaces, tc.want)
+			}
+		})
+	}
+}
+
 func TestAccessibleNamespaces_AdminIsUnfiltered(t *testing.T) {
 	h := scopeHandler(t, nil, nil)
 	admin := &auth.User{Username: "root", KubernetesUsername: "root", Roles: []string{"admin"}}
