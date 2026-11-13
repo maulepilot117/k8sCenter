@@ -185,9 +185,9 @@ func (s *Store) ListNotifications(ctx context.Context, opts ListOpts) ([]Notific
 	where := "WHERE 1=1"
 	argIdx := 2
 
-	if len(opts.Namespaces) > 0 {
-		where += fmt.Sprintf(" AND (n.resource_ns = ANY($%d) OR n.resource_ns = '')", argIdx)
-		args = append(args, opts.Namespaces)
+	if clause, arg, ok := namespaceClause(opts.AllNamespaces, opts.Namespaces, argIdx); ok {
+		where += " AND " + clause
+		args = append(args, arg)
 		argIdx++
 	}
 	if opts.Source != "" {
@@ -258,17 +258,45 @@ func (s *Store) ListNotifications(ctx context.Context, opts ListOpts) ([]Notific
 	return notifications, total, rows.Err()
 }
 
-// UnreadCount returns the number of unread notifications for a user.
-func (s *Store) UnreadCount(ctx context.Context, userID string, namespaces []string) (int, error) {
-	var count int
-	err := s.pool.QueryRow(ctx, `
+// namespaceClause returns the feed's namespace predicate over n.resource_ns,
+// bound at $argIdx, and the value to bind. ok is false only when all is set,
+// which adds no predicate.
+//
+// Without all, the predicate is always added, so an empty or nil namespaces
+// admits cluster-scoped rows and no namespaced ones. Before this, the feed
+// skipped the predicate for an empty list, and a non-admin whose namespace
+// list came back empty saw every row.
+//
+// namespaces is bound as a non-nil slice because pgx sends a nil slice as
+// NULL. "= ANY(NULL)" is NULL rather than false; the row would still be
+// excluded, but an empty array states the intent.
+func namespaceClause(all bool, namespaces []string, argIdx int) (clause string, arg []string, ok bool) {
+	if all {
+		return "", nil, false
+	}
+	if namespaces == nil {
+		namespaces = []string{}
+	}
+	return fmt.Sprintf("(n.resource_ns = ANY($%d) OR n.resource_ns = '')", argIdx), namespaces, true
+}
+
+// UnreadCount returns the number of unread notifications for a user, scoped
+// as ListOpts is: cluster-scoped rows, plus rows in namespaces, plus every
+// namespaced row when allNamespaces is set.
+func (s *Store) UnreadCount(ctx context.Context, userID string, namespaces []string, allNamespaces bool) (int, error) {
+	query := `
 		SELECT COUNT(*) FROM nc_notifications n
 		LEFT JOIN nc_reads nr ON nr.notification_id = n.id AND nr.user_id = $1
 		WHERE nr.notification_id IS NULL
-		  AND n.created_at > now() - INTERVAL '30 days'
-		  AND (n.resource_ns = ANY($2) OR n.resource_ns = '')`,
-		userID, namespaces,
-	).Scan(&count)
+		  AND n.created_at > now() - INTERVAL '30 days'`
+	args := []any{userID}
+	if clause, arg, ok := namespaceClause(allNamespaces, namespaces, 2); ok {
+		query += " AND " + clause
+		args = append(args, arg)
+	}
+
+	var count int
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("unread count: %w", err)
 	}

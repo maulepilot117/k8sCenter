@@ -825,6 +825,7 @@ func main() {
 		notifCenterHandler = &notifications.Handler{
 			Service:     notifService,
 			RBACChecker: rbacChecker,
+			Namespaces:  informerMgr.Namespaces(),
 			AuditLogger: auditLogger,
 			Logger:      logger,
 		}
