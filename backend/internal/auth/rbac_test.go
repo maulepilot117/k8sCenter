@@ -202,3 +202,34 @@ func (f *fakeClientFactory) ClientForUser(username string, groups []string) (kub
 	// handles errors gracefully (logs warning, continues with empty results)
 	return kubernetes.NewForConfigOrDie(&rest.Config{Host: "https://fake:6443"}), nil
 }
+
+// A key missing from trackedResources never reaches a summary, so a typo in
+// clusterScopedResources would silently re-admit that kind as a namespaced
+// read in CanReadInNamespace.
+func TestClusterScopedResourcesAreTracked(t *testing.T) {
+	for resource := range clusterScopedResources {
+		if !trackedResources[resource] {
+			t.Errorf("clusterScopedResources has %q, which trackedResources does not track", resource)
+		}
+	}
+}
+
+func TestCanReadInNamespace(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		perms map[string][]string
+		want  bool
+	}{
+		{"empty", nil, false},
+		{"namespaced get", map[string][]string{"pods": {"get"}}, true},
+		{"namespaced list", map[string][]string{"configmaps": {"list"}}, true},
+		{"wildcard verb", map[string][]string{"deployments": {"*"}}, true},
+		{"write only", map[string][]string{"configmaps": {"create", "update", "delete"}}, false},
+		{"cluster-scoped read only", map[string][]string{"namespaces": {"get", "list"}, "nodes": {"list"}}, false},
+		{"cluster-scoped plus namespaced read", map[string][]string{"namespaces": {"list"}, "services": {"get"}}, true},
+	} {
+		if got := CanReadInNamespace(tc.perms); got != tc.want {
+			t.Errorf("%s: CanReadInNamespace(%v) = %v, want %v", tc.name, tc.perms, got, tc.want)
+		}
+	}
+}

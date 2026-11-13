@@ -60,6 +60,37 @@ var trackedResources = map[string]bool{
 	"endpointslices": true,
 }
 
+// clusterScopedResources are the tracked kinds that live outside any
+// namespace. A SelfSubjectRulesReview for a namespace also returns every
+// ClusterRoleBinding rule, so a cluster-wide grant on one of these kinds
+// (a namespace picker's "list namespaces", "get nodes") appears under every
+// namespace in RBACSummary.Namespaces without granting anything in it.
+// Every key must also be in trackedResources.
+var clusterScopedResources = map[string]bool{
+	"namespaces": true, "nodes": true, "persistentvolumes": true,
+	"storageclasses": true, "clusterroles": true, "clusterrolebindings": true,
+}
+
+// CanReadInNamespace reports whether perms, one namespace's entry in
+// RBACSummary.Namespaces, grant get or list on at least one namespaced kind.
+//
+// Use it to decide whether a namespace's own data is readable. The mere
+// presence of the namespace in the summary is not enough: the entry also
+// holds cluster-wide rules on cluster-scoped kinds and write-only grants.
+func CanReadInNamespace(perms map[string][]string) bool {
+	for resource, verbs := range perms {
+		if clusterScopedResources[resource] {
+			continue
+		}
+		for _, verb := range verbs {
+			if verb == "get" || verb == "list" || verb == "*" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // clusterRulesNamespace is where the cluster-wide rules are asked for. A
 // SelfSubjectRulesReview needs a namespace (an empty one is refused with "no
 // namespace on request"), and its answer is the namespace's RoleBindings plus
