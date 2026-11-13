@@ -71,7 +71,11 @@ func scopeHandler(t *testing.T, rules map[string][]authorizationv1.ResourceRule,
 	}
 }
 
-var podReader = []authorizationv1.ResourceRule{{Verbs: []string{"get", "list"}, Resources: []string{"pods"}}}
+// core is the core API group's name in a ResourceRule. The API server always
+// fills APIGroups; an empty list matches no group.
+var core = []string{""}
+
+var podReader = []authorizationv1.ResourceRule{{Verbs: []string{"get", "list"}, APIGroups: core, Resources: []string{"pods"}}}
 
 func TestAccessibleNamespaces_NonAdminGetsOnlyGrantedNamespaces(t *testing.T) {
 	h := scopeHandler(t,
@@ -121,11 +125,20 @@ func withClusterRule(own map[string][]authorizationv1.ResourceRule, clusterRule 
 // picker's "list namespaces", "get nodes") or a write-only grant used to
 // admit a namespace, and with it that namespace's notifications.
 func TestAccessibleNamespaces_AdmitsOnlyNamespacedRead(t *testing.T) {
-	configMapWriter := []authorizationv1.ResourceRule{{Verbs: []string{"create", "update"}, Resources: []string{"configmaps"}}}
-	wildcard := []authorizationv1.ResourceRule{{Verbs: []string{"*"}, Resources: []string{"*"}}}
-	listNamespaces := authorizationv1.ResourceRule{Verbs: []string{"get", "list", "watch"}, Resources: []string{"namespaces"}}
-	getNodes := authorizationv1.ResourceRule{Verbs: []string{"get", "list"}, Resources: []string{"nodes", "persistentvolumes", "storageclasses"}}
-	clusterPodReader := authorizationv1.ResourceRule{Verbs: []string{"list"}, Resources: []string{"pods"}}
+	configMapWriter := []authorizationv1.ResourceRule{{Verbs: []string{"create", "update"}, APIGroups: core, Resources: []string{"configmaps"}}}
+	wildcard := []authorizationv1.ResourceRule{{Verbs: []string{"*"}, APIGroups: []string{"*"}, Resources: []string{"*"}}}
+	listNamespaces := authorizationv1.ResourceRule{Verbs: []string{"get", "list", "watch"}, APIGroups: core, Resources: []string{"namespaces"}}
+	getNodes := []authorizationv1.ResourceRule{
+		{Verbs: []string{"get", "list"}, APIGroups: core, Resources: []string{"nodes", "persistentvolumes"}},
+		{Verbs: []string{"get", "list"}, APIGroups: []string{"storage.k8s.io"}, Resources: []string{"storageclasses"}},
+	}
+	clusterPodReader := authorizationv1.ResourceRule{Verbs: []string{"list"}, APIGroups: core, Resources: []string{"pods"}}
+	// Grants on other API groups that reuse a tracked name, or that cover
+	// every resource of a group with no tracked kind, read nothing tracked.
+	runtimeClassReader := authorizationv1.ResourceRule{Verbs: []string{"get", "list"}, APIGroups: []string{"node.k8s.io"}, Resources: []string{"*"}}
+	metricsPodReader := authorizationv1.ResourceRule{Verbs: []string{"get", "list"}, APIGroups: []string{"metrics.k8s.io"}, Resources: []string{"pods"}}
+	knativeServiceReader := authorizationv1.ResourceRule{Verbs: []string{"get", "list"}, APIGroups: []string{"serving.knative.dev"}, Resources: []string{"services"}}
+	appsReader := authorizationv1.ResourceRule{Verbs: []string{"list"}, APIGroups: []string{"apps"}, Resources: []string{"*"}}
 
 	for _, tc := range []struct {
 		name  string
@@ -139,7 +152,7 @@ func TestAccessibleNamespaces_AdmitsOnlyNamespacedRead(t *testing.T) {
 		},
 		{
 			name:  "cluster-wide read on cluster-scoped kinds admits nothing",
-			rules: withClusterRule(nil, getNodes, "team-a", "team-b"),
+			rules: withClusterRule(nil, getNodes[0], "team-a", "team-b"),
 			want:  []string{},
 		},
 		{
@@ -153,8 +166,28 @@ func TestAccessibleNamespaces_AdmitsOnlyNamespacedRead(t *testing.T) {
 			want:  []string{"team-a"},
 		},
 		{
+			name:  "cluster-wide read on storage classes admits nothing",
+			rules: withClusterRule(nil, getNodes[1], "team-a", "team-b"),
+			want:  []string{},
+		},
+		{
 			name:  "cluster-wide read on a namespaced kind admits every namespace",
 			rules: withClusterRule(nil, clusterPodReader, "team-a", "team-b"),
+			want:  []string{"team-a", "team-b"},
+		},
+		{
+			name:  "wildcard over a group with no tracked kind admits nothing",
+			rules: withClusterRule(nil, runtimeClassReader, "team-a", "team-b"),
+			want:  []string{},
+		},
+		{
+			name:  "same-named kind in another group admits nothing",
+			rules: withClusterRule(withClusterRule(nil, metricsPodReader, "team-a", "team-b"), knativeServiceReader, "team-a", "team-b"),
+			want:  []string{},
+		},
+		{
+			name:  "wildcard over a group with tracked namespaced kinds admits",
+			rules: withClusterRule(nil, appsReader, "team-a", "team-b"),
 			want:  []string{"team-a", "team-b"},
 		},
 	} {
