@@ -878,3 +878,92 @@ Inspect:
       FROM cluster_monitoring
      WHERE COALESCE(loki_url, '') <> ''
      ORDER BY cluster_id;
+
+
+000031_create_rubrik (Rubrik backup provider, 2026-11-12)
+------------------------------------------------------------------------------
+
+Creates eight tables (rubrik_connection, rubrik_cluster_mappings,
+rubrik_operations, rubrik_poller_state, rubrik_compliance_states,
+rubrik_poller_events, rubrik_poller_deliveries, rubrik_poller_lease) and
+replaces nc_notifications_source_check with the 000010 list plus 'rubrik'.
+No backfill.
+
+What it is for:
+  The Rubrik provider talks to one Rubrik Security Cloud (RSC) tenant.
+  rubrik_connection holds its URL, client id and client secret. The secret
+  is AES-256-GCM encrypted with the same master secret as the cluster
+  credentials (store.Encrypt) and is never returned by the API, logged or
+  audited. secret_origin records the origin of the tenant URL the secret was
+  entered for: saving a URL on another origin requires the secret again, and
+  deletes every cluster mapping of that connection (and, through the
+  cascades, every poller row) in the same transaction, because RSC cluster
+  ids belong to the old tenant. revision advances on every save, so a save
+  on one replica is noticed by the others. Production uses the row with
+  id = 'default'; tests use their own ids.
+
+  rubrik_cluster_mappings maps a k8sCenter cluster to one RSC Kubernetes
+  cluster and back (primary key one way, a unique index the other). It
+  stores the cluster's registration generation; when the cluster is
+  re-registered the generation no longer matches and the mapping is
+  invalid. The row is deleted with its cluster.
+
+  rubrik_operations records every snapshot, SLA and restore request by the
+  client's operation id. A partial unique index allows one in-flight restore
+  or SLA change per RSC object. These rows are kept when a mapping or
+  cluster is removed.
+
+  The poller tables hold the per-cluster activity cursor and connection
+  failure streak, per-object compliance judgments (the API reads these;
+  no row means unknown), one event per notification-worthy transition
+  (unique per cluster, kind and dedup key, so several replicas record it
+  once), one delivery intent per event, and an advisory lease.
+
+  Test isolation (postgres-test-harness-conventions): every uniqueness
+  constraint on these tables includes a test-controlled key (connection
+  id, cluster id, or an event id derived from one), and none is a
+  singleton, so store tests stay isolated by testOwnerID ids.
+
+Lock impact:
+  CREATE of new tables takes no lock on existing tables. The foreign keys
+  to clusters take a brief SHARE ROW EXCLUSIVE lock on clusters. Replacing
+  the source CHECK takes an ACCESS EXCLUSIVE lock on nc_notifications and
+  scans it once to validate the new constraint; on a large feed this blocks
+  notification reads and writes for the length of that scan.
+
+Rollback:
+  Stop every pod of this release first, because the Rubrik store names
+  these tables. Then either
+    (a) leave everything in place (recommended): the previous release never
+        names these tables, and the wider CHECK accepts every source it
+        writes, or
+    (b) run the 000031 down file. It refuses while any notification has
+        source 'rubrik'; delete those first:
+            DELETE FROM nc_notifications WHERE source = 'rubrik';
+        It then disables every enabled rule whose filter names only
+        'rubrik' (an empty filter would match every source), strips
+        'rubrik' from nc_rules.source_filter, restores the 000010
+        constraint and drops all eight tables. Run through the migrator, a
+        refused down leaves the version dirty: delete the rows, then reset
+        it as below and run the down file again. The connection secret
+        must be entered again and clusters mapped again after a
+        roll-forward.
+  Then reset the recorded version:
+    UPDATE schema_migrations SET version = 30, dirty = false;
+  A later roll-forward re-runs the up file without error (IF NOT EXISTS,
+  DROP CONSTRAINT IF EXISTS, COMMENT ON).
+  TestMigration000031_RoundTrip covers up, down and re-apply, and
+  TestMigration000031_UpIsIdempotent re-runs the up file at 31.
+
+Inspect:
+    SELECT id, tenant_url, client_id, secret_origin, revision, updated_by,
+           updated_at, last_success_at, last_failure_kind
+      FROM rubrik_connection;
+    SELECT cluster_id, connection_id, rsc_cluster_id, rsc_cluster_name,
+           cluster_generation, updated_at
+      FROM rubrik_cluster_mappings
+     ORDER BY cluster_id;
+    SELECT id, owner, cluster_id, kind, namespace, state, job_handle, created_at
+      FROM rubrik_operations
+     WHERE state IN ('applying', 'running', 'unknown')
+     ORDER BY created_at;
