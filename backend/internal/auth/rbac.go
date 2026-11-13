@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -34,52 +35,100 @@ type rbacCacheEntry struct {
 // systemNamespacePrefixes are namespaces filtered from RBAC summaries.
 var systemNamespacePrefixes = []string{"kube-"}
 
-// trackedResources are the resource types we check permissions for.
-// Must include every kind the frontend renders in RESOURCE_COLUMNS and ACTIONS_BY_KIND.
-var trackedResources = map[string]bool{
-	// Core
-	"pods": true, "services": true, "configmaps": true, "secrets": true,
-	"namespaces": true, "nodes": true, "persistentvolumeclaims": true,
-	"persistentvolumes": true, "endpoints": true, "events": true,
-	"resourcequotas": true, "limitranges": true, "serviceaccounts": true,
-	// Apps
-	"deployments": true, "statefulsets": true, "daemonsets": true, "replicasets": true,
-	// Batch
-	"jobs": true, "cronjobs": true,
-	// Networking
-	"ingresses": true, "networkpolicies": true,
-	// Policy
-	"poddisruptionbudgets": true,
-	// Autoscaling
-	"horizontalpodautoscalers": true,
-	// Storage
-	"storageclasses": true,
-	// RBAC
-	"roles": true, "clusterroles": true, "rolebindings": true, "clusterrolebindings": true,
-	// Discovery
-	"endpointslices": true,
+// resourceScope says whether a tracked kind lives in a namespace. It has no
+// valid zero value, so an entry that leaves it unset is caught by
+// TestTrackedResourcesAreClassified rather than read as namespaced.
+type resourceScope int
+
+const (
+	namespaced resourceScope = iota + 1
+	clusterScoped
+)
+
+// trackedKind is one resource type the RBAC summary reports on.
+type trackedKind struct {
+	// groups are the API groups that serve this resource; "" is the core
+	// group. A rule grants the resource only when it names one of them (or
+	// "*"), so a same-named resource in another group, such as
+	// metrics.k8s.io pods, is not mistaken for it.
+	groups []string
+	scope  resourceScope
 }
 
-// clusterScopedResources are the tracked kinds that live outside any
-// namespace. A SelfSubjectRulesReview for a namespace also returns every
-// ClusterRoleBinding rule, so a cluster-wide grant on one of these kinds
-// (a namespace picker's "list namespaces", "get nodes") appears under every
-// namespace in RBACSummary.Namespaces without granting anything in it.
-// Every key must also be in trackedResources.
-var clusterScopedResources = map[string]bool{
-	"namespaces": true, "nodes": true, "persistentvolumes": true,
-	"storageclasses": true, "clusterroles": true, "clusterrolebindings": true,
+// servedBy reports whether a rule naming apiGroups covers this kind.
+func (k trackedKind) servedBy(apiGroups []string) bool {
+	for _, g := range apiGroups {
+		if g == "*" || slices.Contains(k.groups, g) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	coreGroup       = []string{""}
+	appsGroup       = []string{"apps"}
+	batchGroup      = []string{"batch"}
+	networkingGroup = []string{"networking.k8s.io"}
+	rbacGroup       = []string{"rbac.authorization.k8s.io"}
+)
+
+// trackedResources are the resource types we check permissions for, keyed by
+// plural resource name. Must include every kind the frontend renders in
+// RESOURCE_COLUMNS and ACTIONS_BY_KIND.
+var trackedResources = map[string]trackedKind{
+	// Core
+	"pods":                   {coreGroup, namespaced},
+	"services":               {coreGroup, namespaced},
+	"configmaps":             {coreGroup, namespaced},
+	"secrets":                {coreGroup, namespaced},
+	"persistentvolumeclaims": {coreGroup, namespaced},
+	"endpoints":              {coreGroup, namespaced},
+	"events":                 {[]string{"", "events.k8s.io"}, namespaced},
+	"resourcequotas":         {coreGroup, namespaced},
+	"limitranges":            {coreGroup, namespaced},
+	"serviceaccounts":        {coreGroup, namespaced},
+	"namespaces":             {coreGroup, clusterScoped},
+	"nodes":                  {coreGroup, clusterScoped},
+	"persistentvolumes":      {coreGroup, clusterScoped},
+	// Apps
+	"deployments":  {appsGroup, namespaced},
+	"statefulsets": {appsGroup, namespaced},
+	"daemonsets":   {appsGroup, namespaced},
+	"replicasets":  {appsGroup, namespaced},
+	// Batch
+	"jobs":     {batchGroup, namespaced},
+	"cronjobs": {batchGroup, namespaced},
+	// Networking
+	"ingresses":       {networkingGroup, namespaced},
+	"networkpolicies": {networkingGroup, namespaced},
+	// Policy
+	"poddisruptionbudgets": {[]string{"policy"}, namespaced},
+	// Autoscaling
+	"horizontalpodautoscalers": {[]string{"autoscaling"}, namespaced},
+	// Storage
+	"storageclasses": {[]string{"storage.k8s.io"}, clusterScoped},
+	// RBAC
+	"roles":               {rbacGroup, namespaced},
+	"rolebindings":        {rbacGroup, namespaced},
+	"clusterroles":        {rbacGroup, clusterScoped},
+	"clusterrolebindings": {rbacGroup, clusterScoped},
+	// Discovery
+	"endpointslices": {[]string{"discovery.k8s.io"}, namespaced},
 }
 
 // CanReadInNamespace reports whether perms, one namespace's entry in
 // RBACSummary.Namespaces, grant get or list on at least one namespaced kind.
 //
 // Use it to decide whether a namespace's own data is readable. The mere
-// presence of the namespace in the summary is not enough: the entry also
-// holds cluster-wide rules on cluster-scoped kinds and write-only grants.
+// presence of the namespace in the summary is not enough. A
+// SelfSubjectRulesReview for a namespace also returns every
+// ClusterRoleBinding rule, so the entry holds cluster-wide grants on
+// cluster-scoped kinds (a namespace picker's "list namespaces", "get
+// nodes"), which grant nothing in the namespace, and write-only grants.
 func CanReadInNamespace(perms map[string][]string) bool {
 	for resource, verbs := range perms {
-		if clusterScopedResources[resource] {
+		if kind, ok := trackedResources[resource]; !ok || kind.scope != namespaced {
 			continue
 		}
 		for _, verb := range verbs {
@@ -229,22 +278,26 @@ func (rc *RBACChecker) getRulesForNamespace(ctx context.Context, cs kubernetes.I
 
 	perms := make(map[string][]string)
 
+	grant := func(resource string, verbs []string) {
+		for _, verb := range verbs {
+			perms[resource] = appendUnique(perms[resource], verb)
+		}
+	}
+	// A rule grants a tracked resource only when it also names one of the
+	// API groups that serve it: "list pods" in metrics.k8s.io is not core
+	// pods, and resources ["*"] in node.k8s.io covers no tracked kind.
 	for _, rule := range result.Status.ResourceRules {
 		for _, resource := range rule.Resources {
 			if resource == "*" {
-				// Wildcard resource — applies to all tracked resources
-				for tracked := range trackedResources {
-					for _, verb := range rule.Verbs {
-						perms[tracked] = appendUnique(perms[tracked], verb)
+				for name, kind := range trackedResources {
+					if kind.servedBy(rule.APIGroups) {
+						grant(name, rule.Verbs)
 					}
 				}
 				continue
 			}
-			if !trackedResources[resource] {
-				continue
-			}
-			for _, verb := range rule.Verbs {
-				perms[resource] = appendUnique(perms[resource], verb)
+			if kind, ok := trackedResources[resource]; ok && kind.servedBy(rule.APIGroups) {
+				grant(resource, rule.Verbs)
 			}
 		}
 	}

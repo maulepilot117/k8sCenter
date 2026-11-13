@@ -203,13 +203,17 @@ func (f *fakeClientFactory) ClientForUser(username string, groups []string) (kub
 	return kubernetes.NewForConfigOrDie(&rest.Config{Host: "https://fake:6443"}), nil
 }
 
-// A key missing from trackedResources never reaches a summary, so a typo in
-// clusterScopedResources would silently re-admit that kind as a namespaced
-// read in CanReadInNamespace.
-func TestClusterScopedResourcesAreTracked(t *testing.T) {
-	for resource := range clusterScopedResources {
-		if !trackedResources[resource] {
-			t.Errorf("clusterScopedResources has %q, which trackedResources does not track", resource)
+// Every tracked kind must say which API groups serve it and whether it is
+// namespaced. A kind with no groups would never be granted, and one with no
+// scope would be excluded from CanReadInNamespace; both are easy to miss when
+// a kind is added, so the table is checked here instead.
+func TestTrackedResourcesAreClassified(t *testing.T) {
+	for name, kind := range trackedResources {
+		if len(kind.groups) == 0 {
+			t.Errorf("trackedResources[%q] lists no API groups", name)
+		}
+		if kind.scope != namespaced && kind.scope != clusterScoped {
+			t.Errorf("trackedResources[%q] has no scope", name)
 		}
 	}
 }
