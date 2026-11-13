@@ -139,6 +139,8 @@ func TestAccessibleNamespaces_AdmitsOnlyNamespacedRead(t *testing.T) {
 	metricsPodReader := authorizationv1.ResourceRule{Verbs: []string{"get", "list"}, APIGroups: []string{"metrics.k8s.io"}, Resources: []string{"pods"}}
 	knativeServiceReader := authorizationv1.ResourceRule{Verbs: []string{"get", "list"}, APIGroups: []string{"serving.knative.dev"}, Resources: []string{"services"}}
 	appsReader := authorizationv1.ResourceRule{Verbs: []string{"list"}, APIGroups: []string{"apps"}, Resources: []string{"*"}}
+	// A grant limited to named objects reads only those objects, not the kind.
+	namedConfigMapReader := []authorizationv1.ResourceRule{{Verbs: []string{"get"}, APIGroups: core, Resources: []string{"configmaps"}, ResourceNames: []string{"app-config"}}}
 
 	for _, tc := range []struct {
 		name  string
@@ -183,6 +185,11 @@ func TestAccessibleNamespaces_AdmitsOnlyNamespacedRead(t *testing.T) {
 		{
 			name:  "same-named kind in another group admits nothing",
 			rules: withClusterRule(withClusterRule(nil, metricsPodReader, "team-a", "team-b"), knativeServiceReader, "team-a", "team-b"),
+			want:  []string{},
+		},
+		{
+			name:  "grant on one named object does not admit the namespace",
+			rules: map[string][]authorizationv1.ResourceRule{"team-a": namedConfigMapReader},
 			want:  []string{},
 		},
 		{
