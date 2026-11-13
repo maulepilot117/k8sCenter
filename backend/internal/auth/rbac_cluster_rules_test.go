@@ -137,6 +137,37 @@ func TestRBACChecker_RulesMatchAPIGroup(t *testing.T) {
 	}
 }
 
+// Skipping a name-limited rule must drop only that rule. A kind-wide rule on
+// the same kind keeps its verbs whichever order the review returns them in,
+// and a named rule adds none of its own, even on resources ["*"].
+func TestRBACChecker_NamedRuleLeavesKindWideRuleIntact(t *testing.T) {
+	named := authorizationv1.ResourceRule{Verbs: []string{"get", "delete"}, APIGroups: []string{""}, Resources: []string{"configmaps"}, ResourceNames: []string{"app-config"}}
+	kindWide := authorizationv1.ResourceRule{Verbs: []string{"list", "watch"}, APIGroups: []string{""}, Resources: []string{"configmaps"}}
+	namedWildcard := authorizationv1.ResourceRule{Verbs: []string{"get"}, APIGroups: []string{""}, Resources: []string{"*"}, ResourceNames: []string{"db-creds"}}
+
+	for name, rules := range map[string][]authorizationv1.ResourceRule{
+		"named first":     {named, namedWildcard, kindWide},
+		"kind-wide first": {kindWide, named, namedWildcard},
+	} {
+		t.Run(name, func(t *testing.T) {
+			factory := &rulesFactory{rules: map[string][]authorizationv1.ResourceRule{"team-a": rules}}
+			checker := NewRBACChecker(factory, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			summary, err := checker.GetSummary(context.Background(), &User{Username: "u", KubernetesUsername: "u"}, []string{"team-a"})
+			if err != nil {
+				t.Fatalf("GetSummary: %v", err)
+			}
+			got := summary.Namespaces["team-a"]
+			want := map[string][]string{"configmaps": {"list", "watch"}}
+			if len(got) != len(want) || !slices.Equal(got["configmaps"], want["configmaps"]) {
+				t.Errorf("team-a perms = %v, want %v", got, want)
+			}
+			if !CanReadInNamespace(got) {
+				t.Errorf("the kind-wide list on configmaps should admit team-a: %v", got)
+			}
+		})
+	}
+}
+
 // kindGroups is written out independently of trackedResources, so a typo in
 // the table's group strings fails here instead of silently dropping a real
 // permission from /auth/me and the notification feed.
