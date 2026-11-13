@@ -107,6 +107,9 @@ func TestRBACChecker_RulesMatchAPIGroup(t *testing.T) {
 			{Verbs: []string{"get"}, APIGroups: []string{"apps"}, Resources: []string{"deployments"}},
 			// Events are served by two groups.
 			{Verbs: []string{"list"}, APIGroups: []string{"events.k8s.io"}, Resources: []string{"events"}},
+			// A rule limited to named objects grants those objects only, which
+			// the per-kind summary cannot express, so it grants nothing here.
+			{Verbs: []string{"get", "list"}, APIGroups: []string{""}, Resources: []string{"secrets"}, ResourceNames: []string{"db-creds"}},
 			// A rule with no API groups matches nothing.
 			{Verbs: []string{"get"}, Resources: []string{"configmaps"}},
 		},
@@ -131,5 +134,48 @@ func TestRBACChecker_RulesMatchAPIGroup(t *testing.T) {
 		if !slices.Equal(got[resource], verbs) {
 			t.Errorf("team-a perms[%q] = %v, want %v", resource, got[resource], verbs)
 		}
+	}
+}
+
+// kindGroups is written out independently of trackedResources, so a typo in
+// the table's group strings fails here instead of silently dropping a real
+// permission from /auth/me and the notification feed.
+var kindGroups = map[string]string{
+	"pods": "", "services": "", "configmaps": "", "secrets": "",
+	"persistentvolumeclaims": "", "endpoints": "", "events": "",
+	"resourcequotas": "", "limitranges": "", "serviceaccounts": "",
+	"namespaces": "", "nodes": "", "persistentvolumes": "",
+	"deployments": "apps", "statefulsets": "apps", "daemonsets": "apps", "replicasets": "apps",
+	"jobs": "batch", "cronjobs": "batch",
+	"ingresses": "networking.k8s.io", "networkpolicies": "networking.k8s.io",
+	"poddisruptionbudgets":     "policy",
+	"horizontalpodautoscalers": "autoscaling",
+	"storageclasses":           "storage.k8s.io",
+	"roles":                    "rbac.authorization.k8s.io", "rolebindings": "rbac.authorization.k8s.io",
+	"clusterroles": "rbac.authorization.k8s.io", "clusterrolebindings": "rbac.authorization.k8s.io",
+	"endpointslices": "discovery.k8s.io",
+}
+
+func TestRBACChecker_EveryTrackedKindMatchesItsGroup(t *testing.T) {
+	if len(kindGroups) != len(trackedResources) {
+		t.Fatalf("kindGroups has %d kinds, trackedResources %d; add the new kind to both", len(kindGroups), len(trackedResources))
+	}
+	for resource, group := range kindGroups {
+		t.Run(resource, func(t *testing.T) {
+			factory := &rulesFactory{rules: map[string][]authorizationv1.ResourceRule{
+				"team-a": {
+					{Verbs: []string{"get"}, APIGroups: []string{group}, Resources: []string{resource}},
+					{Verbs: []string{"list"}, APIGroups: []string{"example.com"}, Resources: []string{resource}},
+				},
+			}}
+			checker := NewRBACChecker(factory, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			summary, err := checker.GetSummary(context.Background(), &User{Username: "u", KubernetesUsername: "u"}, []string{"team-a"})
+			if err != nil {
+				t.Fatalf("GetSummary: %v", err)
+			}
+			if got := summary.Namespaces["team-a"][resource]; !slices.Equal(got, []string{"get"}) {
+				t.Errorf("perms[%q] = %v, want [get] from group %q and nothing from example.com", resource, got, group)
+			}
+		})
 	}
 }

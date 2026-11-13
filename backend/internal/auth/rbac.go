@@ -287,6 +287,13 @@ func (rc *RBACChecker) getRulesForNamespace(ctx context.Context, cs kubernetes.I
 	// API groups that serve it: "list pods" in metrics.k8s.io is not core
 	// pods, and resources ["*"] in node.k8s.io covers no tracked kind.
 	for _, rule := range result.Status.ResourceRules {
+		// A rule limited to named objects grants those objects only. The
+		// summary is per kind, so recording it would claim the whole kind:
+		// "get" on one ConfigMap would read as "get configmaps" in the UI
+		// and admit the namespace to the notification feed.
+		if len(rule.ResourceNames) > 0 {
+			continue
+		}
 		for _, resource := range rule.Resources {
 			if resource == "*" {
 				for name, kind := range trackedResources {
