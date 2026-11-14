@@ -28,6 +28,7 @@ type Config struct {
 	ClusterID   string            `koanf:"clusterid"`
 	CORS        CORSConfig        `koanf:"cors"`
 	CiliumAgent CiliumAgentConfig `koanf:"ciliumagent"`
+	Rubrik      RubrikConfig      `koanf:"rubrik"`
 }
 
 // AuditConfig holds configuration for audit logging.
@@ -194,6 +195,17 @@ type CORSConfig struct {
 type CiliumAgentConfig struct {
 	ExecEnabled   bool `koanf:"execenabled"`   // KUBECENTER_CILIUMAGENT_EXECENABLED
 	MaxConcurrent int  `koanf:"maxconcurrent"` // KUBECENTER_CILIUMAGENT_MAXCONCURRENT (default: 10)
+}
+
+// RubrikConfig controls the Rubrik Security Cloud backup provider (preview).
+// Both switches default to false. While Enabled is false the provider's
+// handler and poller are not built, so no Rubrik route exists and no RSC
+// call is made. WritesEnabled additionally allows on-demand snapshots, SLA
+// assignment and restores; write routes re-check it on every request, so it
+// has no effect while Enabled is false.
+type RubrikConfig struct {
+	Enabled       bool `koanf:"enabled"`       // KUBECENTER_RUBRIK_ENABLED
+	WritesEnabled bool `koanf:"writesenabled"` // KUBECENTER_RUBRIK_WRITESENABLED
 }
 
 // LokiConfig holds configuration for Loki log aggregation integration.
