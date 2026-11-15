@@ -107,7 +107,7 @@ func (f *fakeReader) Snapshots(_ context.Context, family Family, id string, limi
 }
 
 func (f *fakeReader) Jobs(_ context.Context, af ActivityFilter) ([]Job, error) {
-	if err := f.enter("Jobs:" + fmt.Sprint(af.ObjectIDs)); err != nil {
+	if err := f.enter("Jobs:" + fmt.Sprint(af.ObjectIDs) + ":" + fmt.Sprint(af.Limit)); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
@@ -596,6 +596,31 @@ func TestHistoryOnlyForObjectsOfTheMappedCluster(t *testing.T) {
 	_, jobs, _, err := fx.svc.Jobs(ctx, remote, idSet, 0)
 	if err != nil || len(jobs) != 1 || jobs[0].ID != "mine" {
 		t.Fatalf("jobs = %+v, %v; want only the object's own job", jobs, err)
+	}
+}
+
+// The limit is part of the history cache keys: a 10-row answer is never
+// served for a 50-row request, and each limit reaches RSC as asked, with the
+// jobs request scoped to the object.
+func TestHistoryLimitsAreCachedSeparately(t *testing.T) {
+	ctx := context.Background()
+	fx := newFixture(t)
+	tgt := fx.resolve(t, "local")
+	for _, limit := range []int{10, 50, 10, 50} {
+		if _, _, _, err := fx.svc.Snapshots(ctx, tgt, idNS, limit); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := fx.svc.Jobs(ctx, tgt, idNS, limit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, limit := range []int{10, 50} {
+		if n := fx.rsc.count(fmt.Sprintf("Snapshots:%s:%s:%d", FamilyNamespace, idNS, limit)); n != 1 {
+			t.Errorf("snapshot fetches with limit %d = %d, want 1 (calls %v)", limit, n, fx.rsc.calls)
+		}
+		if n := fx.rsc.count(fmt.Sprintf("Jobs:[%s]:%d", idNS, limit)); n != 1 {
+			t.Errorf("job fetches with limit %d = %d, want 1 (calls %v)", limit, n, fx.rsc.calls)
+		}
 	}
 }
 

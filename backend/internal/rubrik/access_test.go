@@ -191,8 +191,17 @@ func TestAccessCheckErrorFailsWholeRequest(t *testing.T) {
 	}
 	// A failed check is no permission either.
 	o := objNS("b", "team-b", idSLA, nil)
-	if _, err := viewer(t, a, owner).CheckAction(ctx, validTarget(), ActionSnapshot, o, ""); !errors.Is(err, ErrAccessCheck) {
-		t.Fatalf("CheckAction err = %v, want ErrAccessCheck", err)
+	if r, err := viewer(t, a, owner).CheckAction(ctx, validTarget(), ActionSnapshot, o, ""); !errors.Is(err, ErrAccessCheck) || r != RefusalCheckFailed {
+		t.Fatalf("CheckAction = %q, %v; want check_failed and ErrAccessCheck", r, err)
+	}
+	// The same when the read grant passes and the action's own grant check
+	// is the one that fails.
+	delete(checker.fail, "team-b")
+	checker.fail["team-c"] = true
+	checker.grants["get protections team-b"] = true
+	r, err := viewer(t, a, owner).CheckAction(ctx, validTarget(), ActionRestore, o, "team-c")
+	if !errors.Is(err, ErrAccessCheck) || r != RefusalCheckFailed {
+		t.Fatalf("CheckAction restore = %q, %v; want check_failed and ErrAccessCheck", r, err)
 	}
 }
 
@@ -417,6 +426,73 @@ func TestActionFlagsMatchCheckAction(t *testing.T) {
 	}
 	if f, _ := viewer(t, a, admin).ActionFlags(ctx, Target{}, o); f != (ActionFlags{}) {
 		t.Fatalf("flags with an invalid mapping = %+v, want none", f)
+	}
+}
+
+// Each flag is pinned on its own, and each agrees with CheckAction: snapshot
+// and SLA with the same action, restore with a restore into team-b, where
+// every case below holds the restore grant (KTD3: the UI never offers a
+// control the server refuses, nor hides one it allows).
+func TestActionFlagsAgreeWithCheckAction(t *testing.T) {
+	ctx := context.Background()
+	perNS := objNS("a", "team-a", idSLA, nil)
+	scoped := perNS
+	scoped.MayHoldClusterScoped = true
+	relic := perNS
+	relic.Relic = true
+	multi := objSet("multi", "cluster", Coverage{Namespaces: []string{"team-a", "team-b"}}, idSLA, nil)
+	gone := objNS("d", "team-d", idSLA, nil)
+	remoteTarget := Target{ClusterID: "remote-1", Revision: 1, valid: true}
+
+	full := append(read("team-a", "team-b", "team-d"),
+		"create snapshots team-a", "create snapshots team-b", "create snapshots team-d",
+		"update slaassignments team-a", "update slaassignments team-b", "update slaassignments team-d",
+		"create restores team-b")
+	cases := []struct {
+		name   string
+		grants []string
+		user   *auth.User
+		target Target
+		object Object
+		want   ActionFlags
+	}{
+		{"owner with every grant", full, owner, validTarget(), perNS, ActionFlags{CanSnapshot: true, CanChangeSLA: true, CanRestore: true}},
+		{"owner with the SLA grant only", append(read("team-a"), "update slaassignments team-a", "create restores team-b"), owner, validTarget(), perNS, ActionFlags{CanChangeSLA: true, CanRestore: true}},
+		{"owner without the read grant", []string{"create snapshots team-a", "update slaassignments team-a", "create restores team-b"}, owner, validTarget(), perNS, ActionFlags{}},
+		{"snapshots may hold cluster-scoped resources", full, owner, validTarget(), scoped, ActionFlags{CanSnapshot: true, CanChangeSLA: true}},
+		{"owner on a relic", full, owner, validTarget(), relic, ActionFlags{}},
+		{"owner on a multi-namespace set", full, owner, validTarget(), multi, ActionFlags{}},
+		{"owner on a deleted namespace", full, owner, validTarget(), gone, ActionFlags{}},
+		{"target of another cluster", full, owner, remoteTarget, perNS, ActionFlags{}},
+		{"admin on a relic restores only", nil, admin, validTarget(), relic, ActionFlags{CanRestore: true}},
+		{"admin on cluster-scoped snapshots", nil, admin, validTarget(), scoped, ActionFlags{CanSnapshot: true, CanChangeSLA: true, CanRestore: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewAccess(newFakeChecker(tc.grants...), twoTeams(t), true)
+			f, err := viewer(t, a, tc.user).ActionFlags(ctx, tc.target, tc.object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f != tc.want {
+				t.Fatalf("flags = %+v, want %+v", f, tc.want)
+			}
+			allowed := func(action Action, targetNamespace string) bool {
+				r, err := viewer(t, a, tc.user).CheckAction(ctx, tc.target, action, tc.object, targetNamespace)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return r == RefusalNone
+			}
+			server := ActionFlags{
+				CanSnapshot:  allowed(ActionSnapshot, ""),
+				CanChangeSLA: allowed(ActionChangeSLA, ""),
+				CanRestore:   allowed(ActionRestore, "team-b"),
+			}
+			if f != server {
+				t.Fatalf("flags = %+v, but CheckAction allows %+v", f, server)
+			}
+		})
 	}
 }
 

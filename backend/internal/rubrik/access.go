@@ -407,21 +407,27 @@ const (
 	// be snapshotted or given an SLA).
 	RefusalNotActionable Refusal = "not_actionable"
 	// RefusalAdminOnly: only admins may act on this object: it covers
-	// several or unresolved namespaces (R7), belongs to an earlier
-	// namespace (R6), or, for a restore, may hold cluster-scoped resources
-	// (R17).
+	// several or unresolved namespaces (R7), its namespace no longer exists
+	// (R6), or, for a restore, it may hold cluster-scoped resources (R17).
+	// CheckAction sees no snapshot, so whether the chosen snapshot predates
+	// the namespace (R6) is the restore path's check, through
+	// VisibleSnapshots.
 	RefusalAdminOnly Refusal = "admin_only"
 	// RefusalNoGrant: the user lacks the read grant on the object's
 	// namespace or the action's own grant (R8).
 	RefusalNoGrant Refusal = "no_grant"
 	// RefusalInvalidTarget: the restore target is not a namespace name.
 	RefusalInvalidTarget Refusal = "invalid_target"
+	// RefusalCheckFailed comes with an error: a grant check or namespace
+	// lookup could not be made. It is never RefusalNone, so a caller that
+	// tests the refusal before the error still refuses.
+	RefusalCheckFailed Refusal = "check_failed"
 )
 
 // CheckAction decides whether the viewer may perform action on o in cluster
 // target t. For a restore, targetNamespace is the namespace restored into;
-// the other actions ignore it. A refusal says why; an error means a check
-// could not be made, which the caller must not treat as permission.
+// the other actions ignore it. A refusal says why. An error means a check
+// could not be made; it comes with RefusalCheckFailed, never RefusalNone.
 //
 // Admins may act on any current object, and restore from relics and
 // multi-namespace sets. A non-admin may act only on a current,
@@ -436,11 +442,8 @@ func (v *Viewer) CheckAction(ctx context.Context, t Target, action Action, o Obj
 	if !known {
 		return RefusalNotActionable, nil
 	}
-	if !v.access.writesEnabled {
-		return RefusalWritesDisabled, nil
-	}
-	if !t.valid || k8s.NormalizedClusterID(t.ClusterID) != v.clusterID {
-		return RefusalMappingInvalid, nil
+	if r := v.writeGate(t); r != RefusalNone {
+		return r, nil
 	}
 	if action == ActionRestore && !validNamespaceName(targetNamespace) {
 		return RefusalInvalidTarget, nil
@@ -451,19 +454,9 @@ func (v *Viewer) CheckAction(ctx context.Context, t Target, action Action, o Obj
 	if v.admin {
 		return RefusalNone, nil
 	}
-	if o.Relic || !o.NamespaceScoped() || (action == ActionRestore && o.MayHoldClusterScoped) {
-		return RefusalAdminOnly, nil
-	}
-	source := o.Coverage.Namespaces[0]
-	st, readable, err := v.readable(ctx, source)
-	if err != nil {
-		return RefusalNone, err
-	}
-	if !st.exists {
-		return RefusalAdminOnly, nil
-	}
-	if !readable {
-		return RefusalNoGrant, nil
+	source, r, err := v.nonAdminSource(ctx, action, o)
+	if err != nil || r != RefusalNone {
+		return r, err
 	}
 	grantNS := source
 	if action == ActionRestore {
@@ -471,7 +464,7 @@ func (v *Viewer) CheckAction(ctx context.Context, t Target, action Action, o Obj
 	}
 	ok, err := v.can(ctx, verb, resource, grantNS)
 	if err != nil {
-		return RefusalNone, err
+		return RefusalCheckFailed, err
 	}
 	if !ok {
 		return RefusalNoGrant, nil
@@ -511,18 +504,55 @@ func (v *Viewer) ActionFlags(ctx context.Context, t Target, o Object) (ActionFla
 	return f, nil
 }
 
+// restoreEligible applies CheckAction's restore rules through the same
+// helpers, leaving out only the target namespace's checks.
 func (v *Viewer) restoreEligible(ctx context.Context, t Target, o Object) (bool, error) {
-	if !v.access.writesEnabled || !t.valid || k8s.NormalizedClusterID(t.ClusterID) != v.clusterID {
+	if v.writeGate(t) != RefusalNone {
 		return false, nil
 	}
 	if v.admin {
 		return true, nil
 	}
-	if o.Relic || !o.NamespaceScoped() || o.MayHoldClusterScoped {
-		return false, nil
+	_, r, err := v.nonAdminSource(ctx, ActionRestore, o)
+	if err != nil {
+		return false, err
 	}
-	_, readable, err := v.readable(ctx, o.Coverage.Namespaces[0])
-	return readable, err
+	return r == RefusalNone, nil
+}
+
+// writeGate refuses every write, for admins too, while the writes setting is
+// off (R29) or t is not a valid mapping of the viewer's cluster (R2).
+func (v *Viewer) writeGate(t Target) Refusal {
+	if !v.access.writesEnabled {
+		return RefusalWritesDisabled
+	}
+	if !t.valid || k8s.NormalizedClusterID(t.ClusterID) != v.clusterID {
+		return RefusalMappingInvalid
+	}
+	return RefusalNone
+}
+
+// nonAdminSource returns the namespace a non-admin acts in for action on o:
+// the object must be current and namespace-scoped, a restore source must not
+// hold cluster-scoped resources, and the namespace must exist locally and
+// carry the read grant. CheckAction and restoreEligible share it so the
+// server's refusal and the UI's restore flag cannot drift apart (KTD3).
+func (v *Viewer) nonAdminSource(ctx context.Context, action Action, o Object) (string, Refusal, error) {
+	if o.Relic || !o.NamespaceScoped() || (action == ActionRestore && o.MayHoldClusterScoped) {
+		return "", RefusalAdminOnly, nil
+	}
+	source := o.Coverage.Namespaces[0]
+	st, readable, err := v.readable(ctx, source)
+	if err != nil {
+		return "", RefusalCheckFailed, err
+	}
+	if !st.exists {
+		return "", RefusalAdminOnly, nil
+	}
+	if !readable {
+		return "", RefusalNoGrant, nil
+	}
+	return source, RefusalNone, nil
 }
 
 // validNamespaceName reports whether s is a DNS-1123 label, the form of a
