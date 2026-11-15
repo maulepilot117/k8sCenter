@@ -224,11 +224,11 @@ func TestNamespaceListCollectsEveryPage(t *testing.T) {
 	f.handle("RubrikK8sNamespaces", func(vars map[string]any) (any, error) {
 		switch vars["after"] {
 		case nil:
-			return conn("k8sNamespaces", []any{map[string]any{"id": "a", "namespaceName": "team-a", "clusterScoped": false}}, true, "c1"), nil
+			return conn("k8sNamespaces", []any{map[string]any{"id": "a", "k8sClusterId": idCluster, "namespaceName": "team-a", "clusterScoped": false}}, true, "c1"), nil
 		case "c1":
-			return conn("k8sNamespaces", []any{map[string]any{"id": "b", "namespaceName": "team-b", "clusterScoped": false}}, true, "c2"), nil
+			return conn("k8sNamespaces", []any{map[string]any{"id": "b", "k8sClusterId": idCluster, "namespaceName": "team-b", "clusterScoped": false}}, true, "c2"), nil
 		case "c2":
-			return conn("k8sNamespaces", []any{map[string]any{"id": "c", "namespaceName": "team-c", "clusterScoped": false}}, false, ""), nil
+			return conn("k8sNamespaces", []any{map[string]any{"id": "c", "k8sClusterId": idCluster, "namespaceName": "team-c", "clusterScoped": false}}, false, ""), nil
 		}
 		return nil, fmt.Errorf("unexpected cursor %v", vars["after"])
 	})
@@ -290,16 +290,16 @@ func TestPagingStopsOnBadCursors(t *testing.T) {
 func TestProtectionSetCoverageAndClusterScope(t *testing.T) {
 	f, ops := newFakeRSC(t)
 	f.answer("RubrikK8sProtectionSets", conn("kubernetesProtectionSets", []any{
-		map[string]any{"id": "cluster-all", "name": "everything", "rsType": "cluster", "definition": "{}"},
-		map[string]any{"id": "cluster-pattern", "name": "teams", "rsType": "cluster", "namespaceIncludePatterns": "team-*"},
-		map[string]any{"id": "app", "name": "shop", "rsType": "application", "namespaceIncludePatterns": "shop-*"},
-		map[string]any{"id": "ns", "name": "team-a-set", "rsType": "namespace", "namespace": "team-a", "definition": `{"includeResources":["Deployment","ConfigMap"]}`},
-		map[string]any{"id": "ns-crd", "name": "team-b-set", "rsType": "Namespace", "namespace": "team-b", "definition": `{"includeResources":["ClusterRoleBinding"]}`},
-		map[string]any{"id": "ns-deps", "name": "team-c-set", "rsType": "namespace", "namespace": "team-c", "customResourceDependencies": "certificates.cert-manager.io"},
-		map[string]any{"id": "ns-empty", "name": "orphan", "rsType": "namespace"},
+		map[string]any{"id": "cluster-all", "k8sClusterUuid": idCluster, "name": "everything", "rsType": "cluster", "definition": "{}"},
+		map[string]any{"id": "cluster-pattern", "k8sClusterUuid": idCluster, "name": "teams", "rsType": "cluster", "namespaceIncludePatterns": "team-*"},
+		map[string]any{"id": "app", "k8sClusterUuid": idCluster, "name": "shop", "rsType": "application", "namespaceIncludePatterns": "shop-*"},
+		map[string]any{"id": "ns", "k8sClusterUuid": idCluster, "name": "team-a-set", "rsType": "namespace", "namespace": "team-a", "definition": `{"includeResources":["Deployment","ConfigMap"]}`},
+		map[string]any{"id": "ns-crd", "k8sClusterUuid": idCluster, "name": "team-b-set", "rsType": "Namespace", "namespace": "team-b", "definition": `{"includeResources":["ClusterRoleBinding"]}`},
+		map[string]any{"id": "ns-deps", "k8sClusterUuid": idCluster, "name": "team-c-set", "rsType": "namespace", "namespace": "team-c", "customResourceDependencies": "certificates.cert-manager.io"},
+		map[string]any{"id": "ns-empty", "k8sClusterUuid": idCluster, "name": "orphan", "rsType": "namespace"},
 		// Shapes a kind-name match would miss: lowercase plurals and a wildcard.
-		map[string]any{"id": "ns-plural", "name": "team-d-set", "rsType": "namespace", "namespace": "team-d", "definition": `{"includes":[{"resource":"clusterrolebindings"}]}`},
-		map[string]any{"id": "ns-wildcard", "name": "team-e-set", "rsType": "namespace", "namespace": "team-e", "definition": `{"resources":["*"]}`},
+		map[string]any{"id": "ns-plural", "k8sClusterUuid": idCluster, "name": "team-d-set", "rsType": "namespace", "namespace": "team-d", "definition": `{"includes":[{"resource":"clusterrolebindings"}]}`},
+		map[string]any{"id": "ns-wildcard", "k8sClusterUuid": idCluster, "name": "team-e-set", "rsType": "namespace", "namespace": "team-e", "definition": `{"resources":["*"]}`},
 	}, false, ""))
 	objs, err := ops.ProtectionSets(context.Background(), idCluster)
 	if err != nil {
@@ -348,9 +348,9 @@ func TestProtectionSetCoverageAndClusterScope(t *testing.T) {
 func TestNamespaceObjectClusterScopedFailsClosed(t *testing.T) {
 	f, ops := newFakeRSC(t)
 	f.answer("RubrikK8sNamespaces", conn("k8sNamespaces", []any{
-		map[string]any{"id": "plain", "namespaceName": "team-a", "clusterScoped": false},
-		map[string]any{"id": "scoped", "namespaceName": "team-b", "clusterScoped": true},
-		map[string]any{"id": "missing", "namespaceName": "team-c"},
+		map[string]any{"id": "plain", "k8sClusterId": idCluster, "namespaceName": "team-a", "clusterScoped": false},
+		map[string]any{"id": "scoped", "k8sClusterId": idCluster, "namespaceName": "team-b", "clusterScoped": true},
+		map[string]any{"id": "missing", "k8sClusterId": idCluster, "namespaceName": "team-c"},
 	}, false, ""))
 	objs, err := ops.NamespaceObjects(context.Background(), idCluster)
 	if err != nil {
@@ -362,6 +362,94 @@ func TestNamespaceObjectClusterScopedFailsClosed(t *testing.T) {
 	}
 	if got["plain"] || !got["scoped"] || !got["missing"] {
 		t.Fatalf("mayHoldClusterScoped = %v, want plain false, scoped and missing true", got)
+	}
+}
+
+// Both object lists are bound to the cluster they asked for. Callers decide
+// visibility by namespace name, so a same-named namespace of another cluster
+// must fail the whole list, never pass or quietly drop out of it.
+func TestObjectListsRejectAnotherClustersObjects(t *testing.T) {
+	const otherCluster = "77777777-7777-4777-8777-777777777777"
+	lists := []struct {
+		name, op, field, key string
+		list                 func(*Operations) ([]Object, error)
+	}{
+		{"namespaces", "RubrikK8sNamespaces", "k8sNamespaces", "k8sClusterId",
+			func(o *Operations) ([]Object, error) { return o.NamespaceObjects(context.Background(), idCluster) }},
+		{"protection sets", "RubrikK8sProtectionSets", "kubernetesProtectionSets", "k8sClusterUuid",
+			func(o *Operations) ([]Object, error) { return o.ProtectionSets(context.Background(), idCluster) }},
+	}
+	node := func(id, key string, cluster any) map[string]any {
+		n := map[string]any{"id": id, "name": "team-a", "namespaceName": "team-a", "rsType": "namespace", "namespace": "team-a",
+			"clusterScoped": false, "effectiveSlaDomain": map[string]any{"id": idSLA, "name": "Gold"}}
+		if cluster != nil {
+			n[key] = cluster
+		}
+		return n
+	}
+	for _, l := range lists {
+		cases := []struct {
+			name    string
+			cluster any
+			want    string
+		}{
+			{"another cluster", otherCluster, "of another cluster"},
+			// Only an exact (case-insensitive) match binds: a prefix or
+			// substring comparison would accept these.
+			{"truncated cluster id", idCluster[:8], "of another cluster"},
+			{"extended cluster id", idCluster + "0", "of another cluster"},
+			{"missing cluster id", nil, "without a cluster id"},
+			{"empty cluster id", "", "without a cluster id"},
+		}
+		for _, c := range cases {
+			t.Run(l.name+"/"+c.name, func(t *testing.T) {
+				f, ops := newFakeRSC(t)
+				// The foreign node follows a good one, so the whole list
+				// must fail rather than the node be dropped.
+				f.answer(l.op, conn(l.field, []any{node("good", l.key, idCluster), node("foreign", l.key, c.cluster)}, false, ""))
+				objs, err := l.list(ops)
+				if !errors.Is(err, ErrUnreadable) || objs != nil {
+					t.Fatalf("objs = %v, err = %v, want no list and ErrUnreadable", objs, err)
+				}
+				if !strings.HasSuffix(err.Error(), c.want) {
+					t.Fatalf("err = %q, want the fixed text ending %q", err, c.want)
+				}
+			})
+		}
+		t.Run(l.name+"/foreign node on a later page", func(t *testing.T) {
+			f, ops := newFakeRSC(t)
+			f.handle(l.op, func(vars map[string]any) (any, error) {
+				if vars["after"] == nil {
+					return conn(l.field, []any{node("good", l.key, idCluster)}, true, "p2"), nil
+				}
+				return conn(l.field, []any{node("foreign", l.key, otherCluster)}, false, ""), nil
+			})
+			if objs, err := l.list(ops); !errors.Is(err, ErrUnreadable) || objs != nil {
+				t.Fatalf("objs = %v, err = %v, want no list and ErrUnreadable", objs, err)
+			}
+		})
+		t.Run(l.name+"/same cluster in upper case", func(t *testing.T) {
+			f, ops := newFakeRSC(t)
+			f.answer(l.op, conn(l.field, []any{node("good", l.key, strings.ToUpper(idCluster))}, false, ""))
+			objs, err := l.list(ops)
+			if err != nil || len(objs) != 1 || objs[0].ID != "good" {
+				t.Fatalf("objs = %v, err = %v, want the one object", objs, err)
+			}
+		})
+		// The fake answers whatever the selection set asks for, so pin that
+		// the query selects the node's cluster id. The namespaces query also
+		// names k8sClusterId as an argument, so match the selection line.
+		t.Run(l.name+"/query selects "+l.key, func(t *testing.T) {
+			f, ops := newFakeRSC(t)
+			f.answer(l.op, conn(l.field, nil, false, ""))
+			if _, err := l.list(ops); err != nil {
+				t.Fatal(err)
+			}
+			sel := regexp.MustCompile(`(?m)^\s*` + l.key + `\s*$`)
+			if q := f.last(t).Query; !sel.MatchString(q) {
+				t.Fatalf("%s does not select %s:\n%s", l.op, l.key, q)
+			}
+		})
 	}
 }
 
@@ -429,7 +517,7 @@ func TestSummarizeNamespaceTargets(t *testing.T) {
 func TestRelicNeverCountsAsProtection(t *testing.T) {
 	f, ops := newFakeRSC(t)
 	f.answer("RubrikK8sNamespaces", conn("k8sNamespaces", []any{
-		map[string]any{"id": "relic", "namespaceName": "team-c", "isRelic": true, "clusterScoped": false,
+		map[string]any{"id": "relic", "k8sClusterId": idCluster, "namespaceName": "team-c", "isRelic": true, "clusterScoped": false,
 			"effectiveSlaDomain": map[string]any{"id": idSLA, "name": "Gold"}, "newestSnapshot": map[string]any{"date": "2026-11-01T00:00:00Z"}},
 	}, false, ""))
 	objs, err := ops.NamespaceObjects(context.Background(), idCluster)
@@ -446,7 +534,7 @@ func TestRelicNeverCountsAsProtection(t *testing.T) {
 
 	// The protection-set family decodes and drops a relic the same way.
 	f.answer("RubrikK8sProtectionSets", conn("kubernetesProtectionSets", []any{
-		map[string]any{"id": "relic-set", "name": "team-a-set", "rsType": "namespace", "namespace": "team-a", "isRelic": true,
+		map[string]any{"id": "relic-set", "k8sClusterUuid": idCluster, "name": "team-a-set", "rsType": "namespace", "namespace": "team-a", "isRelic": true,
 			"effectiveSlaDomain": map[string]any{"id": idSLA, "name": "Gold"}, "newestSnapshot": map[string]any{"date": "2026-11-01T00:00:00Z"}},
 	}, false, ""))
 	sets, err := ops.ProtectionSets(context.Background(), idCluster)
@@ -780,7 +868,7 @@ func TestMalformedAnswersAreUnreadable(t *testing.T) {
 	f, ops := newFakeRSC(t)
 	ctx := context.Background()
 	f.answer("RubrikK8sNamespaces", map[string]any{"k8sNamespaces": nil})
-	f.answer("RubrikK8sProtectionSets", map[string]any{"kubernetesProtectionSets": map[string]any{"nodes": []any{map[string]any{"name": "no id"}}}})
+	f.answer("RubrikK8sProtectionSets", map[string]any{"kubernetesProtectionSets": map[string]any{"nodes": []any{map[string]any{"name": "no id", "k8sClusterUuid": idCluster}}}})
 	f.answer("RubrikK8sNamespaceSnapshots", map[string]any{"k8sNamespace": map[string]any{"snapshotConnection": map[string]any{"nodes": []any{map[string]any{"id": "s"}}}}})
 	f.answer("RubrikActivitySeries", map[string]any{"activitySeriesConnection": "oops"})
 	f.answer("RubrikTaskchain", map[string]any{"taskchain": nil})

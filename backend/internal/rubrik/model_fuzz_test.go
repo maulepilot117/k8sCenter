@@ -12,6 +12,13 @@ import (
 // Seeds plant it in every position a decoder reads or skips.
 const fuzzCanary = "canary-secret-7f3a9c"
 
+// fuzzCluster is the cluster every fuzzed object list asks for, and
+// fuzzOtherCluster a second one: no answer may bind to both.
+const (
+	fuzzCluster      = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	fuzzOtherCluster = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+)
+
 // fuzzDecoderErrorText is the only shape a decoder error may take: one of
 // the two error classes followed by fixed lowercase words, optionally with a
 // count. None of the texts can quote a byte of the answer.
@@ -91,12 +98,15 @@ func checkObjects(t *testing.T, name string, objs []Object) {
 //     rule that no protection set may claim to be free of cluster-scoped
 //     resources; relics never count as protection; job states stay within
 //     the known set; SLA frequencies are never negative.
+//   - Oracle E: an object list is bound to the cluster it asked for, so no
+//     answer that yields objects for one cluster also yields them for
+//     another.
 func FuzzRubrikDecoders(f *testing.F) {
 	// Valid answers, one per decoder.
 	f.Add([]byte(`{"k8sClusters":{"nodes":[{"id":"c1","name":"prod","status":"STATUS_CONNECTED"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}`))
 	f.Add([]byte(`{"kubernetesClusters":{"nodes":[{"id":"c2","name":"cdm"}],"pageInfo":{"hasNextPage":true,"endCursor":"x"}}}`))
-	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"id":"n1","namespaceName":"team-a","isRelic":false,"clusterScoped":false,"effectiveSlaDomain":{"id":"gold","name":"Gold"},"newestSnapshot":{"date":"2026-11-13T00:00:00Z"}}],"pageInfo":{"hasNextPage":false}}}`))
-	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s1","name":"all","rsType":"cluster","definition":"{}"},{"id":"s2","name":"a","rsType":"namespace","namespace":"team-a","definition":"{\"kinds\":[\"ClusterRole\"]}"}]}}`))
+	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"id":"n1","k8sClusterId":"` + fuzzCluster + `","namespaceName":"team-a","isRelic":false,"clusterScoped":false,"effectiveSlaDomain":{"id":"gold","name":"Gold"},"newestSnapshot":{"date":"2026-11-13T00:00:00Z"}}],"pageInfo":{"hasNextPage":false}}}`))
+	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s1","k8sClusterUuid":"` + fuzzCluster + `","name":"all","rsType":"cluster","definition":"{}"},{"id":"s2","k8sClusterUuid":"` + strings.ToUpper(fuzzCluster) + `","name":"a","rsType":"namespace","namespace":"team-a","definition":"{\"kinds\":[\"ClusterRole\"]}"}]}}`))
 	f.Add([]byte(`{"k8sNamespace":{"snapshotConnection":{"nodes":[{"id":"x","date":"2026-11-13T00:00:00Z","expirationDate":null,"isExpired":true}]}}}`))
 	f.Add([]byte(`{"kubernetesProtectionSet":{"snapshotConnection":null}}`))
 	f.Add([]byte(`{"activitySeriesConnection":{"nodes":[{"activitySeriesId":"j","lastActivityStatus":"Failure","failureReason":"disk full"}]}}`))
@@ -108,41 +118,52 @@ func FuzzRubrikDecoders(f *testing.F) {
 	f.Add([]byte(`{"assignSla":{"success":true}}`))
 
 	// Teeth, each aimed at one guard.
-	f.Add([]byte(`null`))                                                                                                                                       // null data: every "no list" guard
-	f.Add([]byte(`{}`))                                                                                                                                         // missing roots
-	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"namespaceName":"` + fuzzCanary + `"}]}}`))                                                                       // missing id, canary in a decoded field
-	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"id":"n","namespaceName":"  "}]}}`))                                                                              // blank namespace: unresolved, clusterScoped missing fails closed
-	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"id":"n","newestSnapshot":{"date":"` + fuzzCanary + `"}}]}}`))                                                    // bad time quoting the canary
-	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","rsType":" Namespace ","namespace":" team-a "}]}}`))                                          // padded type and namespace
-	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","rsType":"cluster","labelSelector":"app=x"}]}}`))                                             // cluster set with a selector: unresolved
-	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","rsType":7}]}}`))                                                                             // wrong type, whose text names the field
-	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","rsType":"namespace","namespace":"a","isRelic":true,"effectiveSlaDomain":{"id":"gold"}}]}}`)) // relic with a real SLA
-	f.Add([]byte(`{"k8sNamespace":{"snapshotConnection":{"nodes":[{"id":"x"}]}}}`))                                                                             // snapshot without a time
-	f.Add([]byte(`{"k8sNamespace":null}`))                                                                                                                      // object missing
-	f.Add([]byte(`{"activitySeriesConnection":{"nodes":[{"activitySeriesId":"j","lastActivityStatus":"` + fuzzCanary + `"}]}}`))                                // unknown status
-	f.Add([]byte(`{"taskchain":{"state":"SUCCEEDED","error":"stale"}}`))                                                                                        // error on success is dropped
-	f.Add([]byte(`{"slaDomains":{"nodes":[{"id":"g","snapshotSchedule":{"daily":{"basicSchedule":{"frequency":-5}}}}]}}`))                                      // negative frequency
-	f.Add([]byte(`{"createK8sNamespaceSnapshots":[]}`))                                                                                                         // no job
-	f.Add([]byte(`{"createK8sNamespaceSnapshots":[{},{}]}`))                                                                                                    // two jobs
-	f.Add([]byte(`{"createK8sProtectionSetSnapshot":"` + fuzzCanary + `"}`))                                                                                    // reply of the wrong type
-	f.Add([]byte(`{"assignSla":{"success":false}}`))                                                                                                            // rejected
-	f.Add([]byte(`{"assignSla":{"success":"` + fuzzCanary + `"}}`))                                                                                             // wrong-typed success quoting the canary
-	f.Add([]byte(`{"k8sClusters":{"nodes":[{"id":"c","access_token":"` + fuzzCanary + `"}]}}`))                                                                 // canary in a skipped field
-	f.Add([]byte("{\"k8sNamespaces\":{\"nodes\":[{\"id\":\"\xff\xfe\"}]}}"))                                                                                    // invalid UTF-8
-	f.Add([]byte(strings.Repeat(`{"a":`, 2048)))                                                                                                                // deep nesting
+	f.Add([]byte(`null`))                                                                                                                                                                              // null data: every "no list" guard
+	f.Add([]byte(`{}`))                                                                                                                                                                                // missing roots
+	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"namespaceName":"` + fuzzCanary + `"}]}}`))                                                                                                              // missing id, canary in a decoded field
+	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"id":"n","k8sClusterId":"` + fuzzCluster + `","namespaceName":"  "}]}}`))                                                                                // blank namespace: unresolved, clusterScoped missing fails closed
+	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"id":"n","newestSnapshot":{"date":"` + fuzzCanary + `"}}]}}`))                                                                                           // bad time quoting the canary
+	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","k8sClusterUuid":"` + fuzzCluster + `","rsType":" Namespace ","namespace":" team-a "}]}}`))                                          // padded type and namespace
+	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","k8sClusterUuid":"` + fuzzCluster + `","rsType":"cluster","labelSelector":"app=x"}]}}`))                                             // cluster set with a selector: unresolved
+	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","rsType":7}]}}`))                                                                                                                    // wrong type, whose text names the field
+	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","k8sClusterUuid":"` + fuzzCluster + `","rsType":"namespace","namespace":"a","isRelic":true,"effectiveSlaDomain":{"id":"gold"}}]}}`)) // relic with a real SLA
+	f.Add([]byte(`{"k8sNamespace":{"snapshotConnection":{"nodes":[{"id":"x"}]}}}`))                                                                                                                    // snapshot without a time
+	f.Add([]byte(`{"k8sNamespace":null}`))                                                                                                                                                             // object missing
+	f.Add([]byte(`{"activitySeriesConnection":{"nodes":[{"activitySeriesId":"j","lastActivityStatus":"` + fuzzCanary + `"}]}}`))                                                                       // unknown status
+	f.Add([]byte(`{"taskchain":{"state":"SUCCEEDED","error":"stale"}}`))                                                                                                                               // error on success is dropped
+	f.Add([]byte(`{"slaDomains":{"nodes":[{"id":"g","snapshotSchedule":{"daily":{"basicSchedule":{"frequency":-5}}}}]}}`))                                                                             // negative frequency
+	f.Add([]byte(`{"createK8sNamespaceSnapshots":[]}`))                                                                                                                                                // no job
+	f.Add([]byte(`{"createK8sNamespaceSnapshots":[{},{}]}`))                                                                                                                                           // two jobs
+	f.Add([]byte(`{"createK8sProtectionSetSnapshot":"` + fuzzCanary + `"}`))                                                                                                                           // reply of the wrong type
+	f.Add([]byte(`{"assignSla":{"success":false}}`))                                                                                                                                                   // rejected
+	f.Add([]byte(`{"assignSla":{"success":"` + fuzzCanary + `"}}`))                                                                                                                                    // wrong-typed success quoting the canary
+	f.Add([]byte(`{"k8sClusters":{"nodes":[{"id":"c","access_token":"` + fuzzCanary + `"}]}}`))                                                                                                        // canary in a skipped field
+	f.Add([]byte("{\"k8sNamespaces\":{\"nodes\":[{\"id\":\"\xff\xfe\"}]}}"))                                                                                                                           // invalid UTF-8
+	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"id":"n","k8sClusterId":"` + fuzzOtherCluster + `","namespaceName":"team-a"}]}}`))                                                                       // another cluster's namespace
+	f.Add([]byte(`{"k8sNamespaces":{"nodes":[{"id":"n","k8sClusterId":"` + fuzzCanary + `","namespaceName":"team-a"}]}}`))                                                                             // foreign cluster id quoting the canary
+	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","k8sClusterUuid":"` + fuzzCluster + `"},{"id":"t","namespace":"team-a"}]}}`))                                                        // second set without a cluster id
+	f.Add([]byte(`{"kubernetesProtectionSets":{"nodes":[{"id":"s","k8sClusterUuid":"` + fuzzCanary + `","rsType":"namespace","namespace":"team-a"}]}}`))                                               // foreign set quoting the canary
+	f.Add([]byte(strings.Repeat(`{"a":`, 2048)))                                                                                                                                                       // deep nesting
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		pages := map[string]func([]byte) ([]Object, pageInfo, error){
+		pages := map[string]func([]byte, string) ([]Object, pageInfo, error){
 			"namespaces":      decodeK8sNamespacesPage,
 			"protection sets": decodeProtectionSetsPage,
 		}
 		for name, decode := range pages {
-			objs, _, err := decode(data)
+			objs, _, err := decode(data, fuzzCluster)
 			if err != nil {
 				checkDecoderError(t, name, err)
 				continue
 			}
 			checkObjects(t, name, objs)
+			if len(objs) > 0 {
+				if other, _, err := decode(data, fuzzOtherCluster); err == nil {
+					t.Fatalf("%s: answer yields %d objects for one cluster and %d for another", name, len(objs), len(other))
+				} else {
+					checkDecoderError(t, name, err)
+				}
+			}
 		}
 
 		for name, decode := range map[string]func([]byte) ([]Cluster, pageInfo, error){

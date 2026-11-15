@@ -68,6 +68,22 @@ func invalid(what string) error {
 	return fmt.Errorf("%w: %s", ErrInvalidRequest, what)
 }
 
+// checkNodeCluster binds one node of a per-cluster list to the cluster the
+// list asked for. The list's cluster argument is the only thing keeping
+// another cluster's objects out of the answer, and callers decide visibility
+// by namespace name, so a same-named namespace of another cluster must never
+// pass. A node with no cluster id, or a different one, fails the whole list:
+// dropping the node would hand back a silently short list instead.
+func checkNodeCluster(got, want, what string) error {
+	if got == "" {
+		return unreadable(what + " without a cluster id")
+	}
+	if !strings.EqualFold(got, want) {
+		return unreadable(what + " of another cluster")
+	}
+	return nil
+}
+
 // validUUID reports whether s is a canonical RSC UUID.
 func validUUID(s string) bool {
 	if len(s) != 36 {
@@ -274,6 +290,7 @@ const opK8sNamespaces = `query RubrikK8sNamespaces($clusterId: UUID!, $first: In
   k8sNamespaces(k8sClusterId: $clusterId, first: $first, after: $after) {
     nodes {
       id
+      k8sClusterId
       namespaceName
       isRelic
       clusterScoped
@@ -288,6 +305,7 @@ const opK8sNamespaces = `query RubrikK8sNamespaces($clusterId: UUID!, $first: In
 
 type wireNamespace struct {
 	ID             string           `json:"id"`
+	K8sClusterID   string           `json:"k8sClusterId"`
 	NamespaceName  string           `json:"namespaceName"`
 	IsRelic        bool             `json:"isRelic"`
 	ClusterScoped  *bool            `json:"clusterScoped"`
@@ -318,8 +336,9 @@ func (n wireNamespace) object() Object {
 	}
 }
 
-// decodeK8sNamespacesPage decodes one page of k8sNamespaces.
-func decodeK8sNamespacesPage(data []byte) ([]Object, pageInfo, error) {
+// decodeK8sNamespacesPage decodes one page of k8sNamespaces asked for
+// clusterID. Every node must name that cluster (checkNodeCluster).
+func decodeK8sNamespacesPage(data []byte, clusterID string) ([]Object, pageInfo, error) {
 	var ans struct {
 		Conn *struct {
 			Nodes    []wireNamespace `json:"nodes"`
@@ -337,6 +356,9 @@ func decodeK8sNamespacesPage(data []byte) ([]Object, pageInfo, error) {
 		if n.ID == "" {
 			return nil, pageInfo{}, unreadable("namespace object without an id")
 		}
+		if err := checkNodeCluster(n.K8sClusterID, clusterID, "namespace object"); err != nil {
+			return nil, pageInfo{}, err
+		}
 		out = append(out, n.object())
 	}
 	return out, ans.Conn.PageInfo, nil
@@ -353,7 +375,7 @@ func (o *Operations) NamespaceObjects(ctx context.Context, clusterID string) ([]
 		if err != nil {
 			return nil, pageInfo{}, err
 		}
-		return decodeK8sNamespacesPage(data)
+		return decodeK8sNamespacesPage(data, clusterID)
 	})
 }
 
@@ -430,8 +452,11 @@ func (p wireProtectionSet) object() Object {
 	}
 }
 
-// decodeProtectionSetsPage decodes one page of kubernetesProtectionSets.
-func decodeProtectionSetsPage(data []byte) ([]Object, pageInfo, error) {
+// decodeProtectionSetsPage decodes one page of kubernetesProtectionSets asked
+// for clusterID. The cluster argument is optional in the schema, so an RSC
+// that ignored it would answer with every cluster's sets: every node must
+// name the asked cluster (checkNodeCluster).
+func decodeProtectionSetsPage(data []byte, clusterID string) ([]Object, pageInfo, error) {
 	var ans struct {
 		Conn *struct {
 			Nodes    []wireProtectionSet `json:"nodes"`
@@ -449,6 +474,9 @@ func decodeProtectionSetsPage(data []byte) ([]Object, pageInfo, error) {
 		if n.ID == "" {
 			return nil, pageInfo{}, unreadable("protection set without an id")
 		}
+		if err := checkNodeCluster(n.K8sClusterUUID, clusterID, "protection set"); err != nil {
+			return nil, pageInfo{}, err
+		}
 		out = append(out, n.object())
 	}
 	return out, ans.Conn.PageInfo, nil
@@ -465,7 +493,7 @@ func (o *Operations) ProtectionSets(ctx context.Context, clusterID string) ([]Ob
 		if err != nil {
 			return nil, pageInfo{}, err
 		}
-		return decodeProtectionSetsPage(data)
+		return decodeProtectionSetsPage(data, clusterID)
 	})
 }
 
