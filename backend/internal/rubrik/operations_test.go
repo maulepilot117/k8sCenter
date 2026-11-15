@@ -297,11 +297,16 @@ func TestProtectionSetCoverageAndClusterScope(t *testing.T) {
 		map[string]any{"id": "ns-crd", "name": "team-b-set", "rsType": "Namespace", "namespace": "team-b", "definition": `{"includeResources":["ClusterRoleBinding"]}`},
 		map[string]any{"id": "ns-deps", "name": "team-c-set", "rsType": "namespace", "namespace": "team-c", "customResourceDependencies": "certificates.cert-manager.io"},
 		map[string]any{"id": "ns-empty", "name": "orphan", "rsType": "namespace"},
+		// Shapes a kind-name match would miss: lowercase plurals and a wildcard.
+		map[string]any{"id": "ns-plural", "name": "team-d-set", "rsType": "namespace", "namespace": "team-d", "definition": `{"includes":[{"resource":"clusterrolebindings"}]}`},
+		map[string]any{"id": "ns-wildcard", "name": "team-e-set", "rsType": "namespace", "namespace": "team-e", "definition": `{"resources":["*"]}`},
 	}, false, ""))
 	objs, err := ops.ProtectionSets(context.Background(), idCluster)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// KTD9 fails closed: the schema gives the definition no format, so no
+	// protection set, of any type, can be shown free of cluster-scoped kinds.
 	want := map[string]struct {
 		cov      Coverage
 		mayHold  bool
@@ -310,10 +315,12 @@ func TestProtectionSetCoverageAndClusterScope(t *testing.T) {
 		"cluster-all":     {Coverage{All: true}, true, false},
 		"cluster-pattern": {Coverage{Unresolved: true}, true, false},
 		"app":             {Coverage{Unresolved: true}, true, false},
-		"ns":              {Coverage{Namespaces: []string{"team-a"}}, false, true},
+		"ns":              {Coverage{Namespaces: []string{"team-a"}}, true, true},
 		"ns-crd":          {Coverage{Namespaces: []string{"team-b"}}, true, true},
 		"ns-deps":         {Coverage{Namespaces: []string{"team-c"}}, true, true},
-		"ns-empty":        {Coverage{Unresolved: true}, false, false},
+		"ns-empty":        {Coverage{Unresolved: true}, true, false},
+		"ns-plural":       {Coverage{Namespaces: []string{"team-d"}}, true, true},
+		"ns-wildcard":     {Coverage{Namespaces: []string{"team-e"}}, true, true},
 	}
 	if len(objs) != len(want) {
 		t.Fatalf("decoded %d sets, want %d", len(objs), len(want))
@@ -435,6 +442,23 @@ func TestRelicNeverCountsAsProtection(t *testing.T) {
 	sum := SummarizeNamespace("team-c", objs, func(Object) Compliance { return ComplianceInCompliance })
 	if sum.Protected || len(sum.ObjectIDs) != 0 || len(sum.ActionTargets) != 0 || sum.LastSnapshot != nil {
 		t.Fatalf("relic counted: %+v", sum)
+	}
+
+	// The protection-set family decodes and drops a relic the same way.
+	f.answer("RubrikK8sProtectionSets", conn("kubernetesProtectionSets", []any{
+		map[string]any{"id": "relic-set", "name": "team-a-set", "rsType": "namespace", "namespace": "team-a", "isRelic": true,
+			"effectiveSlaDomain": map[string]any{"id": idSLA, "name": "Gold"}, "newestSnapshot": map[string]any{"date": "2026-11-01T00:00:00Z"}},
+	}, false, ""))
+	sets, err := ops.ProtectionSets(context.Background(), idCluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) != 1 || !sets[0].Relic {
+		t.Fatalf("relic set must stay in the decoded model, got %+v", sets)
+	}
+	sum = SummarizeNamespace("team-a", sets, func(Object) Compliance { return ComplianceInCompliance })
+	if sum.Protected || len(sum.ObjectIDs) != 0 || len(sum.ActionTargets) != 0 || sum.LastSnapshot != nil {
+		t.Fatalf("relic set counted: %+v", sum)
 	}
 }
 
@@ -568,8 +592,8 @@ func TestSLADomainsDecodeShortestFrequency(t *testing.T) {
 		t.Fatalf("domains = %+v\nwant %+v", domains, want)
 	}
 	q := f.last(t).Query
-	if !strings.Contains(q, "K8S_OBJECT_TYPE") || !strings.Contains(q, "... on GlobalSlaReply") {
-		t.Fatalf("sla domain query does not filter to Kubernetes or read schedules: %s", q)
+	if !strings.Contains(q, "objectTypeList: [K8S_OBJECT_TYPE, KUPR_OBJECT_TYPE]") || !strings.Contains(q, "... on GlobalSlaReply") {
+		t.Fatalf("sla domain query does not filter to both Kubernetes families or read schedules: %s", q)
 	}
 }
 
@@ -607,6 +631,16 @@ func TestJobsDecodeStatusesAndReasons(t *testing.T) {
 	}
 	if !JobFailed.Terminal() || JobRunning.Terminal() || JobUnknown.Terminal() {
 		t.Fatal("Terminal is wrong")
+	}
+
+	// Every schema EventStatus is a valid filter, task-level and partial
+	// outcomes included.
+	statuses := []string{"FAILURE", "TASK_FAILURE", "PARTIAL_SUCCESS", "TASK_SUCCESS"}
+	if _, err := ops.Jobs(context.Background(), ActivityFilter{ObjectIDs: []string{idNS}, Statuses: statuses}); err != nil {
+		t.Fatalf("schema statuses: %v", err)
+	}
+	if got := f.last(t).Vars["filters"].(map[string]any)["lastActivityStatus"]; !reflect.DeepEqual(got, []any{"FAILURE", "TASK_FAILURE", "PARTIAL_SUCCESS", "TASK_SUCCESS"}) {
+		t.Fatalf("status filter = %#v", got)
 	}
 
 	before := len(f.recorded())
@@ -678,26 +712,34 @@ func TestSnapshotsDecodeAndLimit(t *testing.T) {
 	}
 }
 
-func TestMutationRepliesWithoutAJobAreRejected(t *testing.T) {
+// TestMutationRepliesWithoutOneJobAreIndeterminate pins that a reply which
+// cannot name exactly one job is ErrUnreadable, never ErrRejected: RSC may
+// have started a job, so a caller must not resend it.
+func TestMutationRepliesWithoutOneJobAreIndeterminate(t *testing.T) {
 	f, ops := newFakeRSC(t)
 	ctx := context.Background()
-	f.answer("RubrikCreateK8sNamespaceSnapshots", map[string]any{"createK8sNamespaceSnapshots": []any{}})
-	if _, err := ops.CreateSnapshot(ctx, FamilyNamespace, idNS, idSLA); !errors.Is(err, ErrRejected) {
-		t.Fatalf("no job: err = %v", err)
+	indeterminate := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrUnreadable) || errors.Is(err, ErrRejected) {
+			t.Fatalf("%s: err = %v, want ErrUnreadable and not ErrRejected", what, err)
+		}
 	}
+	f.answer("RubrikCreateK8sNamespaceSnapshots", map[string]any{"createK8sNamespaceSnapshots": []any{}})
+	_, err := ops.CreateSnapshot(ctx, FamilyNamespace, idNS, idSLA)
+	indeterminate("no job", err)
 	f.answer("RubrikCreateK8sNamespaceSnapshots", map[string]any{"createK8sNamespaceSnapshots": []any{
 		map[string]any{"jobId": 1, "taskchainId": "a"}, map[string]any{"jobId": 2, "taskchainId": "b"}}})
-	if _, err := ops.CreateSnapshot(ctx, FamilyNamespace, idNS, idSLA); !errors.Is(err, ErrRejected) {
-		t.Fatalf("two jobs: err = %v", err)
-	}
+	_, err = ops.CreateSnapshot(ctx, FamilyNamespace, idNS, idSLA)
+	indeterminate("two jobs", err)
+	f.answer("RubrikCreateK8sNamespaceSnapshots", map[string]any{"createK8sNamespaceSnapshots": []any{map[string]any{"jobId": 3, "taskchainId": ""}}})
+	_, err = ops.CreateSnapshot(ctx, FamilyNamespace, idNS, idSLA)
+	indeterminate("job without a taskchain", err)
 	f.answer("RubrikRestoreK8sNamespace", map[string]any{"restoreK8sNamespace": map[string]any{"jobId": 0, "taskchainId": ""}})
-	if _, err := ops.RestoreNamespace(ctx, idSnapshot, idCluster, "team-a"); !errors.Is(err, ErrRejected) {
-		t.Fatalf("no taskchain: err = %v", err)
-	}
+	_, err = ops.RestoreNamespace(ctx, idSnapshot, idCluster, "team-a")
+	indeterminate("no taskchain", err)
 	f.answer("RubrikRestoreK8sProtectionSetSnapshot", map[string]any{"restoreK8sProtectionSetSnapshot": map[string]any{"status": "QUEUED"}})
-	if _, err := ops.RestoreProtectionSetSnapshot(ctx, idSnapshot); !errors.Is(err, ErrRejected) {
-		t.Fatalf("no request id: err = %v", err)
-	}
+	_, err = ops.RestoreProtectionSetSnapshot(ctx, idSnapshot)
+	indeterminate("no request id", err)
 	f.answer("RubrikCreateK8sProtectionSetSnapshot", map[string]any{"createK8sProtectionSetSnapshot": map[string]any{"id": "req-9", "status": "QUEUED"}})
 	h, err := ops.CreateSnapshot(ctx, FamilyProtectionSet, idSet, idSLA)
 	if err != nil || h != (JobHandle{Family: FamilyProtectionSet, RequestID: "req-9", RequestStatus: "QUEUED"}) {

@@ -60,9 +60,10 @@ func checkObjects(t *testing.T, name string, objs []Object) {
 				t.Fatalf("%s: per-namespace object has a set type", name)
 			}
 		case FamilyProtectionSet:
-			// KTD9, re-derived: only a set of type namespace may be free of
-			// cluster-scoped resources.
-			if !strings.EqualFold(strings.TrimSpace(o.SetType), "namespace") && !o.MayHoldClusterScoped {
+			// KTD9, re-derived: RSC's answer gives no definition format, so
+			// no protection set may claim to be free of cluster-scoped
+			// resources (fail closed).
+			if !o.MayHoldClusterScoped {
 				t.Fatalf("%s: set of type %q claims no cluster-scoped resources", name, o.SetType)
 			}
 			if !strings.EqualFold(strings.TrimSpace(o.SetType), "namespace") && o.NamespaceScoped() {
@@ -87,7 +88,7 @@ func checkObjects(t *testing.T, name string, objs []Object) {
 //   - Oracle D: the canary, planted in decoded and skipped fields alike,
 //     never appears in an error.
 //   - Oracle C: accepted objects have ids, coherent coverage, and the KTD9
-//     rule that only a namespace-type set may claim no cluster-scoped
+//     rule that no protection set may claim to be free of cluster-scoped
 //     resources; relics never count as protection; job states stay within
 //     the known set; SLA frequencies are never negative.
 func FuzzRubrikDecoders(f *testing.F) {

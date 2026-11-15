@@ -14,7 +14,6 @@ package rubrik
 
 import (
 	"math"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -121,7 +120,8 @@ type Object struct {
 	Relic bool `json:"relic,omitempty"`
 	// MayHoldClusterScoped means the object's snapshots may contain
 	// cluster-scoped resources, which makes a restore admin-only (KTD9).
-	// It fails closed: true whenever RSC's answer cannot rule it out.
+	// It fails closed: true whenever RSC's answer cannot rule it out, which
+	// today means always for a protection set (see wireProtectionSet.object).
 	MayHoldClusterScoped bool `json:"mayHoldClusterScoped"`
 }
 
@@ -367,26 +367,6 @@ const (
 	setTypeNamespace = "namespace"
 	setTypeCluster   = "cluster"
 )
-
-// clusterScopedKinds matches a cluster-scoped Kubernetes kind named in a
-// protection set's definition. The match is case-sensitive on the kind's
-// PascalCase name, so lowercase field names ("namespace") do not match. A
-// false positive only makes a restore admin-only.
-var clusterScopedKinds = regexp.MustCompile(`\b(Namespace|Node|PersistentVolume|StorageClass|ClusterRole|ClusterRoleBinding|CustomResourceDefinition|PriorityClass|IngressClass|RuntimeClass|MutatingWebhookConfiguration|ValidatingWebhookConfiguration|ValidatingAdmissionPolicy|ValidatingAdmissionPolicyBinding|APIService|CSIDriver|CSINode|VolumeSnapshotClass|ClusterIssuer|ClusterSecretStore|ClusterExternalSecret)\b`)
-
-// setMayHoldClusterScoped applies KTD9 to a protection set: every set not of
-// type namespace may hold cluster-scoped resources, and so does a namespace
-// set whose definition names a cluster-scoped kind or which captures custom
-// resource dependencies (custom resource definitions are cluster-scoped).
-func setMayHoldClusterScoped(setType, definition, crDependencies string) bool {
-	if !strings.EqualFold(strings.TrimSpace(setType), setTypeNamespace) {
-		return true
-	}
-	if strings.TrimSpace(crDependencies) != "" {
-		return true
-	}
-	return clusterScopedKinds.MatchString(definition)
-}
 
 // setCoverage resolves a protection set's namespaces. A namespace set covers
 // its namespace. A cluster set with no namespace patterns and no label

@@ -22,9 +22,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// ErrRejected means RSC accepted a mutation's request but reported that it
-// did not do it (success false, or no job in the reply). Nothing was
-// started.
+// ErrRejected means RSC answered a mutation and said outright that it did
+// not apply it (assignSla success false). Nothing was changed.
+//
+// A mutation reply that does not name exactly one job is ErrUnreadable
+// instead: RSC may have started a job the reply cannot identify, so the
+// outcome is indeterminate and the request must not be resent.
 var ErrRejected = errors.New("rubrik: request rejected by rsc")
 
 const (
@@ -370,8 +373,6 @@ const opProtectionSets = `query RubrikK8sProtectionSets($clusterId: UUID, $first
       namespaceIncludePatterns
       namespaceExcludePatterns
       labelSelector
-      definition
-      customResourceDependencies
       isRelic
       k8sClusterUuid
       slaAssignment
@@ -391,8 +392,6 @@ type wireProtectionSet struct {
 	Include        *string          `json:"namespaceIncludePatterns"`
 	Exclude        *string          `json:"namespaceExcludePatterns"`
 	LabelSelector  *string          `json:"labelSelector"`
-	Definition     string           `json:"definition"`
-	CRDependencies *string          `json:"customResourceDependencies"`
 	IsRelic        bool             `json:"isRelic"`
 	K8sClusterUUID string           `json:"k8sClusterUuid"`
 	SLAAssignment  string           `json:"slaAssignment"`
@@ -410,17 +409,24 @@ func deref(s *string) string {
 
 func (p wireProtectionSet) object() Object {
 	return Object{
-		Family:               FamilyProtectionSet,
-		ID:                   p.ID,
-		Name:                 p.Name,
-		SetType:              p.RSType,
-		Coverage:             setCoverage(p.RSType, deref(p.Namespace), deref(p.Include), deref(p.Exclude), deref(p.LabelSelector)),
-		ConfiguredSLA:        p.ConfiguredSLA.ref(),
-		EffectiveSLA:         p.EffectiveSLA.ref(),
-		SLAAssignment:        p.SLAAssignment,
-		NewestSnapshot:       p.NewestSnapshot.time(),
-		Relic:                p.IsRelic,
-		MayHoldClusterScoped: setMayHoldClusterScoped(p.RSType, p.Definition, deref(p.CRDependencies)),
+		Family:         FamilyProtectionSet,
+		ID:             p.ID,
+		Name:           p.Name,
+		SetType:        p.RSType,
+		Coverage:       setCoverage(p.RSType, deref(p.Namespace), deref(p.Include), deref(p.Exclude), deref(p.LabelSelector)),
+		ConfiguredSLA:  p.ConfiguredSLA.ref(),
+		EffectiveSLA:   p.EffectiveSLA.ref(),
+		SLAAssignment:  p.SLAAssignment,
+		NewestSnapshot: p.NewestSnapshot.time(),
+		Relic:          p.IsRelic,
+		// KTD9, fail closed: every protection set may hold cluster-scoped
+		// resources. A set not of type namespace does by its type. For a
+		// namespace set nothing in RSC's answer rules it out: the schema
+		// documents definition and customResourceDependencies only as free
+		// strings, with no format, so no reading of them can show a set
+		// free of cluster-scoped kinds. Narrow this only once a recorded
+		// RSC definition fixes the format.
+		MayHoldClusterScoped: true,
 	}
 }
 
@@ -621,7 +627,8 @@ type ActivityFilter struct {
 // eventStatuses are the EventStatus values the schema accepts in a filter.
 var eventStatuses = map[string]bool{
 	"CANCELED": true, "CANCELING": true, "FAILURE": true, "INFO": true,
-	"QUEUED": true, "RUNNING": true, "SUCCESS": true, "WARNING": true,
+	"PARTIAL_SUCCESS": true, "QUEUED": true, "RUNNING": true, "SUCCESS": true,
+	"TASK_FAILURE": true, "TASK_SUCCESS": true, "UNKNOWN_EVENT_STATUS": true, "WARNING": true,
 }
 
 type wireActivity struct {
@@ -793,8 +800,11 @@ const scheduleFields = `snapshotSchedule {
         yearly { basicSchedule { frequency } }
       }`
 
+// opSLADomains lists the domains for both families: K8S_OBJECT_TYPE is the
+// schema's "CDM Native K8s object" (protection sets) and KUPR_OBJECT_TYPE its
+// "Kubernetes object" (per-namespace objects, hierarchy type KuprNamespace).
 const opSLADomains = `query RubrikSlaDomains($first: Int!, $after: String) {
-  slaDomains(first: $first, after: $after, filter: [{field: OBJECT_TYPE, objectTypeList: [K8S_OBJECT_TYPE]}]) {
+  slaDomains(first: $first, after: $after, filter: [{field: OBJECT_TYPE, objectTypeList: [K8S_OBJECT_TYPE, KUPR_OBJECT_TYPE]}]) {
     nodes {
       id
       name
@@ -937,9 +947,11 @@ type wireJobReply struct {
 	TaskchainID string `json:"taskchainId"`
 }
 
+// handle returns the reply's job handle. A reply without a taskchain may
+// still stand for a started job, so it is unreadable, never rejected.
 func (r wireJobReply) handle() (JobHandle, error) {
 	if r.TaskchainID == "" {
-		return JobHandle{}, fmt.Errorf("%w: reply has no taskchain", ErrRejected)
+		return JobHandle{}, unreadable("reply has no taskchain")
 	}
 	return JobHandle{Family: FamilyNamespace, TaskchainID: r.TaskchainID, JobID: r.JobID}, nil
 }
@@ -949,16 +961,19 @@ type wireAsyncReply struct {
 	Status string `json:"status"`
 }
 
+// handle returns the reply's job handle. A reply without a request id may
+// still stand for a started job, so it is unreadable, never rejected.
 func (r wireAsyncReply) handle() (JobHandle, error) {
 	if r.ID == "" {
-		return JobHandle{}, fmt.Errorf("%w: reply has no request id", ErrRejected)
+		return JobHandle{}, unreadable("reply has no request id")
 	}
 	return JobHandle{Family: FamilyProtectionSet, RequestID: r.ID, RequestStatus: r.Status}, nil
 }
 
 // decodeNamespaceSnapshotReply decodes createK8sNamespaceSnapshots, which
 // answers a list; one namespace was asked for, so exactly one job must come
-// back.
+// back. Any other count leaves unknown what RSC started, so it is
+// unreadable.
 func decodeNamespaceSnapshotReply(data []byte) (JobHandle, error) {
 	var ans struct {
 		Replies *[]wireJobReply `json:"createK8sNamespaceSnapshots"`
@@ -970,7 +985,7 @@ func decodeNamespaceSnapshotReply(data []byte) (JobHandle, error) {
 		return JobHandle{}, unreadable("snapshot request answer has no reply")
 	}
 	if len(*ans.Replies) != 1 {
-		return JobHandle{}, fmt.Errorf("%w: expected one job, got %d", ErrRejected, len(*ans.Replies))
+		return JobHandle{}, unreadable(fmt.Sprintf("expected one job, got %d", len(*ans.Replies)))
 	}
 	return (*ans.Replies)[0].handle()
 }
