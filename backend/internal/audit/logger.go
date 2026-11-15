@@ -50,6 +50,16 @@ const (
 	ActionESOBulkRefresh           Action = "eso_bulk_refresh"
 	ActionESOBulkRefreshNamespace  Action = "eso_bulk_refresh_namespace"
 
+	// Rubrik Security Cloud backup provider actions. The connection actions
+	// never carry the client secret in Detail.
+	ActionRubrikConnectionUpdate Action = "rubrik_connection_update"
+	ActionRubrikConnectionDelete Action = "rubrik_connection_delete"
+	ActionRubrikMappingUpdate    Action = "rubrik_mapping_update"
+	ActionRubrikMappingDelete    Action = "rubrik_mapping_delete"
+	ActionRubrikSnapshot         Action = "rubrik_snapshot"
+	ActionRubrikSLAAssign        Action = "rubrik_sla_assign"
+	ActionRubrikRestore          Action = "rubrik_restore"
+
 	// Tracked changes (Release E): a verification verdict became final for a
 	// change receipt. See server.changesVerificationAudit.
 	ActionChangeVerify Action = "change_verify"
