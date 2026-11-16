@@ -82,7 +82,7 @@ func TestNamespaceListShowsOnlyGrantedNamespaces(t *testing.T) {
 	if got := objectIDs(list.Objects); !slices.Equal(got, []string{idNS}) {
 		t.Fatalf("objects = %v, want [%s]", got, idNS)
 	}
-	if list.Freshness.FetchedAt.IsZero() || list.Freshness.Stale {
+	if list.Freshness == nil || list.Freshness.FetchedAt.IsZero() || list.Freshness.Stale {
 		t.Fatalf("freshness = %+v, want a fresh fetch time", list.Freshness)
 	}
 
@@ -119,7 +119,8 @@ func TestReadsRefuseNonAdminOnRemoteCluster(t *testing.T) {
 }
 
 // R9: a user with the read grant on no namespace gets noAccess, no
-// namespace names, and no RSC call.
+// namespace names, no RSC call, and no freshness: nothing was fetched, and a
+// zero fetch time would read as a real one (R13).
 func TestNoReadGrantAnywhereIsNoAccess(t *testing.T) {
 	fx, _ := readFixture(t, map[string]time.Time{"team-a": created, "team-b": created}, true)
 
@@ -132,10 +133,17 @@ func TestNoReadGrantAnywhereIsNoAccess(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "team-a") {
 		t.Fatalf("noAccess answer names a namespace: %s", rec.Body.String())
 	}
+	if strings.Contains(rec.Body.String(), `"freshness"`) {
+		t.Fatalf("noAccess answer carries freshness: %s", rec.Body.String())
+	}
 
-	sla := responseData[SLADomainList](t, fx.do(t, owner, "local", http.MethodGet, "/rubrik/sla-domains", nil))
+	rec = fx.do(t, owner, "local", http.MethodGet, "/rubrik/sla-domains", nil)
+	sla := responseData[SLADomainList](t, rec)
 	if !sla.NoAccess || len(sla.SLADomains) != 0 {
 		t.Fatalf("sla domains = %+v, want noAccess", sla)
+	}
+	if strings.Contains(rec.Body.String(), `"freshness"`) {
+		t.Fatalf("noAccess sla answer carries freshness: %s", rec.Body.String())
 	}
 	if n := rscCalls(fx); n != 0 {
 		t.Errorf("noAccess answers made %d RSC calls", n)
@@ -274,6 +282,105 @@ func TestMultiNamespaceSetIsAdminOnlyToActOn(t *testing.T) {
 	}
 }
 
+// R7: a snapshot of a set spanning several namespaces may hold a namespace
+// the user cannot read, so its time is admin-only even when the user reads
+// every namespace the set covers and the snapshot is newer than all of them.
+func TestMultiNamespaceSetHistoryIsAdminOnly(t *testing.T) {
+	fx, _ := readFixture(t, map[string]time.Time{"team-a": created, "team-b": created}, true, read("team-a", "team-b")...)
+	later := created.Add(time.Hour)
+	useSets(fx, objSet(idWide, "namespace", Coverage{Namespaces: []string{"team-a", "team-b"}}, idSLA, &later))
+
+	list := responseData[NamespaceList](t, fx.do(t, owner, "local", http.MethodGet, "/rubrik/namespaces", nil))
+	if row := rowFor(t, list, "team-a"); row.LastSnapshot != nil {
+		t.Fatalf("non-admin row last snapshot = %v, want none", row.LastSnapshot)
+	}
+	if len(list.Objects) != 1 || list.Objects[0].NewestSnapshot != nil {
+		t.Fatalf("non-admin objects = %+v, want the set with no newest snapshot", list.Objects)
+	}
+
+	list = responseData[NamespaceList](t, fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces", nil))
+	if row := rowFor(t, list, "team-a"); row.LastSnapshot == nil || !row.LastSnapshot.Equal(later) {
+		t.Fatalf("admin row last snapshot = %v, want %v", row.LastSnapshot, later)
+	}
+	if len(list.Objects) != 1 || list.Objects[0].NewestSnapshot == nil || !list.Objects[0].NewestSnapshot.Equal(later) {
+		t.Fatalf("admin objects = %+v, want the set's newest snapshot %v", list.Objects, later)
+	}
+}
+
+// KTD4, R7: an admin's list shows every object of the cluster, including the
+// ones no row references: a relic, and a set whose coverage RSC does not
+// resolve. On a remote cluster protected only by a set covering every
+// namespace there are no rows (no informer names the namespaces), but the
+// set is still listed.
+func TestAdminNamespaceListShowsEveryObject(t *testing.T) {
+	fx, _ := readFixture(t, map[string]time.Time{"team-a": created}, true, read("team-a")...)
+	relic := objSet(idSet, "namespace", Coverage{Namespaces: []string{"team-a"}}, idSLA, nil)
+	relic.Relic = true
+	useSets(fx,
+		relic,
+		objSet(idWide, "cluster", Coverage{Unresolved: true}, idSLA, nil),
+		objSet(idB, "namespace", Coverage{Namespaces: []string{"team-a"}}, idSLA, nil),
+	)
+
+	list := responseData[NamespaceList](t, fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces", nil))
+	got := objectIDs(list.Objects)
+	for _, id := range []string{idSet, idWide, idB} {
+		if !slices.Contains(got, id) {
+			t.Errorf("admin objects = %v, missing %s", got, id)
+		}
+	}
+	if got := objectIDs(responseData[NamespaceList](t, fx.do(t, owner, "local", http.MethodGet, "/rubrik/namespaces", nil)).Objects); !slices.Equal(got, []string{idB}) {
+		t.Errorf("non-admin objects = %v, want only [%s]", got, idB)
+	}
+
+	fx.rsc.set(func(f *fakeReader) {
+		f.objects[idSet2] = []Object{objSet(idWide, "cluster", Coverage{All: true}, idSLA, nil)}
+	})
+	list = responseData[NamespaceList](t, fx.do(t, admin, "remote-1", http.MethodGet, "/rubrik/namespaces", nil))
+	if len(list.Namespaces) != 0 || !slices.Equal(objectIDs(list.Objects), []string{idWide}) {
+		t.Fatalf("admin remote list = %+v, want no rows and the cluster-wide set", list)
+	}
+}
+
+// KTD3, KTD4: on the local cluster a namespace the informer no longer has is
+// an earlier namespace. Objects covering it, a leftover namespace set or a
+// set covering every namespace, never make it protected or offer an action
+// on it; the admin still sees the objects that cover it.
+func TestDeletedNamespaceRowCountsNoEarlierObjects(t *testing.T) {
+	fx, _ := readFixture(t, map[string]time.Time{"team-a": created}, true, read("team-a")...)
+	newest := created.Add(time.Hour)
+	relic := objSet(idSet, "namespace", Coverage{Namespaces: []string{"gone"}}, idSLA, nil)
+	relic.Relic = true
+	useSets(fx,
+		relic,
+		objSet(idB, "namespace", Coverage{Namespaces: []string{"gone"}}, idSLA, &newest),
+		objSet(idWide, "cluster", Coverage{All: true}, idSLA, nil),
+	)
+
+	check := func(what string, row NamespaceRow) {
+		t.Helper()
+		if row.Protected || row.Compliance != ComplianceUnknown || len(row.ActionTargets) != 0 || row.ActionFlags != (ActionFlags{}) {
+			t.Errorf("%s row = %+v, want unprotected, unknown compliance, no targets or actions", what, row)
+		}
+		if !slices.Contains(row.ObjectIDs, idB) || !slices.Contains(row.ObjectIDs, idWide) {
+			t.Errorf("%s row object ids = %v, want %s and %s kept", what, row.ObjectIDs, idB, idWide)
+		}
+		if row.LastSnapshot == nil || !row.LastSnapshot.Equal(newest) {
+			t.Errorf("%s row last snapshot = %v, want %v kept", what, row.LastSnapshot, newest)
+		}
+	}
+
+	list := responseData[NamespaceList](t, fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces", nil))
+	check("list", rowFor(t, list, "gone"))
+	if row := rowFor(t, list, "team-a"); !row.Protected {
+		t.Errorf("team-a row = %+v, want protected by the set covering every namespace", row)
+	}
+
+	rec := fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces/gone", nil)
+	wantStatus(t, rec, http.StatusOK)
+	check("detail", responseData[NamespaceDetail](t, rec).Namespace)
+}
+
 // KTD4: a namespace protected by an object the user may not see still shows
 // protected, without naming the object.
 func TestHiddenProtectionStillShowsProtected(t *testing.T) {
@@ -306,7 +413,7 @@ func TestFailedFetchServesStaleOrFails(t *testing.T) {
 	fx.rsc.set(func(f *fakeReader) { f.err = ErrAuthFailed })
 
 	list := responseData[NamespaceList](t, fx.do(t, owner, "local", http.MethodGet, "/rubrik/namespaces", nil))
-	if !list.Freshness.Stale || list.Freshness.Error != HealthAuthFailed || !rowFor(t, list, "team-a").Protected {
+	if list.Freshness == nil || !list.Freshness.Stale || list.Freshness.Error != HealthAuthFailed || !rowFor(t, list, "team-a").Protected {
 		t.Fatalf("list = %+v, want the last good data, stale with auth_failed", list)
 	}
 

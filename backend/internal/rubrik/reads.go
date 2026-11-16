@@ -55,13 +55,19 @@ type NamespaceRow struct {
 
 // NamespaceList answers GET /rubrik/namespaces. NoAccess is true when the
 // user holds the Rubrik read grant on no namespace of the cluster (R9); the
-// list is then empty and the answer names no namespace.
+// list is then empty, the answer names no namespace, and it has no
+// freshness, because nothing was fetched (a zero fetch time would read as a
+// real one).
 type NamespaceList struct {
 	NoAccess   bool           `json:"noAccess"`
 	Namespaces []NamespaceRow `json:"namespaces"`
-	// Objects are the objects the rows reference, each listed once.
-	Objects   []ObjectView  `json:"objects"`
-	Freshness FreshnessView `json:"freshness"`
+	// Objects are every object the user sees, each listed once. For an
+	// admin that includes objects no row references: relics, sets whose
+	// coverage RSC does not resolve, and on a remote cluster a set covering
+	// every namespace (KTD4, R7). Every object a non-admin sees covers only
+	// listed namespaces.
+	Objects   []ObjectView   `json:"objects"`
+	Freshness *FreshnessView `json:"freshness,omitempty"`
 }
 
 // ObjectDetail is an object with its history, as GET
@@ -85,11 +91,12 @@ type NamespaceDetail struct {
 	Freshness FreshnessView  `json:"freshness"`
 }
 
-// SLADomainList answers GET /rubrik/sla-domains.
+// SLADomainList answers GET /rubrik/sla-domains. A noAccess answer has no
+// freshness, as for NamespaceList.
 type SLADomainList struct {
-	NoAccess   bool          `json:"noAccess"`
-	SLADomains []SLADomain   `json:"slaDomains"`
-	Freshness  FreshnessView `json:"freshness"`
+	NoAccess   bool           `json:"noAccess"`
+	SLADomains []SLADomain    `json:"slaDomains"`
+	Freshness  *FreshnessView `json:"freshness,omitempty"`
 }
 
 const (
@@ -269,23 +276,19 @@ func (h *Handler) HandleNamespaces(w http.ResponseWriter, r *http.Request) {
 		h.writeReadError(w, rr, err)
 		return
 	}
+	fv := h.freshnessView(view.Freshness, "objects")
 	out := NamespaceList{
 		Namespaces: make([]NamespaceRow, 0, len(candidates)),
-		Objects:    []ObjectView{},
-		Freshness:  h.freshnessView(view.Freshness, "objects"),
+		Objects:    visible,
+		Freshness:  &fv,
 	}
-	referenced := map[string]bool{}
 	for _, ns := range candidates {
-		row := namespaceRow(ns, view.Objects, visible, compliance)
-		for _, id := range row.ObjectIDs {
-			referenced[strings.ToLower(id)] = true
+		earlier, err := v.EarlierNamespace(ns)
+		if err != nil {
+			h.writeAccessError(w, err)
+			return
 		}
-		out.Namespaces = append(out.Namespaces, row)
-	}
-	for _, ov := range visible {
-		if referenced[strings.ToLower(ov.ID)] {
-			out.Objects = append(out.Objects, ov)
-		}
+		out.Namespaces = append(out.Namespaces, namespaceRow(ns, view.Objects, visible, compliance, earlier))
 	}
 	httputil.WriteData(w, out)
 }
@@ -337,7 +340,12 @@ func (h *Handler) HandleNamespace(w http.ResponseWriter, r *http.Request) {
 		h.writeReadError(w, rr, err)
 		return
 	}
-	row := namespaceRow(ns, view.Objects, visible, compliance)
+	earlier, err := v.EarlierNamespace(ns)
+	if err != nil {
+		h.writeAccessError(w, err)
+		return
+	}
+	row := namespaceRow(ns, view.Objects, visible, compliance, earlier)
 
 	out := NamespaceDetail{Namespace: row, Objects: []ObjectDetail{}, Freshness: h.freshnessView(view.Freshness, "objects")}
 	for _, ov := range visible {
@@ -443,14 +451,16 @@ func (h *Handler) HandleSLADomains(w http.ResponseWriter, r *http.Request) {
 	slices.SortFunc(sorted, func(a, b SLADomain) int {
 		return cmp.Or(cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)), cmp.Compare(a.ID, b.ID))
 	})
-	httputil.WriteData(w, SLADomainList{SLADomains: sorted, Freshness: h.freshnessView(f, "sla domains")})
+	fv := h.freshnessView(f, "sla domains")
+	httputil.WriteData(w, SLADomainList{SLADomains: sorted, Freshness: &fv})
 }
 
 // visibleObjectViews filters the cluster's objects for the viewer, sorted by
-// name and id, each with its compliance and write controls. For a non-admin
-// it also drops history the viewer may not see from the object itself: the
-// newest snapshot time of an object that is not namespace-scoped, or that
-// predates its namespace, belongs to snapshots only admins see (R6, R7).
+// name and id, each with its compliance and write controls. It also drops
+// history the viewer may not see from the object itself (Viewer.ClampHistory):
+// for a non-admin, the newest snapshot time of an object that is not
+// namespace-scoped, or that predates its namespace, belongs to snapshots only
+// admins see (R6, R7).
 func (h *Handler) visibleObjectViews(ctx context.Context, v *Viewer, t Target, objects []Object, compliance func(Object) Compliance) ([]ObjectView, error) {
 	visible, err := v.VisibleObjects(ctx, objects)
 	if err != nil {
@@ -461,10 +471,8 @@ func (h *Handler) visibleObjectViews(ctx context.Context, v *Viewer, t Target, o
 	})
 	out := make([]ObjectView, 0, len(visible))
 	for _, o := range visible {
-		if !v.Admin() {
-			if o, err = v.clampHistory(o); err != nil {
-				return nil, err
-			}
+		if o, err = v.ClampHistory(ctx, o); err != nil {
+			return nil, err
 		}
 		flags, err := v.ActionFlags(ctx, t, o)
 		if err != nil {
@@ -475,31 +483,17 @@ func (h *Handler) visibleObjectViews(ctx context.Context, v *Viewer, t Target, o
 	return out, nil
 }
 
-// clampHistory hides an object's newest snapshot time from a non-admin when
-// VisibleSnapshots would hide that snapshot.
-func (v *Viewer) clampHistory(o Object) (Object, error) {
-	if o.NewestSnapshot == nil {
-		return o, nil
-	}
-	if !o.NamespaceScoped() {
-		o.NewestSnapshot = nil
-		return o, nil
-	}
-	st, err := v.namespace(o.Coverage.Namespaces[0])
-	if err != nil {
-		return Object{}, err
-	}
-	if !st.exists || o.NewestSnapshot.Before(st.created) {
-		o.NewestSnapshot = nil
-	}
-	return o, nil
-}
-
 // namespaceRow builds ns's row. Protection and compliance come from every
 // current object of the cluster (KTD4); the listed objects, action targets,
 // last snapshot and action flags come from the objects the viewer sees,
 // whose history visibleObjectViews has already clamped.
-func namespaceRow(ns string, all []Object, visible []ObjectView, compliance func(Object) Compliance) NamespaceRow {
+//
+// earlier means ns no longer exists (Viewer.EarlierNamespace), so every
+// object covering it is earlier (KTD3) and none may count toward protection,
+// compliance or action targets (KTD4): the row is unprotected with unknown
+// compliance and offers no action. Its object ids and last snapshot stay, so
+// an admin still sees the earlier namespace's objects and their history.
+func namespaceRow(ns string, all []Object, visible []ObjectView, compliance func(Object) Compliance, earlier bool) NamespaceRow {
 	full := SummarizeNamespace(ns, all, compliance)
 
 	seen := make([]Object, 0, len(visible))
@@ -511,6 +505,12 @@ func namespaceRow(ns string, all []Object, visible []ObjectView, compliance func
 	shown := SummarizeNamespace(ns, seen, compliance)
 
 	row := NamespaceRow{NamespaceSummary: shown, HiddenObjects: len(full.ObjectIDs) > len(shown.ObjectIDs)}
+	if earlier {
+		row.Protected = false
+		row.Compliance = ComplianceUnknown
+		row.ActionTargets = []string{}
+		return row
+	}
 	row.Protected = full.Protected
 	row.Compliance = full.Compliance
 	for _, id := range shown.ActionTargets {

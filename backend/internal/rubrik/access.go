@@ -222,6 +222,22 @@ func (v *Viewer) readable(ctx context.Context, name string) (namespaceState, boo
 	return st, ok, err
 }
 
+// EarlierNamespace reports whether name is an earlier namespace: on the
+// local cluster, one the informer no longer has. Every object covering it is
+// earlier (KTD3), so none of them counts toward its protection, compliance
+// or action targets (KTD4). A remote cluster has no informer to ask, so
+// there no namespace is known to be earlier.
+func (v *Viewer) EarlierNamespace(name string) (bool, error) {
+	if !k8s.IsLocalClusterID(v.clusterID) {
+		return false, nil
+	}
+	st, err := v.namespace(name)
+	if err != nil {
+		return false, err
+	}
+	return !st.exists, nil
+}
+
 // VisibleNamespaces returns the candidates the viewer may see Rubrik data
 // for, sorted and without duplicates. A non-admin sees a candidate when it
 // exists locally and carries the read grant. One failed check fails the
@@ -392,6 +408,24 @@ func (v *Viewer) VisibleJobs(ctx context.Context, o Object, jobs []Job) ([]Job, 
 		}
 	}
 	return out, nil
+}
+
+// ClampHistory clears o's newest snapshot time when VisibleSnapshots would
+// hide that snapshot from the viewer, so a list row never shows history the
+// detail hides. It shares historyNamespace with VisibleSnapshots and
+// VisibleJobs so the R6/R7 rule has one definition. Admins see the time.
+func (v *Viewer) ClampHistory(ctx context.Context, o Object) (Object, error) {
+	if v.admin || o.NewestSnapshot == nil {
+		return o, nil
+	}
+	_, created, ok, err := v.historyNamespace(ctx, o)
+	if err != nil {
+		return Object{}, err
+	}
+	if !ok || o.NewestSnapshot.Before(created) {
+		o.NewestSnapshot = nil
+	}
+	return o, nil
 }
 
 // Refusal says why a write is refused. The empty value allows it.
