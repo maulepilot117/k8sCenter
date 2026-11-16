@@ -181,13 +181,17 @@ func Mount(r chi.Router, h *Handler, writeLimit func(http.Handler) http.Handler)
 }
 
 // RegisterRoutes is the Rubrik route table. Later units add their routes
-// here. Status is open to every authenticated user; the connection and
-// mapping endpoints are admin-only and their writes rate-limited.
+// here. Status and the reads are open to every authenticated user, which
+// the reads filter per request (KTD3); the connection and mapping endpoints
+// are admin-only and their writes rate-limited.
 func (h *Handler) RegisterRoutes(r chi.Router, writeLimit func(http.Handler) http.Handler) {
 	if writeLimit == nil {
 		writeLimit = func(next http.Handler) http.Handler { return next }
 	}
 	r.Get("/status", h.HandleStatus)
+	r.Get("/namespaces", h.HandleNamespaces)
+	r.Get("/namespaces/{namespace}", h.HandleNamespace)
+	r.Get("/sla-domains", h.HandleSLADomains)
 	r.Group(func(ar chi.Router) {
 		ar.Use(middleware.RequireAdmin)
 		ar.Get("/rsc-clusters", h.HandleListRSCClusters)

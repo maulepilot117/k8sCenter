@@ -347,6 +347,9 @@ func TestAdminEndpointsRefuseNonAdmins(t *testing.T) {
 	}
 	want := map[string]bool{
 		"GET /rubrik/status":                  true,
+		"GET /rubrik/namespaces":              true,
+		"GET /rubrik/namespaces/{namespace}":  true,
+		"GET /rubrik/sla-domains":             true,
 		"GET /rubrik/rsc-clusters":            true,
 		"GET /rubrik/mappings":                true,
 		"PUT /rubrik/connection":              true,
@@ -409,6 +412,9 @@ func TestWriteLimitWrapsOnlyTheWrites(t *testing.T) {
 		write        bool
 	}{
 		{http.MethodGet, "/rubrik/status", nil, false},
+		{http.MethodGet, "/rubrik/namespaces", nil, false},
+		{http.MethodGet, "/rubrik/namespaces/team-a", nil, false},
+		{http.MethodGet, "/rubrik/sla-domains", nil, false},
 		{http.MethodGet, "/rubrik/rsc-clusters", nil, false},
 		{http.MethodGet, "/rubrik/mappings", nil, false},
 		{http.MethodPut, "/rubrik/connection", connection, true},
