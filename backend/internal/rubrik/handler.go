@@ -280,7 +280,9 @@ type connectionRequest struct {
 }
 
 // connectionResponse answers a successful save. MappingsCleared is true
-// when the tenant origin changed, which removes every mapping.
+// when the tenant origin changed, which removes every mapping. When the
+// previous connection could not be read, it is true when the save left none
+// of the mappings that existed before it (or the count could not be read).
 type connectionResponse struct {
 	ConnectionView
 	MappingsCleared bool `json:"mappingsCleared"`
@@ -464,9 +466,13 @@ func (h *Handler) HandlePutConnection(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, msg, "")
 		return
 	}
-	if err := h.validateURL(r.Context(), req.TenantURL); err != nil {
-		h.logger.Info("rubrik connection: tenant url refused", "error", err)
-		httputil.WriteErrorWithReason(w, http.StatusBadRequest, msgTenantURLPrivate, "invalid_tenant_url", nil)
+	// checkTenant classifies the address check the way the client does: a
+	// refused address is invalid_tenant_url (400), while a lookup that failed
+	// or timed out says nothing about the address and is unreachable (502).
+	if err := checkTenant(r.Context(), h.validateURL, req.TenantURL); err != nil {
+		status, reason, msg := classifyRSCError(err)
+		h.logger.Info("rubrik connection: tenant url refused", "reason", reason, "error", err)
+		httputil.WriteErrorWithReason(w, status, msg, reason, nil)
 		return
 	}
 
@@ -474,12 +480,23 @@ func (h *Handler) HandlePutConnection(w http.ResponseWriter, r *http.Request) {
 	// whether an omitted secret may be kept (only on the origin it was
 	// entered for, so a changed URL cannot exfiltrate it), and the URL the
 	// save is conditional on (a save in between makes this one a 409).
+	//
+	// A save that carries a new secret needs neither: the store re-reads the
+	// stored origin itself under a row lock, without decrypting the old
+	// secret. So an unreadable row (for instance a secret encrypted under a
+	// key that has since changed) refuses only a save that would keep the
+	// stored secret, and a new secret repairs it.
 	current, creds, err := h.store.GetConnection(r.Context(), h.connectionID)
 	exists := err == nil
+	previousUnreadable := false
 	if err != nil && !errors.Is(err, store.ErrRubrikConnectionNotFound) {
-		h.logger.Error("rubrik connection: reading stored connection failed", "error", err)
-		httputil.WriteError(w, http.StatusServiceUnavailable, msgStoreUnavailable, "")
-		return
+		if req.ClientSecret == nil {
+			h.logger.Error("rubrik connection: reading stored connection failed", "error", err)
+			httputil.WriteError(w, http.StatusServiceUnavailable, msgStoreUnavailable, "")
+			return
+		}
+		h.logger.Warn("rubrik connection: stored connection unreadable; saving the new secret over it", "error", err)
+		previousUnreadable = true
 	}
 	probeSecret, keptFrom := "", ""
 	if req.ClientSecret != nil {
@@ -499,6 +516,14 @@ func (h *Handler) HandlePutConnection(w http.ResponseWriter, r *http.Request) {
 		h.auditWrite(r, user, audit.ActionRubrikConnectionUpdate, "", auditKindConnection, h.connectionID, audit.ResultFailure, "probe failed: "+reason)
 		httputil.WriteErrorWithReason(w, status, msg, reason, nil)
 		return
+	}
+
+	// With the previous row unreadable its origin is unknown, and the store
+	// clears the mappings when that origin differs from the new one. Count
+	// them around the save so the response and audit say what happened.
+	mappingsBefore := 0
+	if previousUnreadable {
+		mappingsBefore = h.mappingCount(r.Context())
 	}
 
 	saved, err := h.store.UpsertConnection(r.Context(), h.connectionID, store.RubrikConnectionWrite{
@@ -529,15 +554,36 @@ func (h *Handler) HandlePutConnection(w http.ResponseWriter, r *http.Request) {
 	// replica; this replica's token goes now.
 	h.client.Flush()
 
+	mappingsCleared := originChanged
+	if previousUnreadable {
+		// A count that could not be read (-1) reads as cleared: telling an
+		// admin to check the mappings is the safe mistake.
+		mappingsCleared = mappingsBefore != 0 && h.mappingCount(r.Context()) <= 0
+	}
 	detail := "connection saved"
 	switch {
+	case previousUnreadable && mappingsCleared:
+		detail = "connection saved; previous connection unreadable, mappings cleared"
+	case previousUnreadable:
+		detail = "connection saved; previous connection unreadable"
 	case originChanged:
 		detail = "connection saved; tenant origin changed, mappings cleared"
 	case req.ClientSecret != nil:
 		detail = "connection saved; secret replaced"
 	}
 	h.auditWrite(r, user, audit.ActionRubrikConnectionUpdate, "", auditKindConnection, h.connectionID, audit.ResultSuccess, detail)
-	httputil.WriteData(w, connectionResponse{ConnectionView: toConnectionView(saved), MappingsCleared: originChanged})
+	httputil.WriteData(w, connectionResponse{ConnectionView: toConnectionView(saved), MappingsCleared: mappingsCleared})
+}
+
+// mappingCount returns how many mappings the connection has, or -1 when
+// they cannot be listed.
+func (h *Handler) mappingCount(ctx context.Context) int {
+	mappings, err := h.store.ListMappings(ctx, h.connectionID)
+	if err != nil {
+		h.logger.Warn("rubrik connection: listing mappings failed", "error", err)
+		return -1
+	}
+	return len(mappings)
 }
 
 // validateConnectionRequest returns the client message for a malformed

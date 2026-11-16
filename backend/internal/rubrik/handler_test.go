@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -32,11 +34,22 @@ const (
 // service resolves what the handler saved.
 type adminStore struct {
 	*fakeStore
+	getErr     error // GetConnection's error, e.g. an undecryptable secret
 	upsertErr  error
 	setErr     error
 	deleteErr  error
 	upserts    int
 	setMapping []store.RubrikMappingWrite
+}
+
+func (s *adminStore) GetConnection(ctx context.Context, id string) (store.RubrikConnection, store.RubrikCredentials, error) {
+	s.mu.Lock()
+	err := s.getErr
+	s.mu.Unlock()
+	if err != nil {
+		return store.RubrikConnection{}, store.RubrikCredentials{}, err
+	}
+	return s.fakeStore.GetConnection(ctx, id)
 }
 
 func (s *adminStore) UpsertConnection(_ context.Context, _ string, w store.RubrikConnectionWrite) (store.RubrikConnection, error) {
@@ -236,6 +249,12 @@ func (fx *handlerFixture) do(t *testing.T, user *auth.User, clusterID, method, p
 
 func serve(t *testing.T, h *Handler, user *auth.User, clusterID, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
+	return serveWith(t, h, nil, user, clusterID, method, path, body)
+}
+
+// serveWith is serve with the write rate limiter Mount receives.
+func serveWith(t *testing.T, h *Handler, writeLimit func(http.Handler) http.Handler, user *auth.User, clusterID, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -247,7 +266,7 @@ func serve(t *testing.T, h *Handler, user *auth.User, clusterID, method, path st
 			next.ServeHTTP(w, req.WithContext(ctx))
 		})
 	})
-	Mount(r, h, nil)
+	Mount(r, h, writeLimit)
 
 	var rd *bytes.Reader
 	switch b := body.(type) {
@@ -365,6 +384,51 @@ func TestAdminEndpointsRefuseNonAdmins(t *testing.T) {
 	}
 	if rec := fx.do(t, nil, "local", http.MethodGet, "/rubrik/status", nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status without a user = %d, want 401", rec.Code)
+	}
+}
+
+// The write rate limiter wraps every admin write and none of the reads, and
+// an exhausted limiter refuses a write before it reaches the store or RSC.
+func TestWriteLimitWrapsOnlyTheWrites(t *testing.T) {
+	fx := newHandlerFixture(t)
+	var mu sync.Mutex
+	var limited []string
+	exhausted := func(http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			limited = append(limited, r.Method+" "+r.URL.Path)
+			mu.Unlock()
+			w.WriteHeader(http.StatusTooManyRequests)
+		})
+	}
+	connection := map[string]any{"tenantUrl": testTenant, "clientId": "client-1", "clientSecret": "s2"}
+	mapping := map[string]any{"rscClusterId": idCluster, "connectionRevision": 7}
+	for _, c := range []struct {
+		method, path string
+		body         any
+		write        bool
+	}{
+		{http.MethodGet, "/rubrik/status", nil, false},
+		{http.MethodGet, "/rubrik/rsc-clusters", nil, false},
+		{http.MethodGet, "/rubrik/mappings", nil, false},
+		{http.MethodPut, "/rubrik/connection", connection, true},
+		{http.MethodPut, "/rubrik/mappings/local", mapping, true},
+		{http.MethodDelete, "/rubrik/mappings/local", nil, true},
+	} {
+		rec := serveWith(t, fx.h, exhausted, admin, "local", c.method, c.path, c.body)
+		if limitedNow := rec.Code == http.StatusTooManyRequests; limitedNow != c.write {
+			t.Errorf("%s %s = %d; rate limited %v, want %v", c.method, c.path, rec.Code, limitedNow, c.write)
+		}
+	}
+	want := []string{"PUT /rubrik/connection", "PUT /rubrik/mappings/local", "DELETE /rubrik/mappings/local"}
+	if !slices.Equal(limited, want) {
+		t.Errorf("limiter saw %v, want %v", limited, want)
+	}
+	if fx.st.upserts != 0 || len(fx.st.setMapping) != 0 || len(fx.probeCalls()) != 0 || len(fx.audit.all()) != 0 {
+		t.Error("a rate-limited write reached the store, RSC or the audit log")
+	}
+	if list, _ := fx.st.ListMappings(context.Background(), testConn); len(list) != 2 {
+		t.Errorf("a rate-limited delete removed a mapping: %+v", list)
 	}
 }
 
@@ -658,6 +722,34 @@ func TestPutConnectionRefusesPrivateAddress(t *testing.T) {
 	}
 }
 
+// A tenant name that cannot be resolved is reported as unreachable, the way
+// the client classifies it, not as a private address; nothing is probed or
+// stored either way.
+func TestPutConnectionLookupFailureIsUnreachable(t *testing.T) {
+	for name, lookupErr := range map[string]error{
+		"nxdomain": &net.DNSError{Err: "no such host", Name: "acme.my.rubrik.com", IsNotFound: true},
+		"timeout":  context.DeadlineExceeded,
+		"canceled": context.Canceled,
+	} {
+		fx := newHandlerFixture(t)
+		fx.h.validateURL = func(context.Context, string) error {
+			return fmt.Errorf("DNS resolution failed for acme.my.rubrik.com: %w", lookupErr)
+		}
+		rec := fx.do(t, admin, "local", http.MethodPut, "/rubrik/connection",
+			map[string]any{"tenantUrl": testTenant, "clientId": "client-1", "clientSecret": "new-secret"})
+		wantStatus(t, rec, http.StatusBadGateway)
+		if got := errorReason(t, rec); got != HealthUnreachable {
+			t.Errorf("%s: reason = %q, want %q", name, got, HealthUnreachable)
+		}
+		if strings.Contains(rec.Body.String(), "private") {
+			t.Errorf("%s: a lookup failure was reported as a private address: %s", name, rec.Body.String())
+		}
+		if len(fx.probeCalls()) != 0 || fx.st.upserts != 0 {
+			t.Errorf("%s: an unresolved address was probed or stored", name)
+		}
+	}
+}
+
 func defaultValidateURL(t *testing.T) func(context.Context, string) error {
 	t.Helper()
 	h, err := NewHandler(HandlerDeps{
@@ -850,6 +942,58 @@ func TestPutConnectionStoreOutcomes(t *testing.T) {
 		if fx.flush.count() != 0 {
 			t.Errorf("%v: token flushed although nothing was saved", c.err)
 		}
+	}
+}
+
+// A stored connection that cannot be read (its secret no longer decrypts
+// after a key change) blocks only a save that would keep that secret. A new
+// secret repairs it, and the response and audit say whether the save
+// cleared the mappings, never with the URL or a secret.
+func TestPutConnectionRepairsAnUnreadableConnection(t *testing.T) {
+	decryptErr := errors.New("decrypting rubrik client secret: cipher: message authentication failed")
+
+	t.Run("kept secret is refused", func(t *testing.T) {
+		fx := newHandlerFixture(t)
+		fx.st.getErr = decryptErr
+		rec := fx.do(t, admin, "local", http.MethodPut, "/rubrik/connection",
+			map[string]any{"tenantUrl": testTenant, "clientId": "client-1"})
+		wantStatus(t, rec, http.StatusServiceUnavailable)
+		if len(fx.probeCalls()) != 0 || fx.st.upserts != 0 || len(fx.audit.all()) != 0 {
+			t.Error("a kept-secret save over an unreadable row was probed, stored or audited")
+		}
+	})
+
+	for _, c := range []struct {
+		name, tenant string
+		cleared      bool
+	}{
+		{"same origin keeps the mappings", testTenant, false},
+		{"new origin clears the mappings", "https://other.my.rubrik.com", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fx := newHandlerFixture(t)
+			fx.st.getErr = decryptErr
+			rec := fx.do(t, admin, "local", http.MethodPut, "/rubrik/connection",
+				map[string]any{"tenantUrl": c.tenant, "clientId": "client-1", "clientSecret": "repaired-secret"})
+			wantStatus(t, rec, http.StatusOK)
+			if got := responseData[connectionResponse](t, rec); got.MappingsCleared != c.cleared || got.Revision != 8 {
+				t.Errorf("response = %+v, want mappingsCleared %v at revision 8", got, c.cleared)
+			}
+			if p := fx.probeCalls(); len(p) != 1 || p[0].secret != "repaired-secret" {
+				t.Errorf("probes = %+v; want one with the new secret", p)
+			}
+			if fx.st.secret != "repaired-secret" || fx.flush.count() != 1 {
+				t.Errorf("secret %q stored, %d flushes; want the new secret and one flush", fx.st.secret, fx.flush.count())
+			}
+			entries := fx.audit.all()
+			if len(entries) != 1 || entries[0].Result != audit.ResultSuccess || !strings.Contains(entries[0].Detail, "previous connection unreadable") {
+				t.Fatalf("audit = %+v, want one success noting the unreadable row", entries)
+			}
+			if got := strings.Contains(entries[0].Detail, "mappings cleared"); got != c.cleared {
+				t.Errorf("audit detail %q: mappings cleared %v, want %v", entries[0].Detail, got, c.cleared)
+			}
+			assertNoConnectionDetail(t, entries[0], strings.TrimPrefix(c.tenant, "https://"), "repaired-secret")
+		})
 	}
 }
 
