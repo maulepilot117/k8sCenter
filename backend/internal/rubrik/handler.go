@@ -87,7 +87,8 @@ type TokenFlusher interface {
 }
 
 // HandlerDeps are the handler's collaborators. Every field except Logger,
-// Probe and ValidateURL is required, and none may be a typed nil.
+// Probe, ValidateURL, Operations and Writer is required, and none may be a
+// typed nil.
 type HandlerDeps struct {
 	Store    AdminStore
 	Clusters ClusterRecords
@@ -104,6 +105,13 @@ type HandlerDeps struct {
 	// ValidateURL refuses a tenant URL that resolves to a private or reserved
 	// address; nil means k8s.ValidateRemoteURLContext.
 	ValidateURL func(ctx context.Context, raw string) error
+	// Operations records the writes; nil means Store, when it implements
+	// OperationStore (*store.RubrikStore does).
+	Operations OperationStore
+	// Writer sends the writes to RSC; nil means RSC, when it implements
+	// RSCWriter (*Operations does). With either missing the write and
+	// operation endpoints answer 503.
+	Writer RSCWriter
 }
 
 // Handler serves /v1/rubrik. It exists only while the provider is enabled
@@ -120,6 +128,8 @@ type Handler struct {
 	connectionID string
 	probe        func(ctx context.Context, tenantURL, clientID, clientSecret string) error
 	validateURL  func(ctx context.Context, raw string) error
+	ops          OperationStore
+	writer       RSCWriter
 }
 
 // NewHandler checks d and returns the handler.
@@ -154,6 +164,14 @@ func NewHandler(d HandlerDeps) (*Handler, error) {
 		connectionID: d.ConnectionID,
 		probe:        d.Probe,
 		validateURL:  d.ValidateURL,
+		ops:          d.Operations,
+		writer:       d.Writer,
+	}
+	if h.ops == nil {
+		h.ops, _ = d.Store.(OperationStore)
+	}
+	if h.writer == nil {
+		h.writer, _ = d.RSC.(RSCWriter)
 	}
 	if h.logger == nil {
 		h.logger = slog.Default()
@@ -181,9 +199,10 @@ func Mount(r chi.Router, h *Handler, writeLimit func(http.Handler) http.Handler)
 }
 
 // RegisterRoutes is the Rubrik route table. Later units add their routes
-// here. Status and the reads are open to every authenticated user, which
-// the reads filter per request (KTD3); the connection and mapping endpoints
-// are admin-only and their writes rate-limited.
+// here. Status, the reads, the Rubrik writes and the operation read are
+// open to every authenticated user, which each request checks against the
+// user's Rubrik grants (KTD3, R8); the connection and mapping endpoints are
+// admin-only. Every write is rate-limited.
 func (h *Handler) RegisterRoutes(r chi.Router, writeLimit func(http.Handler) http.Handler) {
 	if writeLimit == nil {
 		writeLimit = func(next http.Handler) http.Handler { return next }
@@ -192,6 +211,9 @@ func (h *Handler) RegisterRoutes(r chi.Router, writeLimit func(http.Handler) htt
 	r.Get("/namespaces", h.HandleNamespaces)
 	r.Get("/namespaces/{namespace}", h.HandleNamespace)
 	r.Get("/sla-domains", h.HandleSLADomains)
+	r.Get("/operations/{id}", h.HandleOperation)
+	r.With(writeLimit).Post("/namespaces/{namespace}/snapshots", h.HandleSnapshot)
+	r.With(writeLimit).Put("/namespaces/{namespace}/sla", h.HandleSLA)
 	r.Group(func(ar chi.Router) {
 		ar.Use(middleware.RequireAdmin)
 		ar.Get("/rsc-clusters", h.HandleListRSCClusters)
