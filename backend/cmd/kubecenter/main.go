@@ -43,6 +43,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/preferences"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
+	"github.com/kubecenter/kubecenter/internal/rubrik"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -792,6 +793,42 @@ func main() {
 	veleroHandler := velero.NewHandler(k8sClient, veleroDiscoverer, accessChecker, auditLogger, nil, clusterRouter, remotePresence, logger)
 	clusterRouter.RegisterEvictHook(veleroHandler.EvictRemoteCache)
 
+	// Rubrik Security Cloud backup provider (preview). Built only while
+	// rubrik.enabled is set, so with it off no /rubrik route exists and no
+	// RSC call is made (R28, KTD12). It needs PostgreSQL for the connection
+	// and mappings; without a database it stays off.
+	var rubrikHandler *rubrik.Handler
+	if cfg.Rubrik.Enabled {
+		if dbPool == nil || clusterStore == nil {
+			logger.Error("rubrik.enabled is set but PostgreSQL is not configured; the Rubrik provider stays off")
+		} else {
+			// The client secret uses the same master secret as cluster
+			// credentials.
+			rubrikStore := appstore.NewRubrikStore(dbPool, dbEncKey)
+			rubrikClient := rubrik.NewClient(rubrik.StoreConnection{Store: rubrikStore, ID: appstore.RubrikDefaultConnectionID}, logger)
+			rubrikOps := rubrik.NewOperations(rubrikClient)
+			rubrikService := rubrik.NewService(rubrikOps, rubrikStore, clusterStore, appstore.RubrikDefaultConnectionID, logger, rubrikClient.Flush)
+			h, err := rubrik.NewHandler(rubrik.HandlerDeps{
+				Store:        rubrikStore,
+				Clusters:     clusterStore,
+				Service:      rubrikService,
+				Access:       rubrik.NewAccess(accessChecker, informerMgr.Namespaces(), cfg.Rubrik.WritesEnabled),
+				RSC:          rubrikOps,
+				Client:       rubrikClient,
+				Audit:        auditLogger,
+				Logger:       logger,
+				ConnectionID: appstore.RubrikDefaultConnectionID,
+			})
+			if err != nil {
+				logger.Error("building the Rubrik handler failed; the Rubrik provider stays off", "error", err)
+			} else {
+				rubrikHandler = h
+				clusterRouter.RegisterEvictHook(rubrikHandler.EvictCluster)
+				logger.Info("rubrik provider enabled (preview)", "writesEnabled", cfg.Rubrik.WritesEnabled)
+			}
+		}
+	}
+
 	// Notification center — aggregates events from all subsystems
 	var notifService *notifications.NotificationService
 	var notifStore *notifications.Store
@@ -1147,6 +1184,7 @@ func main() {
 		ScanningHandler:        scanHandler,
 		LimitsHandler:          limitsHandler,
 		VeleroHandler:          veleroHandler,
+		RubrikHandler:          rubrikHandler,
 		CertManagerHandler:     cmHandler,
 		ExternalSecretsHandler: esoHandler,
 		GatewayHandler:         gwHandler,

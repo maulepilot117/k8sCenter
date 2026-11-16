@@ -1,11 +1,13 @@
 package server
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/rubrik"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/wizard"
 )
@@ -220,6 +222,10 @@ func (s *Server) registerRoutes() {
 			if s.VeleroHandler != nil {
 				s.registerVeleroRoutes(ar)
 			}
+
+			// Rubrik routes — mounted only while the provider is enabled
+			// (KTD12); rubrik.Mount does nothing for a nil handler.
+			s.registerRubrikRoutes(ar)
 
 			// Cert-Manager routes — only registered if cert-manager handler is available
 			if s.CertManagerHandler != nil {
@@ -838,6 +844,24 @@ func (s *Server) registerVeleroRoutes(ar chi.Router) {
 			h.RegisterAssuranceRoutes(asr, middleware.RateLimit(yamlRL))
 		})
 	})
+}
+
+// registerRubrikRoutes mounts /rubrik when the Rubrik handler exists. The
+// admin writes share the YAML write budget, keyed per user because browser
+// traffic reaches the backend through the frontend BFF from one address.
+func (s *Server) registerRubrikRoutes(ar chi.Router) {
+	if s.RubrikHandler == nil {
+		return
+	}
+	writeRL := s.YAMLRateLimiter
+	if writeRL == nil {
+		writeRL = s.RateLimiter
+	}
+	var writeLimit func(http.Handler) http.Handler
+	if writeRL != nil {
+		writeLimit = middleware.RateLimitByUser(writeRL, "rubrik")
+	}
+	rubrik.Mount(ar, s.RubrikHandler, writeLimit)
 }
 
 func (s *Server) registerCertManagerRoutes(ar chi.Router) {

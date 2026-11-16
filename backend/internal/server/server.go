@@ -30,6 +30,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/preferences"
+	"github.com/kubecenter/kubecenter/internal/rubrik"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/servicemesh"
@@ -84,6 +85,7 @@ type Server struct {
 	ScanningHandler        *scanning.Handler
 	LimitsHandler          *limits.Handler
 	VeleroHandler          *velero.Handler
+	RubrikHandler          *rubrik.Handler // nil while the provider is off
 	CertManagerHandler     *certmanager.Handler
 	ExternalSecretsHandler *externalsecrets.Handler
 	GatewayHandler         *gateway.Handler
@@ -202,6 +204,7 @@ type Deps struct {
 	ScanningHandler          *scanning.Handler
 	LimitsHandler            *limits.Handler
 	VeleroHandler            *velero.Handler
+	RubrikHandler            *rubrik.Handler
 	CertManagerHandler       *certmanager.Handler
 	ExternalSecretsHandler   *externalsecrets.Handler
 	GatewayHandler           *gateway.Handler
@@ -437,6 +440,9 @@ func New(deps Deps) *Server {
 	if deps.VeleroHandler != nil {
 		s.VeleroHandler = deps.VeleroHandler
 	}
+
+	// Rubrik handler (preview backup provider); nil while the provider is off
+	s.RubrikHandler = deps.RubrikHandler
 
 	// Cert-Manager handler
 	if deps.CertManagerHandler != nil {
