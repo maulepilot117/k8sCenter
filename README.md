@@ -95,6 +95,7 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Incident evidence capture | Yes | No | `incidents/handler_capture.go` (400 `remote_capture_unsupported`: evidence is collected from the local cluster's diagnostics, objects and events). Reading, sharing and exporting an incident work under any selection: every evidence item is re-authorized against the cluster recorded on it, never the selected one |
 | Prometheus queries | Yes | Yes | With a per-cluster metrics binding (`PUT /clusters/{id}/metrics`); without one the route answers 404 `metrics_not_configured`. A remote cluster is never answered from the local Prometheus |
 | Dashboard trends | Yes | Yes | With a per-cluster metrics binding (`PUT /clusters/{id}/metrics`); without one the route answers 404 `metrics_not_configured` and the cards render without sparklines |
+| Rubrik protection (requires the Rubrik provider) | Yes | Yes | Each cluster is read from Rubrik Security Cloud through its own cluster mapping, set by an admin; the routes exist only while `rubrik.enabled` is set. On a remote cluster only admins see Rubrik data, through the same admin gate as every remote selection. Authorization asks for the read grant, `get` on `protections` in `rubrik.kubecenter.io` |
 
 Remote pages get no live updates: the WebSocket feed carries the local cluster's informer events only. Refresh the page to see changes on a remote cluster.
 

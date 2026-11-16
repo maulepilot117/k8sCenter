@@ -96,6 +96,7 @@ export const CAPABILITY_OPERATION_IDS = [
   "incidents.capture",
   "monitoring.query",
   "dashboard.trends",
+  "rubrik.protection",
 ] as const;
 
 export type CapabilityOperationId = (typeof CAPABILITY_OPERATION_IDS)[number];

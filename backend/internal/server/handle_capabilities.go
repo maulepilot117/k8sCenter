@@ -15,6 +15,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
+	"github.com/kubecenter/kubecenter/internal/rubrik"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
@@ -755,6 +756,22 @@ var capabilityOperations = []capabilityOp{
 		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "nodes",
 		ClusterScoped: true,
+	},
+	{
+		// Rubrik Security Cloud protection (KTD13): rubrik/reads.go serves
+		// every cluster from its own Rubrik mapping, so a remote cluster is
+		// read exactly as the local one is. Remote access is admin-only
+		// through the platform's cluster gate (R10). The /rubrik routes exist
+		// only while rubrik.enabled is set (KTD12); this static row cannot
+		// see that setting, so its label says so. No Probe: protections is a
+		// virtual resource with no CRD. The SAR asks the read gate's own
+		// question, `get protections` (rubrik/access.go CanRead, KTD2), so a
+		// user holding exactly the documented read grant cluster-wide reads
+		// as authorized. Namespaced, so a namespace-scoped grant reports
+		// authz_namespace_scoped.
+		ID: "rubrik.protection", Label: "Rubrik protection (requires the Rubrik provider)",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "get", AuthGroup: rubrik.APIGroup, AuthResource: rubrik.ResourceProtections,
 	},
 }
 

@@ -278,6 +278,9 @@ var (
 		"logs.stream",
 		// Remote logs and shells U30: search reads the selected cluster's Loki.
 		"logs.search",
+		// Rubrik U18: every cluster is read through its own Rubrik mapping;
+		// remote is admin-only through the platform gate.
+		"rubrik.protection",
 	}
 	wantRemoteUnsupported = []string{
 		"pod.exec", "eso.write",
@@ -301,6 +304,24 @@ func productionOp(t *testing.T, id string) capabilityOp {
 	}
 	t.Fatalf("operation %q is not in capabilityOperations", id)
 	return capabilityOp{}
+}
+
+// TestCapabilityOperations_RubrikRowPinned pins the Rubrik row's probe: it
+// must ask the read gate's own question (get protections in the virtual
+// rubrik.kubecenter.io group, rubrik/access.go CanRead), so a user holding
+// the documented read grant cluster-wide reads as authorized, and it has no
+// discovery probe because no CRD backs the virtual resource.
+func TestCapabilityOperations_RubrikRowPinned(t *testing.T) {
+	op := productionOp(t, "rubrik.protection")
+	if !op.LocalSupported || !op.RemoteSupported {
+		t.Errorf("supported local=%v remote=%v; want both", op.LocalSupported, op.RemoteSupported)
+	}
+	if op.AuthVerb != "get" || op.AuthGroup != "rubrik.kubecenter.io" || op.AuthResource != "protections" {
+		t.Errorf("auth = %s %s/%s; want get rubrik.kubecenter.io/protections", op.AuthVerb, op.AuthGroup, op.AuthResource)
+	}
+	if op.Probe != nil || op.ClusterScoped {
+		t.Errorf("probe = %+v clusterScoped = %v; want no probe, namespaced", op.Probe, op.ClusterScoped)
+	}
 }
 
 // fakeClusterRecordGetter is a hermetic clusterRecordGetter — see the
