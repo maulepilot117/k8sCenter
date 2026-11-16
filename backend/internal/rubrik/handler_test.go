@@ -331,8 +331,9 @@ func TestProviderOffHasNoRoutes(t *testing.T) {
 	}
 }
 
-// The route table is exactly the U5 surface, and every admin endpoint
-// refuses a non-admin before reaching the store or RSC.
+// The route table is exactly the Rubrik surface so far (settings, reads,
+// and the U7 writes), and every admin endpoint refuses a non-admin before
+// reaching the store or RSC.
 func TestAdminEndpointsRefuseNonAdmins(t *testing.T) {
 	fx := newHandlerFixture(t)
 
@@ -346,15 +347,18 @@ func TestAdminEndpointsRefuseNonAdmins(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"GET /rubrik/status":                  true,
-		"GET /rubrik/namespaces":              true,
-		"GET /rubrik/namespaces/{namespace}":  true,
-		"GET /rubrik/sla-domains":             true,
-		"GET /rubrik/rsc-clusters":            true,
-		"GET /rubrik/mappings":                true,
-		"PUT /rubrik/connection":              true,
-		"PUT /rubrik/mappings/{clusterID}":    true,
-		"DELETE /rubrik/mappings/{clusterID}": true,
+		"GET /rubrik/status":                            true,
+		"GET /rubrik/namespaces":                        true,
+		"GET /rubrik/namespaces/{namespace}":            true,
+		"GET /rubrik/sla-domains":                       true,
+		"GET /rubrik/operations/{id}":                   true,
+		"POST /rubrik/namespaces/{namespace}/snapshots": true,
+		"PUT /rubrik/namespaces/{namespace}/sla":        true,
+		"GET /rubrik/rsc-clusters":                      true,
+		"GET /rubrik/mappings":                          true,
+		"PUT /rubrik/connection":                        true,
+		"PUT /rubrik/mappings/{clusterID}":              true,
+		"DELETE /rubrik/mappings/{clusterID}":           true,
 	}
 	for k := range want {
 		if !got[k] {
@@ -390,8 +394,9 @@ func TestAdminEndpointsRefuseNonAdmins(t *testing.T) {
 	}
 }
 
-// The write rate limiter wraps every admin write and none of the reads, and
-// an exhausted limiter refuses a write before it reaches the store or RSC.
+// The write rate limiter wraps every write, admin and Rubrik, and none of
+// the reads, and an exhausted limiter refuses a write before it reaches the
+// store or RSC.
 func TestWriteLimitWrapsOnlyTheWrites(t *testing.T) {
 	fx := newHandlerFixture(t)
 	var mu sync.Mutex
@@ -415,6 +420,9 @@ func TestWriteLimitWrapsOnlyTheWrites(t *testing.T) {
 		{http.MethodGet, "/rubrik/namespaces", nil, false},
 		{http.MethodGet, "/rubrik/namespaces/team-a", nil, false},
 		{http.MethodGet, "/rubrik/sla-domains", nil, false},
+		{http.MethodGet, "/rubrik/operations/" + testOpID, nil, false},
+		{http.MethodPost, "/rubrik/namespaces/team-a/snapshots", map[string]any{"operationId": testOpID}, true},
+		{http.MethodPut, "/rubrik/namespaces/team-a/sla", map[string]any{"operationId": testOpID, "slaId": idSLA}, true},
 		{http.MethodGet, "/rubrik/rsc-clusters", nil, false},
 		{http.MethodGet, "/rubrik/mappings", nil, false},
 		{http.MethodPut, "/rubrik/connection", connection, true},
@@ -426,7 +434,10 @@ func TestWriteLimitWrapsOnlyTheWrites(t *testing.T) {
 			t.Errorf("%s %s = %d; rate limited %v, want %v", c.method, c.path, rec.Code, limitedNow, c.write)
 		}
 	}
-	want := []string{"PUT /rubrik/connection", "PUT /rubrik/mappings/local", "DELETE /rubrik/mappings/local"}
+	want := []string{
+		"POST /rubrik/namespaces/team-a/snapshots", "PUT /rubrik/namespaces/team-a/sla",
+		"PUT /rubrik/connection", "PUT /rubrik/mappings/local", "DELETE /rubrik/mappings/local",
+	}
 	if !slices.Equal(limited, want) {
 		t.Errorf("limiter saw %v, want %v", limited, want)
 	}
