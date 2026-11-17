@@ -33,12 +33,15 @@ import (
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
-// OperationStore is the part of store.RubrikStore the writes use.
+// OperationStore is the part of store.RubrikStore the writes and the
+// reads' write controls use.
 type OperationStore interface {
 	InsertOperation(ctx context.Context, op store.RubrikOperation) (store.RubrikOperation, error)
 	GetOperation(ctx context.Context, id string) (store.RubrikOperation, error)
 	UpdateOperation(ctx context.Context, id string, from []string, u store.RubrikOperationUpdate) (store.RubrikOperation, error)
 	BlockingOperations(ctx context.Context, op store.RubrikOperation) ([]store.RubrikOperation, error)
+	// OpenOperations backs the reads' in-flight flags (U6).
+	OpenOperations(ctx context.Context, clusterID string) ([]store.RubrikOperation, error)
 }
 
 // RSCWriter is the part of Operations the writes use: the mutations and the
