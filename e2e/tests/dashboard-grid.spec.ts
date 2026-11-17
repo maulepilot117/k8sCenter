@@ -787,10 +787,10 @@ test.describe("Dashboard grid resize", () => {
     // attempts out of three, while the failure screenshot already showed the
     // final layout).
     await expect.poll(() => cells(page)).toEqual(before);
-    const settled = await cells(page);
     // And the session is really over: a later Escape cannot revert the page.
+    // Against `before` itself, so the page still ends exactly where it began.
     await page.keyboard.press("Escape");
-    expect(await cells(page)).toEqual(settled);
+    expect(await cells(page)).toEqual(before);
   });
 
   test("a resize cannot start while a drag is in flight", async ({ page }) => {
