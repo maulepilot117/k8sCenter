@@ -551,7 +551,7 @@ func TestSanitizeForEmailDigest_ExistingVeleroCacheNotificationUnaffected(t *tes
 }
 
 func TestSanitizeForEmailDigest_OtherSourcesUnaffected(t *testing.T) {
-	// Every source except the two suppressed ones keeps its resource identity.
+	// Every source except the suppressed ones keeps its resource identity.
 	others := []Source{
 		SourceAlert, SourcePolicy, SourceGitOps, SourceDiagnostic, SourceScan,
 		SourceCluster, SourceAudit, SourceLimits, SourceCertManager,
@@ -578,8 +578,8 @@ func TestSanitizeForEmailDigest_OtherSourcesUnaffected(t *testing.T) {
 		}
 	}
 
-	// The map holds exactly the two cross-tenant sources and nothing else.
-	want := map[Source]bool{SourceExternalSecrets: true, SourceVelero: true}
+	// The map holds exactly the three cross-tenant sources and nothing else.
+	want := map[Source]bool{SourceExternalSecrets: true, SourceVelero: true, SourceRubrik: true}
 	if !reflect.DeepEqual(suppressResourceFieldsBySource, want) {
 		t.Errorf("suppressResourceFieldsBySource = %v, want %v", suppressResourceFieldsBySource, want)
 	}
