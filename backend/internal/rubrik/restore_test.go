@@ -439,7 +439,7 @@ func TestRestoreRefusals(t *testing.T) {
 	t.Run("in flight", func(t *testing.T) {
 		fx, ops, rst, _ := restoreFixture(t, true, restoreGrants...)
 		ops.seed(store.RubrikOperation{ID: otherOp, Owner: "u-bob", ClusterID: "local", Kind: store.RubrikOpRestore,
-			Namespace: "team-a", RSCObjectID: idNS, State: store.RubrikOpUnknown})
+			Namespace: "team-a", RSCObjectID: idNS, State: store.RubrikOpUnknown, CreatedAt: time.Now(), UpdatedAt: time.Now()})
 		rec := fx.do(t, alice, "local", http.MethodPost, "/rubrik/restores", restoreBody(testOpID, idNS, idSnapshot, "team-b"))
 		wantStatus(t, rec, http.StatusConflict)
 		if got := errorReason(t, rec); got != "operation_in_flight" || len(rst.restores()) != 0 {

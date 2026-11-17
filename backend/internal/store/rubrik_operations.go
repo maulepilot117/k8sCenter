@@ -116,6 +116,17 @@ type RubrikOperation struct {
 	UpdatedAt      time.Time
 	// FinishedAt is set when the operation reaches a final state.
 	FinishedAt *time.Time
+
+	// AlsoWritesInto and WritesIntoAll widen the namespaces a new operation
+	// writes into beyond Namespace and a restore's Source, for the in-flight
+	// check only: a protection-set snapshot or SLA change acts on every
+	// namespace the set covers, and WritesIntoAll means every namespace of
+	// the cluster (a set covering all namespaces, or an unresolved set).
+	// They are not stored, so a row read back leaves them empty: only open
+	// restores block across objects, and a restore's namespaces are in its
+	// Source.
+	AlsoWritesInto []string
+	WritesIntoAll  bool
 }
 
 // RubrikOperationUpdate is one UpdateOperation. An empty JobFamily or
@@ -207,9 +218,11 @@ func jsonOrEmpty(what string, raw json.RawMessage) ([]byte, error) {
 //     also blocks a snapshot; and an open restore blocks every write into a
 //     namespace it restores into, whichever object that write acts on.
 //
-// The namespaces an operation writes into are its Namespace and, for a
-// restore, the namespaces its Source lists under "into" (a protection-set
-// restore writes into every namespace the set covers).
+// The namespaces an operation writes into are its Namespace, for a restore
+// the namespaces its Source lists under "into" (a protection-set restore
+// writes into every namespace the set covers), and AlsoWritesInto; with
+// WritesIntoAll, every namespace. BlockingOperations lists the rows that
+// refuse an insert, by the same predicate.
 //
 // The SLA-change and restore exclusion on one object holds across replicas
 // through the idx_rubrik_operations_in_flight partial unique index. The
@@ -242,35 +255,13 @@ func (s *RubrikStore) InsertOperation(ctx context.Context, op RubrikOperation) (
 		return RubrikOperation{}, err
 	}
 
-	// The blocking matrix, for an open operation already on the object:
-	//
-	//	new \ open    snapshot  sla_assign  restore
-	//	snapshot      -         -           blocked
-	//	sla_assign    -         blocked     blocked
-	//	restore       -         blocked     blocked
-	//
-	// The sla_assign and restore cells are also idx_rubrik_operations_in_flight,
-	// which must keep the same kinds and states ($10). Across objects, an
-	// open restore blocks every new operation that writes into one of its
-	// namespaces ($11).
+	args := append(blockedByArgs(op), id, op.Owner, op.Namespace, op.RequestHash, request, source)
 	out, err := scanRubrikOperation(s.pool.QueryRow(ctx, `
 		INSERT INTO rubrik_operations (id, owner, cluster_id, kind, namespace, rsc_object_id,
 			request_hash, request, source, state)
-		SELECT $1::uuid, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::jsonb, $9::jsonb, 'applying'
-		WHERE NOT EXISTS (
-			SELECT 1 FROM rubrik_operations
-			WHERE cluster_id = $3::text
-			  AND state = ANY($10::text[])
-			  AND (
-			        (rsc_object_id = $6::text
-			         AND (kind = 'restore' OR ($4::text <> 'snapshot' AND kind = 'sla_assign')))
-			     OR (kind = 'restore'
-			         AND (namespace = ANY($11::text[]) OR source -> 'into' ?| $11::text[]))
-			  )
-		)
-		RETURNING `+rubrikOperationColumns,
-		id, op.Owner, op.ClusterID, op.Kind, op.Namespace, op.RSCObjectID, op.RequestHash, request, source,
-		rubrikOpOpen, rubrikOpNamespaces(op)))
+		SELECT $7::uuid, $8::text, $1::text, $2::text, $9::text, $3::text, $10::text, $11::jsonb, $12::jsonb, 'applying'
+		WHERE NOT EXISTS (SELECT 1 FROM rubrik_operations WHERE `+rubrikOpBlockedBy+`)
+		RETURNING `+rubrikOperationColumns, args...))
 	if err == nil {
 		return out, nil
 	}
@@ -290,11 +281,65 @@ func (s *RubrikStore) InsertOperation(ctx context.Context, op RubrikOperation) (
 	return RubrikOperation{}, fmt.Errorf("inserting rubrik operation: %w", err)
 }
 
-// rubrikOpNamespaces lists the namespaces op writes into: its Namespace and,
-// for a restore, those its Source lists under "into". An unreadable Source
-// adds nothing; jsonOrEmpty has already refused one that is not JSON.
+// rubrikOpBlockedBy selects the open rows that block a new operation, with
+// blockedByArgs as $1 to $6. The blocking matrix, for an open operation
+// already on the same object:
+//
+//	new \ open    snapshot  sla_assign  restore
+//	snapshot      -         -           blocked
+//	sla_assign    -         blocked     blocked
+//	restore       -         blocked     blocked
+//
+// The sla_assign and restore cells are also idx_rubrik_operations_in_flight,
+// which must keep the same kinds and states ($4). Across objects, an open
+// restore blocks every new operation that writes into one of its namespaces
+// ($5), or into every namespace ($6).
+const rubrikOpBlockedBy = `cluster_id = $1::text
+	AND state = ANY($4::text[])
+	AND (
+	      (rsc_object_id = $3::text
+	       AND (kind = 'restore' OR ($2::text <> 'snapshot' AND kind = 'sla_assign')))
+	   OR (kind = 'restore'
+	       AND ($6::boolean OR namespace = ANY($5::text[]) OR source -> 'into' ?| $5::text[]))
+	)`
+
+// blockedByArgs returns rubrikOpBlockedBy's arguments for a new operation op.
+func blockedByArgs(op RubrikOperation) []any {
+	return []any{op.ClusterID, op.Kind, op.RSCObjectID, rubrikOpOpen, rubrikOpNamespaces(op), op.WritesIntoAll}
+}
+
+// maxBlockingOperations caps BlockingOperations' answer.
+const maxBlockingOperations = 20
+
+// BlockingOperations returns the open operations that would refuse
+// InsertOperation(op) with ErrRubrikOperationInFlight, oldest first and at
+// most maxBlockingOperations of them. Only the fields the in-flight check
+// reads need to be set on op. The answer can be stale by the time the caller
+// acts on it; InsertOperation decides.
+func (s *RubrikStore) BlockingOperations(ctx context.Context, op RubrikOperation) ([]RubrikOperation, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+rubrikOperationColumns+` FROM rubrik_operations
+		WHERE `+rubrikOpBlockedBy+`
+		ORDER BY created_at, id
+		LIMIT $7`, append(blockedByArgs(op), maxBlockingOperations)...)
+	if err != nil {
+		return nil, fmt.Errorf("listing blocking rubrik operations: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (RubrikOperation, error) {
+		return scanRubrikOperation(row)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing blocking rubrik operations: %w", err)
+	}
+	return out, nil
+}
+
+// rubrikOpNamespaces lists the namespaces op writes into: its Namespace,
+// for a restore those its Source lists under "into", and AlsoWritesInto. An
+// unreadable Source adds nothing; jsonOrEmpty has already refused one that
+// is not JSON.
 func rubrikOpNamespaces(op RubrikOperation) []string {
-	out := []string{op.Namespace}
+	out := append([]string{op.Namespace}, op.AlsoWritesInto...)
 	if op.Kind == RubrikOpRestore && len(op.Source) > 0 {
 		var src struct {
 			Into []string `json:"into"`

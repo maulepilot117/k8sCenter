@@ -38,6 +38,7 @@ type OperationStore interface {
 	InsertOperation(ctx context.Context, op store.RubrikOperation) (store.RubrikOperation, error)
 	GetOperation(ctx context.Context, id string) (store.RubrikOperation, error)
 	UpdateOperation(ctx context.Context, id string, from []string, u store.RubrikOperationUpdate) (store.RubrikOperation, error)
+	BlockingOperations(ctx context.Context, op store.RubrikOperation) ([]store.RubrikOperation, error)
 }
 
 // RSCWriter is the part of Operations the writes use: the mutations and the
@@ -72,6 +73,10 @@ const (
 	noJobGrace = 10 * time.Minute
 	// maxJobMessage caps the RSC job text kept on an operation.
 	maxJobMessage = 1024
+	// maxBlockersSettled bounds how many blocking operations one refused
+	// write refreshes from RSC, and settleTimeout how long it spends on them.
+	maxBlockersSettled = 3
+	settleTimeout      = 20 * time.Second
 
 	auditKindProtection = "rubrik-protection"
 )
@@ -84,7 +89,7 @@ const (
 	msgOperationReused  = "this operation id was already used for a different request"
 	msgOperationTaken   = "this operation id belongs to another request"
 	msgOperationRunning = "this operation is still being sent; try again shortly"
-	msgObjectInFlight   = "another Rubrik operation on this object is still running"
+	msgObjectInFlight   = "another Rubrik operation on this object, or a restore into its namespace, is still running"
 	msgObjectNotFound   = "no Rubrik object you can act on protects this namespace"
 	msgObjectRequired   = "more than one Rubrik object protects this namespace; choose one"
 	msgOperationGone    = "operation not found"
@@ -551,10 +556,22 @@ func (h *Handler) send(c *writeCall, t Target, o Object, rec opRequest) {
 		c.fail(h, http.StatusInternalServerError, "the request could not be recorded", "internal", nil)
 		return
 	}
-	op, err := h.ops.InsertOperation(c.r.Context(), store.RubrikOperation{
+	row := store.RubrikOperation{
 		ID: c.id, Owner: c.user.ID, ClusterID: t.ClusterID, Kind: c.k.kind, Namespace: c.ns,
 		RSCObjectID: o.ID, RequestHash: c.hash, Request: raw, Source: c.restore.sourceJSON(),
-	})
+	}
+	if c.restore == nil {
+		// A snapshot or SLA change of a protection set acts on every
+		// namespace the set covers, so an open restore into any of them
+		// blocks it, not only one into the namespace it was asked from. A
+		// restore's namespaces are its Source's "into".
+		row.AlsoWritesInto = o.Coverage.Namespaces
+		row.WritesIntoAll = o.Coverage.All || o.Coverage.Unresolved
+	}
+	op, err := h.ops.InsertOperation(c.r.Context(), row)
+	if errors.Is(err, store.ErrRubrikOperationInFlight) && h.settleBlockers(c.r.Context(), row) {
+		op, err = h.ops.InsertOperation(c.r.Context(), row)
+	}
 	switch {
 	case errors.Is(err, store.ErrRubrikOperationExists):
 		// A concurrent send of the same id won the insert.
@@ -659,6 +676,37 @@ func (h *Handler) send(c *writeCall, t Target, o Object, rec opRequest) {
 	out := operationView(recorded)
 	out.StillProtected = rec.StillProtected
 	httputil.WriteJSON(c.w, http.StatusCreated, map[string]any{"data": out})
+}
+
+// settleBlockers refreshes from RSC the open operations that refused the
+// insert of next. Nothing else follows an operation until the poller does
+// (U10), so without this a job that finished long ago would keep its object,
+// and for a restore its namespaces, locked until someone read it. It reports
+// whether no blocker is left open, so the insert is worth one retry.
+//
+// The blockers may belong to other users and other namespaces; they are
+// refreshed as GET /operations would refresh them, and nothing about them
+// reaches the caller. An applying blocker stays open (refreshOperation
+// leaves it alone, since its request may still be sending it). A write
+// blocked by more than maxBlockersSettled operations refreshes none, which
+// bounds the RSC reads one refused write can cause.
+func (h *Handler) settleBlockers(ctx context.Context, next store.RubrikOperation) bool {
+	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
+	defer cancel()
+	blockers, err := h.ops.BlockingOperations(ctx, next)
+	if err != nil {
+		h.logger.Warn("rubrik write: listing blocking operations failed", "operation", next.ID, "error", err)
+		return false
+	}
+	if len(blockers) > maxBlockersSettled {
+		return false
+	}
+	for _, b := range blockers {
+		if after, _ := h.refreshOperation(ctx, b); !store.RubrikOperationFinal(after.State) {
+			return false
+		}
+	}
+	return true
 }
 
 // mutationRefused reports whether a mutation error proves RSC applied
