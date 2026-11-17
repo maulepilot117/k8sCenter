@@ -10,6 +10,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -238,12 +239,14 @@ func TestRubrikOperationInFlightRules(t *testing.T) {
 				}
 			}
 
-			// The same object on another cluster, and another object on
-			// this cluster, are never blocked.
+			// The same object on another cluster, and another object in
+			// another namespace of this cluster, are never blocked.
 			if _, err := s.InsertOperation(ctx, newRubrikOp(testOwnerID(t), object, c.open)); err != nil {
 				t.Errorf("same object, other cluster = %v, want it allowed", err)
 			}
-			if _, err := s.InsertOperation(ctx, newRubrikOp(cluster, uuid.NewString(), c.open)); err != nil {
+			other := newRubrikOp(cluster, uuid.NewString(), c.open)
+			other.Namespace = "team-z"
+			if _, err := s.InsertOperation(ctx, other); err != nil {
 				t.Errorf("other object, same cluster = %v, want it allowed", err)
 			}
 		})
@@ -430,5 +433,118 @@ func TestRubrikOperationUnknownSettles(t *testing.T) {
 	}
 	if _, err := s.InsertOperation(ctx, newRubrikOp(cluster, object, RubrikOpSLAAssign)); err != nil {
 		t.Errorf("sla change after the unknown one settled = %v, want it allowed", err)
+	}
+}
+
+// TestRubrikOpNamespaces needs no database: the namespaces an operation
+// writes into are its own and, for a restore only, its source's "into".
+func TestRubrikOpNamespaces(t *testing.T) {
+	restore := newRubrikOp("c", "o", RubrikOpRestore)
+	restore.Namespace = "team-b"
+	restore.Source = json.RawMessage(`{"objectId":"o","into":["team-c","team-b","team-a"]}`)
+	snapshot := restore
+	snapshot.Kind = RubrikOpSnapshot
+	unreadable := restore
+	unreadable.Source = json.RawMessage(`{"into":"team-c"}`)
+	for name, c := range map[string]struct {
+		op   RubrikOperation
+		want []string
+	}{
+		"restore":                   {restore, []string{"team-a", "team-b", "team-c"}},
+		"snapshot ignores a source": {snapshot, []string{"team-b"}},
+		"unreadable into":           {unreadable, []string{"team-b"}},
+	} {
+		if got := rubrikOpNamespaces(c.op); !slices.Equal(got, c.want) {
+			t.Errorf("%s: namespaces = %v, want %v", name, got, c.want)
+		}
+	}
+}
+
+// An open restore blocks every write into a namespace it restores into,
+// whichever object that write acts on: its target namespace, and every
+// namespace a protection-set restore writes into ("into"). A new restore is
+// blocked when any of its own namespaces is one of them. A finished restore,
+// another namespace, another cluster, and an open write of another kind
+// block nothing across objects.
+func TestRubrikOperationRestoreBlocksItsNamespaces(t *testing.T) {
+	s := NewRubrikStore(testDB(t), rubrikTestKey)
+	ctx := t.Context()
+	cluster := testOwnerID(t)
+
+	op := func(kind, namespace string, into ...string) RubrikOperation {
+		o := newRubrikOp(cluster, uuid.NewString(), kind)
+		o.Namespace = namespace
+		if len(into) > 0 {
+			raw, _ := json.Marshal(map[string]any{"into": into})
+			o.Source = raw
+		}
+		return o
+	}
+	settle := func(t *testing.T, id string) {
+		t.Helper()
+		if _, err := s.UpdateOperation(ctx, id, []string{RubrikOpApplying, RubrikOpRunning},
+			RubrikOperationUpdate{State: RubrikOpFailed}); err != nil {
+			t.Fatalf("settling %s: %v", id, err)
+		}
+	}
+
+	open, err := s.InsertOperation(ctx, op(RubrikOpRestore, "team-a", "team-a", "team-b"))
+	if err != nil {
+		t.Fatalf("insert the open restore: %v", err)
+	}
+	if _, err := s.UpdateOperation(ctx, open.ID, []string{RubrikOpApplying},
+		RubrikOperationUpdate{State: RubrikOpRunning, JobFamily: RubrikJobAsyncRequest, JobHandle: "req-1"}); err != nil {
+		t.Fatalf("moving the restore to running: %v", err)
+	}
+
+	for name, c := range map[string]struct {
+		op      RubrikOperation
+		blocked bool
+	}{
+		"snapshot of another object in the target":   {op(RubrikOpSnapshot, "team-a"), true},
+		"sla change in a namespace the set restores": {op(RubrikOpSLAAssign, "team-b"), true},
+		"restore into the target":                    {op(RubrikOpRestore, "team-a", "team-a"), true},
+		"set restore overlapping one namespace":      {op(RubrikOpRestore, "team-c", "team-b", "team-c"), true},
+		"snapshot in another namespace":              {op(RubrikOpSnapshot, "team-c"), false},
+		"restore into other namespaces":              {op(RubrikOpRestore, "team-c", "team-c", "team-d"), false},
+		"source naming a blocked namespace, no restore": {func() RubrikOperation {
+			o := op(RubrikOpSnapshot, "team-c")
+			o.Source = json.RawMessage(`{"into":["team-a"]}`)
+			return o
+		}(), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			added, err := s.InsertOperation(ctx, c.op)
+			switch {
+			case c.blocked && !errors.Is(err, ErrRubrikOperationInFlight):
+				t.Fatalf("insert = %v, want ErrRubrikOperationInFlight", err)
+			case !c.blocked && err != nil:
+				t.Fatalf("insert = %v, want it allowed", err)
+			}
+			if err == nil {
+				settle(t, added.ID)
+			}
+		})
+	}
+
+	other := newRubrikOp(testOwnerID(t), uuid.NewString(), RubrikOpSnapshot)
+	if _, err := s.InsertOperation(ctx, other); err != nil {
+		t.Errorf("the same namespace on another cluster = %v, want it allowed", err)
+	}
+
+	// An open snapshot or SLA change blocks only its own object.
+	snap, err := s.InsertOperation(ctx, op(RubrikOpSnapshot, "team-e"))
+	if err != nil {
+		t.Fatalf("insert an open snapshot: %v", err)
+	}
+	if _, err := s.InsertOperation(ctx, op(RubrikOpRestore, "team-e", "team-e")); err != nil {
+		t.Errorf("restore beside an open snapshot of another object = %v, want it allowed", err)
+	}
+	settle(t, snap.ID)
+
+	// Once the restore has finished, its namespaces are free again.
+	settle(t, open.ID)
+	if _, err := s.InsertOperation(ctx, op(RubrikOpSnapshot, "team-a")); err != nil {
+		t.Errorf("snapshot after the restore finished = %v, want it allowed", err)
 	}
 }

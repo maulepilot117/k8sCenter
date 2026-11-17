@@ -508,7 +508,7 @@ func (h *Handler) HandleRestoreTargets(w http.ResponseWriter, r *http.Request) {
 		ObjectID: o.ID, SourceNamespace: sourceNamespace(o), InPlaceOnly: o.Family == FamilyProtectionSet,
 		Targets: []string{}, OverwriteNotice: msgOverwrite,
 	}
-	refusal, err := h.restoreRefusal(ctx, v, t, o)
+	refusal, err := v.restoreRefusal(ctx, t, o)
 	if err != nil {
 		h.writeAccessError(w, err)
 		return
@@ -523,22 +523,6 @@ func (h *Handler) HandleRestoreTargets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteData(w, out)
-}
-
-// restoreRefusal is restoreEligible with its reason: why no restore from o
-// may be offered at all, before a target is picked.
-func (h *Handler) restoreRefusal(ctx context.Context, v *Viewer, t Target, o Object) (Refusal, error) {
-	if r := v.writeGate(t); r != RefusalNone {
-		return r, nil
-	}
-	if r := scopeRefusal(o); r != RefusalNone {
-		return r, nil
-	}
-	if v.Admin() {
-		return RefusalNone, nil
-	}
-	_, r, err := v.nonAdminSource(ctx, ActionRestore, o)
-	return r, err
 }
 
 // restoreCandidates lists the namespaces a restore from o may target: for

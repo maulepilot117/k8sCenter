@@ -538,20 +538,34 @@ func (v *Viewer) ActionFlags(ctx context.Context, t Target, o Object) (ActionFla
 	return f, nil
 }
 
-// restoreEligible applies CheckAction's restore rules through the same
-// helpers, leaving out only the target namespace's checks.
+// restoreEligible reports whether a restore from o may be offered at all
+// (restoreRefusal finds no reason against it).
 func (v *Viewer) restoreEligible(ctx context.Context, t Target, o Object) (bool, error) {
-	if v.writeGate(t) != RefusalNone {
-		return false, nil
-	}
-	if v.admin {
-		return true, nil
-	}
-	_, r, err := v.nonAdminSource(ctx, ActionRestore, o)
+	r, err := v.restoreRefusal(ctx, t, o)
 	if err != nil {
 		return false, err
 	}
 	return r == RefusalNone, nil
+}
+
+// restoreRefusal is why no restore from o may be offered at all, before a
+// target is picked: CheckAction's restore rules and POST /restores's scope
+// rule (scopeRefusal, admins included), through the same helpers, leaving
+// out only the target namespace's checks. The UI's restore flag and the
+// restore-targets refusal both come from here, so neither can offer a
+// restore the server always refuses (KTD3).
+func (v *Viewer) restoreRefusal(ctx context.Context, t Target, o Object) (Refusal, error) {
+	if r := v.writeGate(t); r != RefusalNone {
+		return r, nil
+	}
+	if r := scopeRefusal(o); r != RefusalNone {
+		return r, nil
+	}
+	if v.admin {
+		return RefusalNone, nil
+	}
+	_, r, err := v.nonAdminSource(ctx, ActionRestore, o)
+	return r, err
 }
 
 // writeGate refuses every write, for admins too, while the writes setting is
