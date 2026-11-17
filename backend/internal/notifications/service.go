@@ -247,7 +247,18 @@ func (s *NotificationService) broadcast(n Notification, id string) {
 // unauthorized WS subscriber learns nothing about namespaces; clients fetch
 // full details via REST, which enforces RBAC. Kept as a pure function so the
 // exact bytes can be pinned by test.
+//
+// A Rubrik row's payload is the id alone (KTD11). The hub sends every frame
+// to every subscriber, while KTD11 limits a Rubrik row in the feed to admins
+// and holders of its namespace's Rubrik read grant, so even the fixed title
+// and severity would tell everyone else that a backup event happened. The id
+// carries nothing; the frame only tells clients to refetch, and the feed's
+// Rubrik filter decides what they get back.
 func broadcastPayload(n Notification) json.RawMessage {
+	if n.Source == SourceRubrik {
+		refresh, _ := json.Marshal(map[string]any{"id": n.ID})
+		return json.RawMessage(refresh)
+	}
 	stripped := map[string]any{
 		"id":       n.ID,
 		"source":   n.Source,
@@ -331,6 +342,11 @@ func ruleMatches(rule Rule, n Notification) bool {
 // --- Channel dispatch (switch, no interface) ---
 
 func (s *NotificationService) dispatch(ctx context.Context, ch Channel, n Notification) error {
+	// Every external leg below honours the flag, so forcing it here covers
+	// Slack, webhook and mobile push for each suppressed source (R26).
+	if suppressResourceFieldsBySource[n.Source] {
+		n.SuppressResourceFields = true
+	}
 	if s.dispatchHook != nil {
 		return s.dispatchHook(ctx, ch, n)
 	}
@@ -627,10 +643,10 @@ func (s *NotificationService) sendDigests(ctx context.Context) {
 // external channels do not honor that scope and would otherwise leak tenant
 // resource identity.
 //
-// Adding a source here requires also setting SuppressResourceFields=true in
-// the emit path so Slack/webhook honor the policy at send time. The email
-// digest reads this list directly because SuppressResourceFields is not
-// persisted (json:"-").
+// dispatch forces SuppressResourceFields on for these sources, so Slack,
+// webhook and mobile push strip the fields whether or not the emitter set
+// the flag. The email digest reads this list directly because
+// SuppressResourceFields is not persisted (json:"-").
 var suppressResourceFieldsBySource = map[Source]bool{
 	SourceExternalSecrets: true,
 	// Release F: backup-assurance exceptions are collected with the platform
@@ -642,6 +658,9 @@ var suppressResourceFieldsBySource = map[Source]bool{
 	// resource fields, so for it this entry is a no-op (pinned by
 	// TestSanitizeForEmailDigest_ExistingVeleroCacheNotificationUnaffected).
 	SourceVelero: true,
+	// Rubrik (R26): the feed shows a Rubrik row only to holders of its
+	// namespace's Rubrik read grant, and no external channel can honour that.
+	SourceRubrik: true,
 }
 
 // sanitizeForEmailDigest mutates the slice in place, zeroing resource

@@ -20,6 +20,11 @@ const (
 	SourceVelero          Source = "velero"
 	SourceCertManager     Source = "certmanager"
 	SourceExternalSecrets Source = "external_secrets"
+	// SourceRubrik is a Rubrik backup event (R24-R27). Its rows are
+	// namespace-identifying data of a backup system, so its live push carries
+	// no content and its external payloads carry no resource identity
+	// (KTD11, R26).
+	SourceRubrik Source = "rubrik"
 )
 
 // Valid reports whether s is a known Source enum value. Used by the rule
@@ -31,7 +36,7 @@ func (s Source) Valid() bool {
 	switch s {
 	case SourceAlert, SourcePolicy, SourceGitOps, SourceDiagnostic,
 		SourceScan, SourceCluster, SourceAudit, SourceLimits,
-		SourceVelero, SourceCertManager, SourceExternalSecrets:
+		SourceVelero, SourceCertManager, SourceExternalSecrets, SourceRubrik:
 		return true
 	}
 	return false
@@ -162,8 +167,11 @@ type Notification struct {
 	Read      bool      `json:"read,omitempty"`
 
 	// SuppressResourceFields strips ResourceNS/ResourceName from external
-	// dispatch payloads (Slack, webhook). Not persisted to the feed —
-	// in-app readers always see the resource fields, RBAC-filtered.
+	// dispatch payloads (Slack, webhook, mobile push). Not persisted to the
+	// feed — in-app readers always see the resource fields, RBAC-filtered.
+	// Dispatch forces it on for every source in
+	// suppressResourceFieldsBySource, so an emitter of such a source cannot
+	// leak by leaving it unset.
 	SuppressResourceFields bool `json:"-"`
 }
 

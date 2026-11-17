@@ -24,9 +24,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -52,6 +55,7 @@ var allSources = []Source{
 	SourceVelero,
 	SourceCertManager,
 	SourceExternalSecrets,
+	SourceRubrik,
 }
 
 func TestAllSources_MatchesTypesGo(t *testing.T) {
@@ -120,6 +124,10 @@ func TestBroadcastPayload_StrippedShapeForEverySource(t *testing.T) {
 			ClusterID:    "prod-east",
 		}
 		want := fmt.Sprintf(`{"id":%q,"severity":"critical","source":%q,"title":%q}`, n.ID, src, n.Title)
+		if src == SourceRubrik {
+			// KTD11: TestBroadcastPayload_RubrikCarriesOnlyTheID.
+			want = fmt.Sprintf(`{"id":%q}`, n.ID)
+		}
 		if got := string(broadcastPayload(n)); got != want {
 			t.Errorf("broadcastPayload(%s):\n got %s\nwant %s", src, got, want)
 		}
@@ -192,7 +200,8 @@ func newTestService(st *Store) (*NotificationService, *recordingBroadcaster) {
 }
 
 // assertBroadcast checks that exactly one feed event was broadcast for the
-// persisted row id, with the stripped {id, severity, source, title} payload.
+// persisted row id, with the stripped {id, severity, source, title} payload,
+// or the id alone for a Rubrik row (KTD11).
 func assertBroadcast(t *testing.T, rec *recordingBroadcaster, id string, n Notification) {
 	t.Helper()
 	calls := rec.take()
@@ -205,6 +214,9 @@ func assertBroadcast(t *testing.T, rec *recordingBroadcaster, id string, n Notif
 		namespace: "",
 		name:      id,
 		payload:   fmt.Sprintf(`{"id":%q,"severity":%q,"source":%q,"title":%q}`, id, n.Severity, n.Source, n.Title),
+	}
+	if n.Source == SourceRubrik {
+		want.payload = fmt.Sprintf(`{"id":%q}`, id)
 	}
 	if calls[0] != want {
 		t.Errorf("broadcast call differs:\n got %+v\nwant %+v", calls[0], want)
@@ -575,5 +587,121 @@ func TestEmit_DelegatesToEmitSyncWithIdenticalObservableBehaviour(t *testing.T) 
 				t.Errorf("repeat Emit must not enqueue, queue len = %d", len(svc.queue))
 			}
 		})
+	}
+}
+
+// --- Rubrik (R26, KTD11) ----------------------------------------------------
+
+// rubrikNotification is a Rubrik event as an emitter that forgot the
+// suppression flag would send it.
+func rubrikNotification() Notification {
+	return Notification{
+		ID:           "11111111-2222-3333-4444-555555555555",
+		Source:       SourceRubrik,
+		Severity:     SeverityCritical,
+		Title:        "Rubrik snapshot failed",
+		Message:      "A Rubrik snapshot job failed.",
+		ResourceKind: "RubrikObject",
+		ResourceNS:   "team-b",
+		ResourceName: "payments-db",
+		ResourceUID:  "uid-1",
+		ClusterID:    "local",
+	}
+}
+
+// AE7 (live): the hub sends every frame to every subscriber, so a Rubrik
+// row's frame is the id alone. Title, severity and source would tell a user
+// without the namespace's Rubrik grant that a backup event happened.
+func TestBroadcastPayload_RubrikCarriesOnlyTheID(t *testing.T) {
+	n := rubrikNotification()
+	got := string(broadcastPayload(n))
+	if want := `{"id":"11111111-2222-3333-4444-555555555555"}`; got != want {
+		t.Fatalf("broadcastPayload = %s, want %s", got, want)
+	}
+	for _, leak := range []string{n.Title, string(n.Severity), string(n.Source), n.ResourceNS, n.ResourceName} {
+		if strings.Contains(got, leak) {
+			t.Errorf("Rubrik frame %s carries %q", got, leak)
+		}
+	}
+}
+
+// dispatch forces resource suppression for every source in
+// suppressResourceFieldsBySource, whatever the emitter set, and leaves every
+// other source's flag as the emitter set it.
+func TestDispatch_ForcesSuppressionForSuppressedSources(t *testing.T) {
+	for _, src := range allSources {
+		for _, set := range []bool{false, true} {
+			var got Notification
+			svc := &NotificationService{dispatchHook: func(_ context.Context, _ Channel, n Notification) error {
+				got = n
+				return nil
+			}}
+			n := rubrikNotification()
+			n.Source = src
+			n.SuppressResourceFields = set
+			if err := svc.dispatch(t.Context(), Channel{Type: ChannelMobilePush}, n); err != nil {
+				t.Fatalf("dispatch(%s): %v", src, err)
+			}
+			want := set || suppressResourceFieldsBySource[src]
+			if got.SuppressResourceFields != want {
+				t.Errorf("dispatch(%s, flag %v) sent SuppressResourceFields=%v, want %v", src, set, got.SuppressResourceFields, want)
+			}
+		}
+	}
+	if !suppressResourceFieldsBySource[SourceRubrik] {
+		t.Fatal("rubrik must be in suppressResourceFieldsBySource")
+	}
+}
+
+// AE7 (external): the Slack message and the webhook body a rule sends for a
+// Rubrik row name no namespace or object, even when the emitter left the
+// suppression flag unset.
+func TestDispatch_RubrikPayloadsNameNoResource(t *testing.T) {
+	for _, ch := range []Channel{
+		{ID: "slack", Name: "slack", Type: ChannelSlack},
+		{ID: "webhook", Name: "webhook", Type: ChannelWebhook},
+	} {
+		t.Run(string(ch.Type), func(t *testing.T) {
+			var (
+				mu   sync.Mutex
+				body string
+			)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				body = string(b)
+				mu.Unlock()
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(srv.Close)
+			if ch.Type == ChannelSlack {
+				ch.Config = ChannelConfig{"webhookUrl": srv.URL}
+			} else {
+				ch.Config = ChannelConfig{"url": srv.URL}
+			}
+			n := rubrikNotification()
+			if err := (&NotificationService{}).dispatch(t.Context(), ch, n); err != nil {
+				t.Fatalf("dispatch: %v", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if body == "" {
+				t.Fatal("nothing was sent")
+			}
+			for _, leak := range []string{n.ResourceNS, n.ResourceName} {
+				if strings.Contains(body, leak) {
+					t.Errorf("%s body carries %q: %s", ch.Type, leak, body)
+				}
+			}
+		})
+	}
+}
+
+// The email digest strips a Rubrik row's resource identity.
+func TestSanitizeForEmailDigest_StripsRubrikResourceFields(t *testing.T) {
+	rows := []Notification{rubrikNotification()}
+	sanitizeForEmailDigest(rows)
+	if r := rows[0]; r.ResourceKind != "" || r.ResourceNS != "" || r.ResourceName != "" || r.ResourceUID != "" {
+		t.Errorf("digest row keeps resource identity: %+v", r)
 	}
 }
