@@ -780,11 +780,17 @@ test.describe("Dashboard grid resize", () => {
       "wide",
     );
     // Never released, so the size goes back.
-    const settled = await cells(page);
-    expect(settled).toEqual(before);
+    //
+    // Polled, not read once: the wide grid mode flips before the page around
+    // it has finished settling at the restored width, and a single read in
+    // that window saw every widget a few pixels off (CI run 44091571680, three
+    // attempts out of three, while the failure screenshot already showed the
+    // final layout).
+    await expect.poll(() => cells(page)).toEqual(before);
     // And the session is really over: a later Escape cannot revert the page.
+    // Against `before` itself, so the page still ends exactly where it began.
     await page.keyboard.press("Escape");
-    expect(await cells(page)).toEqual(settled);
+    expect(await cells(page)).toEqual(before);
   });
 
   test("a resize cannot start while a drag is in flight", async ({ page }) => {
