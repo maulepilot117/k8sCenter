@@ -3,6 +3,7 @@ package rubrik
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -45,6 +46,53 @@ type fakeOps struct {
 	// afterInsert runs once a row was inserted, before the mutation.
 	afterInsert  func()
 	updateCtxErr error
+	// blockingErr fails BlockingOperations.
+	blockingErr error
+}
+
+// blocking mirrors the store's rubrikOpBlockedBy: the open operations that
+// refuse op, oldest first. The caller holds f.mu.
+func (f *fakeOps) blocking(op store.RubrikOperation) []store.RubrikOperation {
+	var out []store.RubrikOperation
+	for _, x := range f.ops {
+		if x.ClusterID != op.ClusterID || !openState(x.State) {
+			continue
+		}
+		sameObject := x.RSCObjectID == op.RSCObjectID &&
+			(x.Kind == store.RubrikOpRestore || (op.Kind != store.RubrikOpSnapshot && x.Kind == store.RubrikOpSLAAssign))
+		intoNamespace := x.Kind == store.RubrikOpRestore &&
+			(op.WritesIntoAll || slices.ContainsFunc(opNamespaces(op), func(ns string) bool {
+				return slices.Contains(opNamespaces(x), ns)
+			}))
+		if sameObject || intoNamespace {
+			out = append(out, x)
+		}
+	}
+	slices.SortFunc(out, func(a, b store.RubrikOperation) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	return out
+}
+
+// opNamespaces mirrors the store's rubrikOpNamespaces.
+func opNamespaces(op store.RubrikOperation) []string {
+	out := append([]string{op.Namespace}, op.AlsoWritesInto...)
+	if op.Kind == store.RubrikOpRestore {
+		var src struct {
+			Into []string `json:"into"`
+		}
+		if json.Unmarshal(op.Source, &src) == nil {
+			out = append(out, src.Into...)
+		}
+	}
+	return out
+}
+
+func (f *fakeOps) BlockingOperations(_ context.Context, op store.RubrikOperation) ([]store.RubrikOperation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.blockingErr != nil {
+		return nil, f.blockingErr
+	}
+	return f.blocking(op), nil
 }
 
 func newFakeOps() *fakeOps { return &fakeOps{ops: map[string]store.RubrikOperation{}} }
@@ -66,16 +114,12 @@ func (f *fakeOps) InsertOperation(_ context.Context, op store.RubrikOperation) (
 	if _, ok := f.ops[id]; ok {
 		return store.RubrikOperation{}, store.ErrRubrikOperationExists
 	}
-	for _, x := range f.ops {
-		if x.ClusterID != op.ClusterID || x.RSCObjectID != op.RSCObjectID || !openState(x.State) {
-			continue
-		}
-		if x.Kind == store.RubrikOpRestore || (op.Kind != store.RubrikOpSnapshot && x.Kind == store.RubrikOpSLAAssign) {
-			return store.RubrikOperation{}, store.ErrRubrikOperationInFlight
-		}
+	if len(f.blocking(op)) > 0 {
+		return store.RubrikOperation{}, store.ErrRubrikOperationInFlight
 	}
 	now := time.Now()
 	op.ID, op.State, op.CreatedAt, op.UpdatedAt = id, store.RubrikOpApplying, now, now
+	op.AlsoWritesInto, op.WritesIntoAll = nil, false // not stored
 	f.ops[id] = op
 	if f.afterInsert != nil {
 		f.afterInsert()
@@ -165,6 +209,8 @@ type fakeWriter struct {
 	jobsErr     error
 	// ctxErr is the mutation context's error when the mutation ran.
 	ctxErr error
+	// taskchainReads counts Taskchain calls.
+	taskchainReads int
 }
 
 func newFakeWriter() *fakeWriter {
@@ -190,6 +236,7 @@ func (f *fakeWriter) AssignSLA(ctx context.Context, objectIDs []string, slaID st
 func (f *fakeWriter) Taskchain(_ context.Context, id string) (TaskchainState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.taskchainReads++
 	st, ok := f.taskchains[id]
 	if !ok {
 		return TaskchainState{Status: JobRunning}, nil
@@ -1007,6 +1054,154 @@ func TestMutationSurvivesClientHangUp(t *testing.T) {
 			}
 			if op := ops.get(t, testOpID); op.State == store.RubrikOpApplying {
 				t.Error("the outcome was not recorded after the client hung up")
+			}
+		})
+	}
+}
+
+// openRestore is bob's open restore of object into namespace, followed by
+// taskchain tc-r, created now so no grace has run out.
+func openRestore(id, object, namespace, state string) store.RubrikOperation {
+	now := time.Now()
+	return store.RubrikOperation{ID: id, Owner: "u-bob", ClusterID: "local", Kind: store.RubrikOpRestore,
+		Namespace: namespace, RSCObjectID: object, State: state, JobFamily: store.RubrikJobTaskchain, JobHandle: "tc-r",
+		CreatedAt: now, UpdatedAt: now}
+}
+
+// A write refused because of an open operation refreshes that operation
+// from RSC and goes ahead once it is final, so a restore whose job ended
+// does not hold its namespace until someone reads it. A blocker still
+// running, one still being sent, more blockers than are refreshed, and a
+// failed listing all leave the write refused, with nothing sent and the
+// blocker undisclosed.
+func TestBlockedWriteSettlesItsBlockers(t *testing.T) {
+	grants := []string{"get protections team-a", "create snapshots team-a"}
+	blockerID := func(i int) string { return fmt.Sprintf("cccccccc-cccc-4ccc-8ccc-%012d", i) }
+	for name, c := range map[string]struct {
+		blockers  int
+		state     string
+		finished  bool
+		listErr   error
+		allowed   bool
+		wantReads int
+	}{
+		"finished":      {blockers: 1, state: store.RubrikOpRunning, finished: true, allowed: true, wantReads: 1},
+		"all finished":  {blockers: maxBlockersSettled, state: store.RubrikOpUnknown, finished: true, allowed: true, wantReads: maxBlockersSettled},
+		"still running": {blockers: 1, state: store.RubrikOpRunning, wantReads: 1},
+		"being sent":    {blockers: 1, state: store.RubrikOpApplying, finished: true},
+		"too many":      {blockers: maxBlockersSettled + 1, state: store.RubrikOpRunning, finished: true},
+		"listing fails": {blockers: 1, state: store.RubrikOpRunning, finished: true, listErr: errors.New("pg down at 10.0.0.7")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fx, ops, w, _ := writeFixture(t, teamA(), true, grants...)
+			for i := range c.blockers {
+				ops.seed(openRestore(blockerID(i), idWide, "team-a", c.state))
+			}
+			if c.finished {
+				w.taskchains["tc-r"] = TaskchainState{Status: JobSucceeded}
+			}
+			ops.blockingErr = c.listErr
+			rec := fx.do(t, alice, "local", http.MethodPost, "/rubrik/namespaces/team-a/snapshots", snapshotBody(testOpID))
+			entries := entriesFor(fx, audit.ActionRubrikSnapshot)
+			if w.taskchainReads != c.wantReads {
+				t.Errorf("%d taskchain reads, want %d", w.taskchainReads, c.wantReads)
+			}
+			if c.allowed {
+				wantStatus(t, rec, http.StatusCreated)
+				for i := range c.blockers {
+					if st := ops.get(t, blockerID(i)).State; st != store.RubrikOpSucceeded {
+						t.Errorf("blocker %d = %s, want succeeded", i, st)
+					}
+				}
+				if w.mutations() != 1 || len(entries) != 1 || entries[0].Result != audit.ResultSuccess {
+					t.Errorf("mutations %d, audit %+v; want the snapshot sent and audited once", w.mutations(), entries)
+				}
+				return
+			}
+			wantStatus(t, rec, http.StatusConflict)
+			if got := errorReason(t, rec); got != "operation_in_flight" {
+				t.Errorf("reason = %q, want operation_in_flight", got)
+			}
+			if body := rec.Body.String(); strings.Contains(body, "cccccccc") || strings.Contains(body, "10.0.0.7") {
+				t.Errorf("the refusal disclosed a blocker or store text: %s", body)
+			}
+			if st := ops.get(t, blockerID(0)).State; st != c.state {
+				t.Errorf("blocker = %s, want it left %s", st, c.state)
+			}
+			if w.mutations() != 0 || len(entries) != 1 || entries[0].Result != audit.ResultFailure {
+				t.Errorf("mutations %d, audit %+v; want nothing sent and one failure", w.mutations(), entries)
+			}
+		})
+	}
+}
+
+// A snapshot of a protection set acts on every namespace the set covers, so
+// an open restore into any of them blocks it, not only one into the
+// namespace it was asked from, and a set over all namespaces is blocked by
+// an open restore anywhere in the cluster.
+func TestSetSnapshotIsBlockedByARestoreIntoItsNamespaces(t *testing.T) {
+	both := Coverage{Namespaces: []string{"team-a", "team-b"}}
+	for name, c := range map[string]struct {
+		cov     Coverage
+		into    string
+		blocked bool
+	}{
+		"covered namespace":   {both, "team-b", true},
+		"uncovered namespace": {both, "team-z", false},
+		"all namespaces":      {Coverage{All: true}, "team-z", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fx, ops, w, _ := writeFixture(t, map[string]time.Time{"team-a": created, "team-b": created}, true)
+			useSets(fx, objSet(idWide, "cluster", c.cov, idSLA, nil))
+			ops.seed(openRestore(otherOp, idSet, c.into, store.RubrikOpRunning))
+			rec := fx.do(t, root, "local", http.MethodPost, "/rubrik/namespaces/team-a/snapshots",
+				map[string]any{"operationId": testOpID, "objectId": idWide})
+			if !c.blocked {
+				wantStatus(t, rec, http.StatusCreated)
+				return
+			}
+			wantStatus(t, rec, http.StatusConflict)
+			if got := errorReason(t, rec); got != "operation_in_flight" || w.mutations() != 0 {
+				t.Errorf("reason = %q, %d mutations; want operation_in_flight and nothing sent", got, w.mutations())
+			}
+		})
+	}
+}
+
+// A protection-set restore has no taskchain, so a blocked write settles it
+// through the activity series. With no single recovery job, its grace rule
+// applies unchanged: within noJobGrace of its last update it keeps blocking,
+// and an unknown restore past that grace is settled as failed with the
+// message that sends its owner to RSC before restoring again, and the write
+// goes ahead. That is the same release a read of the operation makes; the
+// write only stops waiting for someone to make that read.
+func TestBlockedWriteSettlesAnUnattributedRestoreOnlyAfterItsGrace(t *testing.T) {
+	for name, c := range map[string]struct {
+		age     time.Duration
+		allowed bool
+	}{
+		"within its grace": {time.Minute, false},
+		"past its grace":   {noJobGrace + time.Minute, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fx, ops, w, _ := writeFixture(t, teamA(), true, "get protections team-a", "create snapshots team-a")
+			blocker := openRestore(otherOp, idWide, "team-a", store.RubrikOpUnknown)
+			blocker.JobFamily, blocker.JobHandle = store.RubrikJobAsyncRequest, "req-1"
+			blocker.CreatedAt = time.Now().Add(-c.age - noJobGrace)
+			blocker.UpdatedAt = time.Now().Add(-c.age)
+			ops.seed(blocker)
+			rec := fx.do(t, alice, "local", http.MethodPost, "/rubrik/namespaces/team-a/snapshots", snapshotBody(testOpID))
+			got := ops.get(t, otherOp)
+			if !c.allowed {
+				wantStatus(t, rec, http.StatusConflict)
+				if got.State != store.RubrikOpUnknown || w.mutations() != 0 {
+					t.Errorf("blocker %s, %d mutations; want it left unknown and nothing sent", got.State, w.mutations())
+				}
+				return
+			}
+			wantStatus(t, rec, http.StatusCreated)
+			if got.State != store.RubrikOpFailed || got.FailureMessage != msgNoRestoreJob {
+				t.Errorf("blocker = %s %q; want failed with msgNoRestoreJob", got.State, got.FailureMessage)
 			}
 		})
 	}

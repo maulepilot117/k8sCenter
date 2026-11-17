@@ -446,6 +446,8 @@ func TestRubrikOpNamespaces(t *testing.T) {
 	snapshot.Kind = RubrikOpSnapshot
 	unreadable := restore
 	unreadable.Source = json.RawMessage(`{"into":"team-c"}`)
+	setSnapshot := snapshot
+	setSnapshot.AlsoWritesInto = []string{"team-d", "team-b"}
 	for name, c := range map[string]struct {
 		op   RubrikOperation
 		want []string
@@ -453,6 +455,7 @@ func TestRubrikOpNamespaces(t *testing.T) {
 		"restore":                   {restore, []string{"team-a", "team-b", "team-c"}},
 		"snapshot ignores a source": {snapshot, []string{"team-b"}},
 		"unreadable into":           {unreadable, []string{"team-b"}},
+		"set snapshot":              {setSnapshot, []string{"team-b", "team-d"}},
 	} {
 		if got := rubrikOpNamespaces(c.op); !slices.Equal(got, c.want) {
 			t.Errorf("%s: namespaces = %v, want %v", name, got, c.want)
@@ -512,8 +515,27 @@ func TestRubrikOperationRestoreBlocksItsNamespaces(t *testing.T) {
 			o.Source = json.RawMessage(`{"into":["team-a"]}`)
 			return o
 		}(), false},
+		"set snapshot also writing into the target": {func() RubrikOperation {
+			o := op(RubrikOpSnapshot, "team-c")
+			o.AlsoWritesInto = []string{"team-c", "team-b"}
+			return o
+		}(), true},
+		"set change writing into every namespace": {func() RubrikOperation {
+			o := op(RubrikOpSLAAssign, "team-z")
+			o.WritesIntoAll = true
+			return o
+		}(), true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			// BlockingOperations names the open restore exactly when the
+			// insert is refused, by the same predicate.
+			blockers, err := s.BlockingOperations(ctx, c.op)
+			if err != nil {
+				t.Fatalf("blocking operations: %v", err)
+			}
+			if named := len(blockers) == 1 && blockers[0].ID == open.ID; named != c.blocked || len(blockers) > 1 {
+				t.Errorf("blocking operations = %d rows, want the open restore only when blocked (%v)", len(blockers), c.blocked)
+			}
 			added, err := s.InsertOperation(ctx, c.op)
 			switch {
 			case c.blocked && !errors.Is(err, ErrRubrikOperationInFlight):
@@ -546,5 +568,73 @@ func TestRubrikOperationRestoreBlocksItsNamespaces(t *testing.T) {
 	settle(t, open.ID)
 	if _, err := s.InsertOperation(ctx, op(RubrikOpSnapshot, "team-a")); err != nil {
 		t.Errorf("snapshot after the restore finished = %v, want it allowed", err)
+	}
+}
+
+// BlockingOperations lists every open blocker of a new operation, oldest
+// first, and nothing final, of another cluster, or unrelated; the
+// insert-only namespace fields are never stored.
+func TestRubrikBlockingOperations(t *testing.T) {
+	s := NewRubrikStore(testDB(t), rubrikTestKey)
+	ctx := t.Context()
+	cluster := testOwnerID(t)
+	object := uuid.NewString()
+
+	insert := func(o RubrikOperation) RubrikOperation {
+		t.Helper()
+		got, err := s.InsertOperation(ctx, o)
+		if err != nil {
+			t.Fatalf("insert %s: %v", o.Kind, err)
+		}
+		return got
+	}
+	move := func(id, state string) {
+		t.Helper()
+		if _, err := s.UpdateOperation(ctx, id, []string{RubrikOpApplying}, RubrikOperationUpdate{State: state}); err != nil {
+			t.Fatalf("moving %s to %s: %v", id, state, err)
+		}
+	}
+
+	// The blockers, oldest first: an SLA change of the object, then a
+	// restore of another object into team-a. A finished restore into
+	// team-a, an open snapshot of the object and an open restore into
+	// team-q block nothing here.
+	done := newRubrikOp(cluster, uuid.NewString(), RubrikOpRestore)
+	move(insert(done).ID, RubrikOpSucceeded)
+	sla := insert(newRubrikOp(cluster, object, RubrikOpSLAAssign))
+	move(sla.ID, RubrikOpUnknown)
+	into := newRubrikOp(cluster, uuid.NewString(), RubrikOpRestore)
+	into.Source = json.RawMessage(`{"into":["team-a"]}`)
+	restore := insert(into)
+	move(restore.ID, RubrikOpRunning)
+	snapshot := newRubrikOp(cluster, uuid.NewString(), RubrikOpSnapshot)
+	snapshot.RSCObjectID = object
+	snapshot.Namespace = "team-q"
+	insert(snapshot)
+	elsewhere := newRubrikOp(cluster, uuid.NewString(), RubrikOpRestore)
+	elsewhere.Namespace = "team-q"
+	insert(elsewhere)
+
+	next := newRubrikOp(cluster, object, RubrikOpSLAAssign)
+	next.AlsoWritesInto = []string{"team-c"}
+	got, err := s.BlockingOperations(ctx, next)
+	if err != nil {
+		t.Fatalf("blocking operations: %v", err)
+	}
+	ids := make([]string, 0, len(got))
+	for _, o := range got {
+		ids = append(ids, o.ID)
+		if o.AlsoWritesInto != nil || o.WritesIntoAll {
+			t.Errorf("row %s carries insert-only fields", o.ID)
+		}
+	}
+	if want := []string{sla.ID, restore.ID}; !slices.Equal(ids, want) {
+		t.Errorf("blockers = %v, want %v (oldest first)", ids, want)
+	}
+
+	other := next
+	other.ClusterID = testOwnerID(t)
+	if got, err := s.BlockingOperations(ctx, other); err != nil || len(got) != 0 {
+		t.Errorf("another cluster = %d rows, %v; want none", len(got), err)
 	}
 }
