@@ -87,8 +87,8 @@ type TokenFlusher interface {
 }
 
 // HandlerDeps are the handler's collaborators. Every field except Logger,
-// Probe, ValidateURL, Operations and Writer is required, and none may be a
-// typed nil.
+// Probe, ValidateURL, Operations, Writer and Restorer is required, and none
+// may be a typed nil.
 type HandlerDeps struct {
 	Store    AdminStore
 	Clusters ClusterRecords
@@ -112,6 +112,9 @@ type HandlerDeps struct {
 	// RSCWriter (*Operations does). With either missing the write and
 	// operation endpoints answer 503.
 	Writer RSCWriter
+	// Restorer sends restores; nil means RSC, when it implements
+	// RSCRestorer (*Operations does). Without it restore answers 503.
+	Restorer RSCRestorer
 }
 
 // Handler serves /v1/rubrik. It exists only while the provider is enabled
@@ -130,6 +133,7 @@ type Handler struct {
 	validateURL  func(ctx context.Context, raw string) error
 	ops          OperationStore
 	writer       RSCWriter
+	restorer     RSCRestorer
 }
 
 // NewHandler checks d and returns the handler.
@@ -166,12 +170,16 @@ func NewHandler(d HandlerDeps) (*Handler, error) {
 		validateURL:  d.ValidateURL,
 		ops:          d.Operations,
 		writer:       d.Writer,
+		restorer:     d.Restorer,
 	}
 	if h.ops == nil {
 		h.ops, _ = d.Store.(OperationStore)
 	}
 	if h.writer == nil {
 		h.writer, _ = d.RSC.(RSCWriter)
+	}
+	if h.restorer == nil {
+		h.restorer, _ = d.RSC.(RSCRestorer)
 	}
 	if h.logger == nil {
 		h.logger = slog.Default()
@@ -214,6 +222,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, writeLimit func(http.Handler) htt
 	r.Get("/operations/{id}", h.HandleOperation)
 	r.With(writeLimit).Post("/namespaces/{namespace}/snapshots", h.HandleSnapshot)
 	r.With(writeLimit).Put("/namespaces/{namespace}/sla", h.HandleSLA)
+	r.Get("/namespaces/{namespace}/restore-targets", h.HandleRestoreTargets)
+	r.With(writeLimit).Post("/restores", h.HandleRestore)
 	r.Group(func(ar chi.Router) {
 		ar.Use(middleware.RequireAdmin)
 		ar.Get("/rsc-clusters", h.HandleListRSCClusters)

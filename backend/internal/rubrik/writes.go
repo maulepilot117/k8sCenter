@@ -1,7 +1,7 @@
 package rubrik
 
-// writes.go - on-demand snapshot and SLA change, and the operation read
-// (U7, KTD7, KTD8).
+// writes.go - on-demand snapshot and SLA change, the send path restore
+// shares (restore.go), and the operation read (U7, KTD7, KTD8).
 //
 // Every write follows one sequence: the writes setting, the viewer (remote
 // clusters are admin-only), the operation id's earlier row (a retry is
@@ -90,6 +90,7 @@ const (
 	msgOperationGone    = "operation not found"
 	msgCanceled         = "the job was canceled in RSC"
 	msgNoJob            = "RSC shows no job for this request"
+	msgNoRestoreJob     = "RSC shows no single restore job for this request; check RSC before restoring again"
 	msgSLANotApplied    = "RSC shows a different SLA domain; the change was not applied"
 	msgRejected         = "RSC refused the change; nothing was applied"
 )
@@ -186,6 +187,9 @@ type writeCall struct {
 	// object is the RSC object acted on, once chosen; it names the audit
 	// entry.
 	object string
+	// restore is the resolved source of a restore; nil for the other
+	// writes.
+	restore *restoreSource
 }
 
 // audit records the call's decision. Entries carry the operation id, the
@@ -226,6 +230,70 @@ func (c *writeCall) fail(h *Handler, status int, msg, reason string, extra map[s
 func (c *writeCall) accessFailed(h *Handler, err error) {
 	h.logger.Error("rubrik write: access check failed", "error", err)
 	c.fail(h, http.StatusServiceUnavailable, msgAccessCheck, "access_check_failed", nil)
+}
+
+// beginWrite runs the checks every write shares, in this order, each
+// decision audited once: the writes setting (AE8: with writes off nothing
+// else happens, for admins too, R29), the viewer (a remote cluster is
+// admin-only), a retry answered from its earlier row (so it can never reach
+// RSC twice), the read grant on c.ns (the operation is read back under it,
+// KTD7), the mapping, and a current object list. ok is false when the call
+// has been answered.
+func (h *Handler) beginWrite(c *writeCall) (v *Viewer, t Target, view ClusterView, ok bool) {
+	if !h.access.WritesEnabled() {
+		c.refuse(h, http.StatusForbidden, msgWritesDisabled, string(RefusalWritesDisabled))
+		return nil, Target{}, ClusterView{}, false
+	}
+	v, err := h.access.Viewer(c.user, c.rr.clusterID)
+	switch {
+	case errors.Is(err, ErrRemoteAdminOnly):
+		c.refuse(h, http.StatusForbidden, msgRemoteAdmin, StateAdminOnly)
+		return nil, Target{}, ClusterView{}, false
+	case err != nil:
+		c.accessFailed(h, err)
+		return nil, Target{}, ClusterView{}, false
+	}
+	c.rr.viewer = v
+	if done := h.answerEarlier(c); done {
+		return nil, Target{}, ClusterView{}, false
+	}
+
+	ctx := c.r.Context()
+	if !v.Admin() {
+		_, readable, err := v.readable(ctx, c.ns)
+		if err != nil {
+			c.accessFailed(h, err)
+			return nil, Target{}, ClusterView{}, false
+		}
+		if !readable {
+			c.refuse(h, http.StatusNotFound, msgNamespaceGone, "no_read_grant")
+			return nil, Target{}, ClusterView{}, false
+		}
+	}
+
+	t, err = h.service.Resolve(ctx, c.rr.clusterID)
+	if err != nil {
+		// A setup problem refuses the write (R2); a store outage fails it.
+		result := audit.ResultDenied
+		if errors.Is(err, ErrStoreUnavailable) {
+			result = audit.ResultFailure
+		}
+		c.audit(h, result, "setup: "+errorClass(err))
+		h.writeReadError(c.w, c.rr, err)
+		return nil, Target{}, ClusterView{}, false
+	}
+	view, err = h.service.Objects(ctx, t)
+	if err == nil && view.Freshness.Err != nil {
+		// Writes act on current data only: a stale list may name an
+		// object RSC no longer has.
+		err = view.Freshness.Err
+	}
+	if err != nil {
+		c.audit(h, audit.ResultFailure, "objects: "+errorClass(err))
+		h.writeReadError(c.w, c.rr, err)
+		return nil, Target{}, ClusterView{}, false
+	}
+	return v, t, view, true
 }
 
 // HandleSnapshot answers POST /rubrik/namespaces/{namespace}/snapshots: an
@@ -278,64 +346,12 @@ func (h *Handler) handleWrite(w http.ResponseWriter, r *http.Request, k writeKin
 		hash: requestHash(k, clusterID, ns, req), rr: readRequest{clusterID: clusterID},
 	}
 
-	// AE8: with writes off nothing else happens, for admins too (R29).
-	if !h.access.WritesEnabled() {
-		c.refuse(h, http.StatusForbidden, msgWritesDisabled, string(RefusalWritesDisabled))
-		return
-	}
-	v, err := h.access.Viewer(user, clusterID)
-	switch {
-	case errors.Is(err, ErrRemoteAdminOnly):
-		c.refuse(h, http.StatusForbidden, msgRemoteAdmin, StateAdminOnly)
-		return
-	case err != nil:
-		c.accessFailed(h, err)
-		return
-	}
-	c.rr.viewer = v
-
-	// A retry is answered from the earlier row before anything is checked
-	// again, so it can never reach RSC twice.
-	if done := h.answerEarlier(c); done {
+	v, t, view, ok := h.beginWrite(c)
+	if !ok {
 		return
 	}
 
 	ctx := r.Context()
-	if !v.Admin() {
-		_, readable, err := v.readable(ctx, ns)
-		if err != nil {
-			c.accessFailed(h, err)
-			return
-		}
-		if !readable {
-			c.refuse(h, http.StatusNotFound, msgNamespaceGone, "no_read_grant")
-			return
-		}
-	}
-
-	t, err := h.service.Resolve(ctx, clusterID)
-	if err != nil {
-		// A setup problem refuses the write (R2); a store outage fails it.
-		result := audit.ResultDenied
-		if errors.Is(err, ErrStoreUnavailable) {
-			result = audit.ResultFailure
-		}
-		c.audit(h, result, "setup: "+errorClass(err))
-		h.writeReadError(w, c.rr, err)
-		return
-	}
-	view, err := h.service.Objects(ctx, t)
-	if err == nil && view.Freshness.Err != nil {
-		// Writes act on current data only: a stale list may name an
-		// object RSC no longer has.
-		err = view.Freshness.Err
-	}
-	if err != nil {
-		c.audit(h, audit.ResultFailure, "objects: "+errorClass(err))
-		h.writeReadError(w, c.rr, err)
-		return
-	}
-
 	candidates, err := h.writeCandidates(ctx, v, ns, view.Objects)
 	if err != nil {
 		c.accessFailed(h, err)
@@ -537,7 +553,7 @@ func (h *Handler) send(c *writeCall, t Target, o Object, rec opRequest) {
 	}
 	op, err := h.ops.InsertOperation(c.r.Context(), store.RubrikOperation{
 		ID: c.id, Owner: c.user.ID, ClusterID: t.ClusterID, Kind: c.k.kind, Namespace: c.ns,
-		RSCObjectID: o.ID, RequestHash: c.hash, Request: raw,
+		RSCObjectID: o.ID, RequestHash: c.hash, Request: raw, Source: c.restore.sourceJSON(),
 	})
 	switch {
 	case errors.Is(err, store.ErrRubrikOperationExists):
@@ -575,6 +591,13 @@ func (h *Handler) send(c *writeCall, t Target, o Object, rec opRequest) {
 		err = h.writer.AssignSLA(mctx, []string{o.ID}, rec.SLAID)
 		if err == nil {
 			update.State = store.RubrikOpSucceeded
+		}
+	case store.RubrikOpRestore:
+		var handle JobHandle
+		handle, err = h.sendRestore(mctx, t, o, c)
+		if err == nil {
+			update.State = store.RubrikOpRunning
+			update.JobFamily, update.JobHandle = jobRef(handle)
 		}
 	}
 	cancel()
@@ -619,12 +642,13 @@ func (h *Handler) send(c *writeCall, t Target, o Object, rec opRequest) {
 	if reason != "" {
 		detail += "; " + reason
 	}
-	if c.k.kind == store.RubrikOpSLAAssign {
-		if rec.SLAID == "" {
-			detail += "; sla removed"
-		} else {
-			detail += "; sla " + rec.SLAID
-		}
+	switch {
+	case c.k.kind == store.RubrikOpSLAAssign && rec.SLAID == "":
+		detail += "; sla removed"
+	case c.k.kind == store.RubrikOpSLAAssign:
+		detail += "; sla " + rec.SLAID
+	case c.restore != nil:
+		detail += "; " + c.restore.auditDetail()
 	}
 	result := audit.ResultSuccess
 	if update.State == store.RubrikOpFailed || update.State == store.RubrikOpUnknown {
@@ -767,7 +791,7 @@ func (h *Handler) refreshOperation(ctx context.Context, op store.RubrikOperation
 	return op, "store_unavailable"
 }
 
-// followJob reads the state of a snapshot's job: from its taskchain when it
+// followJob reads the state of a snapshot's or restore's job: from its taskchain when it
 // has one, otherwise from the object's activity series around the time the
 // operation started. An empty update means nothing changed.
 func (h *Handler) followJob(ctx context.Context, op store.RubrikOperation) (store.RubrikOperationUpdate, error) {
@@ -801,6 +825,9 @@ func (h *Handler) followJob(ctx context.Context, op store.RubrikOperation) (stor
 	jobs, err := h.operationJobs(ctx, op)
 	if err != nil {
 		return store.RubrikOperationUpdate{}, err
+	}
+	if op.Kind == store.RubrikOpRestore && len(jobs) != 1 {
+		return unattributedRestore(op), nil
 	}
 	if len(jobs) == 0 {
 		if op.State == store.RubrikOpUnknown && time.Since(op.UpdatedAt) > noJobGrace {
@@ -852,9 +879,39 @@ func (h *Handler) operationJobs(ctx context.Context, op store.RubrikOperation) (
 			j.StartTime.Before(from) || j.StartTime.After(until) {
 			continue
 		}
+		// A restore is followed only by a recovery job, and a snapshot never
+		// by one, so a scheduled backup cannot settle a restore and a restore
+		// cannot settle a snapshot.
+		if isRecoveryJob(j) != (op.Kind == store.RubrikOpRestore) {
+			continue
+		}
 		out = append(out, j)
 	}
 	return out, nil
+}
+
+// activityRecovery is RSC's activity type for a restore job.
+const activityRecovery = "Recovery"
+
+func isRecoveryJob(j Job) bool {
+	return strings.EqualFold(strings.TrimSpace(j.Type), activityRecovery)
+}
+
+// unattributedRestore settles a restore followed through the activity series
+// (a protection-set restore has no taskchain) when no single recovery job
+// can be told to be its own. An open restore blocks every later write on its
+// object, so it must not stay open for good: after noJobGrace a running
+// restore becomes unknown, and after another noJobGrace an unknown one is
+// settled as failed with a message that sends the operator to RSC before any
+// second restore, since it may in fact have run.
+func unattributedRestore(op store.RubrikOperation) store.RubrikOperationUpdate {
+	if time.Since(op.UpdatedAt) <= noJobGrace {
+		return store.RubrikOperationUpdate{}
+	}
+	if op.State == store.RubrikOpUnknown {
+		return store.RubrikOperationUpdate{State: store.RubrikOpFailed, FailureMessage: msgNoRestoreJob}
+	}
+	return store.RubrikOperationUpdate{State: store.RubrikOpUnknown}
 }
 
 // settleSLA settles an SLA change of unknown outcome from RSC's object list.
