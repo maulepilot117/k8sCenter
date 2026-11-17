@@ -293,15 +293,80 @@ func (s *RubrikStore) InsertOperation(ctx context.Context, op RubrikOperation) (
 // The sla_assign and restore cells are also idx_rubrik_operations_in_flight,
 // which must keep the same kinds and states ($4). Across objects, an open
 // restore blocks every new operation that writes into one of its namespaces
-// ($5), or into every namespace ($6).
+// ($5), or into every namespace ($6). Its "into" counts only as an array,
+// as rubrikOpNamespaces reads it (jsonb's ?| would match a bare string too).
+//
+// RubrikOperationBlocks is the same rule in Go; a change here must be made
+// there too, and TestRubrikOperationBlocksMatchesTheStore holds them equal.
 const rubrikOpBlockedBy = `cluster_id = $1::text
 	AND state = ANY($4::text[])
 	AND (
 	      (rsc_object_id = $3::text
 	       AND (kind = 'restore' OR ($2::text <> 'snapshot' AND kind = 'sla_assign')))
 	   OR (kind = 'restore'
-	       AND ($6::boolean OR namespace = ANY($5::text[]) OR source -> 'into' ?| $5::text[]))
+	       AND ($6::boolean OR namespace = ANY($5::text[])
+	            OR (jsonb_typeof(source -> 'into') = 'array' AND source -> 'into' ?| $5::text[])))
 	)`
+
+// RubrikOperationBlocks reports whether open, an operation as stored, blocks
+// the insert of next: rubrikOpBlockedBy in Go, for a caller that judges many
+// possible writes against one list of open operations (OpenOperations)
+// instead of asking the database about each. Like the insert, it reads only
+// next's cluster, kind, object and namespaces.
+func RubrikOperationBlocks(open, next RubrikOperation) bool {
+	if open.ClusterID != next.ClusterID || !slices.Contains(rubrikOpOpen, open.State) {
+		return false
+	}
+	if open.RSCObjectID == next.RSCObjectID &&
+		(open.Kind == RubrikOpRestore || (next.Kind != RubrikOpSnapshot && open.Kind == RubrikOpSLAAssign)) {
+		return true
+	}
+	if open.Kind != RubrikOpRestore {
+		return false
+	}
+	if next.WritesIntoAll {
+		return true
+	}
+	into := rubrikOpNamespaces(next)
+	return slices.ContainsFunc(rubrikOpNamespaces(open), func(ns string) bool { return slices.Contains(into, ns) })
+}
+
+// maxOpenOperations caps OpenOperations' answer.
+const maxOpenOperations = 1000
+
+// ErrRubrikOperationsTruncated is returned by OpenOperations, with the
+// oldest maxOpenOperations rows, when the cluster has more open operations:
+// a caller judging writes against the list must not take a missing blocker
+// for none.
+var ErrRubrikOperationsTruncated = errors.New("too many open rubrik operations to list")
+
+// OpenOperations returns the open operations (applying, running or unknown)
+// on clusterID, oldest first. Past maxOpenOperations it returns the oldest
+// ones with ErrRubrikOperationsTruncated.
+func (s *RubrikStore) OpenOperations(ctx context.Context, clusterID string) ([]RubrikOperation, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+rubrikOperationColumns+` FROM rubrik_operations
+		WHERE cluster_id = $1::text AND state = ANY($2::text[])
+		ORDER BY created_at, id
+		LIMIT $3`, clusterID, rubrikOpOpen, maxOpenOperations+1)
+	if err != nil {
+		return nil, fmt.Errorf("listing open rubrik operations: %w", err)
+	}
+	out, err := collectRubrikOperations(rows)
+	if err != nil {
+		return nil, fmt.Errorf("listing open rubrik operations: %w", err)
+	}
+	if len(out) > maxOpenOperations {
+		return out[:maxOpenOperations], ErrRubrikOperationsTruncated
+	}
+	return out, nil
+}
+
+func collectRubrikOperations(rows pgx.Rows) ([]RubrikOperation, error) {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (RubrikOperation, error) {
+		return scanRubrikOperation(row)
+	})
+}
 
 // blockedByArgs returns rubrikOpBlockedBy's arguments for a new operation op.
 func blockedByArgs(op RubrikOperation) []any {
@@ -325,9 +390,7 @@ func (s *RubrikStore) BlockingOperations(ctx context.Context, op RubrikOperation
 	if err != nil {
 		return nil, fmt.Errorf("listing blocking rubrik operations: %w", err)
 	}
-	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (RubrikOperation, error) {
-		return scanRubrikOperation(row)
-	})
+	out, err := collectRubrikOperations(rows)
 	if err != nil {
 		return nil, fmt.Errorf("listing blocking rubrik operations: %w", err)
 	}

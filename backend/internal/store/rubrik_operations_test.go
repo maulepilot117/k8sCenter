@@ -638,3 +638,171 @@ func TestRubrikBlockingOperations(t *testing.T) {
 		t.Errorf("another cluster = %d rows, %v; want none", len(got), err)
 	}
 }
+
+// TestRubrikOperationBlocks needs no database: the in-flight rule in Go, cell
+// by cell. TestRubrikOperationBlocksMatchesTheStore holds it to the SQL.
+func TestRubrikOperationBlocks(t *testing.T) {
+	open := func(kind, state string) RubrikOperation {
+		o := newRubrikOp("c", "obj", kind)
+		o.State = state
+		return o
+	}
+	next := func(kind, object, namespace string) RubrikOperation {
+		o := newRubrikOp("c", object, kind)
+		o.Namespace = namespace
+		return o
+	}
+	restoreInto := open(RubrikOpRestore, RubrikOpRunning)
+	restoreInto.Namespace = "team-a"
+	restoreInto.Source = json.RawMessage(`{"into":["team-a","team-b"]}`)
+	stringInto := restoreInto
+	stringInto.Source = json.RawMessage(`{"into":"team-c"}`)
+	wide := next(RubrikOpSnapshot, "other", "team-z")
+	wide.AlsoWritesInto = []string{"team-z", "team-b"}
+	all := next(RubrikOpSLAAssign, "other", "team-z")
+	all.WritesIntoAll = true
+	otherCluster := next(RubrikOpSLAAssign, "obj", "team-z")
+	otherCluster.ClusterID = "c2"
+
+	for name, c := range map[string]struct {
+		open, next RubrikOperation
+		want       bool
+	}{
+		"sla blocks sla":               {open(RubrikOpSLAAssign, RubrikOpApplying), next(RubrikOpSLAAssign, "obj", "team-z"), true},
+		"sla blocks restore":           {open(RubrikOpSLAAssign, RubrikOpUnknown), next(RubrikOpRestore, "obj", "team-z"), true},
+		"sla allows snapshot":          {open(RubrikOpSLAAssign, RubrikOpRunning), next(RubrikOpSnapshot, "obj", "team-z"), false},
+		"restore blocks snapshot":      {open(RubrikOpRestore, RubrikOpUnknown), next(RubrikOpSnapshot, "obj", "team-z"), true},
+		"snapshot blocks nothing":      {open(RubrikOpSnapshot, RubrikOpRunning), next(RubrikOpRestore, "obj", "team-a"), false},
+		"finished blocks nothing":      {open(RubrikOpRestore, RubrikOpPartial), next(RubrikOpSLAAssign, "obj", "team-a"), false},
+		"other cluster":                {open(RubrikOpRestore, RubrikOpRunning), otherCluster, false},
+		"restore into the namespace":   {restoreInto, next(RubrikOpSnapshot, "other", "team-b"), true},
+		"restore elsewhere":            {restoreInto, next(RubrikOpSnapshot, "other", "team-z"), false},
+		"set write over the namespace": {restoreInto, wide, true},
+		"write into every namespace":   {restoreInto, all, true},
+		"into as a string":             {stringInto, next(RubrikOpSnapshot, "other", "team-c"), false},
+	} {
+		if got := RubrikOperationBlocks(c.open, c.next); got != c.want {
+			t.Errorf("%s: blocks = %v, want %v", name, got, c.want)
+		}
+	}
+}
+
+// seedRubrikOp writes a row as given, past the in-flight rules, so a test
+// can lay out any mix of open and finished operations.
+func seedRubrikOp(t *testing.T, s *RubrikStore, cluster, kind, namespace, object, state, source string) string {
+	t.Helper()
+	id := uuid.NewString()
+	if _, err := s.pool.Exec(t.Context(), `
+		INSERT INTO rubrik_operations (id, owner, cluster_id, kind, namespace, rsc_object_id, request_hash, source, state)
+		VALUES ($1, 'user-1', $2, $3, $4, $5, 'hash-1', $6::jsonb, $7)`,
+		id, cluster, kind, namespace, object, source, state); err != nil {
+		t.Fatalf("seeding a %s %s: %v", state, kind, err)
+	}
+	return id
+}
+
+// TestRubrikOperationBlocksMatchesTheStore: for every write in a grid of
+// kinds, objects, namespaces and coverage, the rows BlockingOperations
+// returns are exactly those RubrikOperationBlocks picks out of every row on
+// the clusters.
+func TestRubrikOperationBlocksMatchesTheStore(t *testing.T) {
+	s := NewRubrikStore(testDB(t), rubrikTestKey)
+	ctx := t.Context()
+	cluster, elsewhere := testOwnerID(t), testOwnerID(t)
+	objects := []string{uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()}
+	namespaces := []string{"team-a", "team-b", "team-c", "team-g", "team-z"}
+
+	seedRubrikOp(t, s, cluster, RubrikOpRestore, "team-a", objects[0], RubrikOpRunning, `{"into":["team-a","team-b"]}`)
+	seedRubrikOp(t, s, cluster, RubrikOpSLAAssign, "team-c", objects[1], RubrikOpUnknown, `{}`)
+	seedRubrikOp(t, s, cluster, RubrikOpRestore, "team-d", objects[2], RubrikOpFailed, `{"into":["team-d"]}`)
+	seedRubrikOp(t, s, cluster, RubrikOpSnapshot, "team-e", objects[0], RubrikOpApplying, `{}`)
+	seedRubrikOp(t, s, cluster, RubrikOpRestore, "team-f", objects[3], RubrikOpApplying, `{"into":"team-g"}`)
+	seedRubrikOp(t, s, elsewhere, RubrikOpRestore, "team-a", objects[4], RubrikOpRunning, `{"into":["team-a"]}`)
+
+	rows, err := s.pool.Query(ctx, `SELECT `+rubrikOperationColumns+` FROM rubrik_operations WHERE cluster_id = ANY($1)`,
+		[]string{cluster, elsewhere})
+	if err != nil {
+		t.Fatalf("reading the seeded rows: %v", err)
+	}
+	every, err := collectRubrikOperations(rows)
+	if err != nil || len(every) != 6 {
+		t.Fatalf("seeded rows = %d, %v; want 6", len(every), err)
+	}
+
+	variants := map[string]func(*RubrikOperation){
+		"plain":         func(*RubrikOperation) {},
+		"set coverage":  func(o *RubrikOperation) { o.AlsoWritesInto = []string{"team-b", "team-y"} },
+		"all":           func(o *RubrikOperation) { o.WritesIntoAll = true },
+		"restore into":  func(o *RubrikOperation) { o.Source = json.RawMessage(`{"into":["team-f","team-x"]}`) },
+		"string source": func(o *RubrikOperation) { o.Source = json.RawMessage(`{"into":"team-a"}`) },
+	}
+	for _, kind := range rubrikOpKinds {
+		for i, object := range objects {
+			for _, ns := range namespaces {
+				for vname, vary := range variants {
+					next := newRubrikOp(cluster, object, kind)
+					next.Namespace = ns
+					vary(&next)
+					var want []string
+					for _, o := range every {
+						if RubrikOperationBlocks(o, next) {
+							want = append(want, o.ID)
+						}
+					}
+					blockers, err := s.BlockingOperations(ctx, next)
+					if err != nil {
+						t.Fatalf("blocking operations: %v", err)
+					}
+					got := make([]string, 0, len(blockers))
+					for _, o := range blockers {
+						got = append(got, o.ID)
+					}
+					slices.Sort(want)
+					slices.Sort(got)
+					if !slices.Equal(got, want) {
+						t.Errorf("%s of object %d in %s (%s): store blocks %v, Go rule %v", kind, i, ns, vname, got, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+// OpenOperations lists a cluster's open operations, oldest first, and says
+// when there are more than it returns.
+func TestRubrikOpenOperations(t *testing.T) {
+	s := NewRubrikStore(testDB(t), rubrikTestKey)
+	ctx := t.Context()
+	cluster := testOwnerID(t)
+
+	first := seedRubrikOp(t, s, cluster, RubrikOpRestore, "team-a", uuid.NewString(), RubrikOpUnknown, `{}`)
+	seedRubrikOp(t, s, cluster, RubrikOpSnapshot, "team-a", uuid.NewString(), RubrikOpSucceeded, `{}`)
+	second := seedRubrikOp(t, s, cluster, RubrikOpSnapshot, "team-b", uuid.NewString(), RubrikOpApplying, `{}`)
+	third := seedRubrikOp(t, s, cluster, RubrikOpSLAAssign, "team-c", uuid.NewString(), RubrikOpRunning, `{}`)
+	seedRubrikOp(t, s, testOwnerID(t), RubrikOpRestore, "team-a", uuid.NewString(), RubrikOpRunning, `{}`)
+
+	got, err := s.OpenOperations(ctx, cluster)
+	if err != nil {
+		t.Fatalf("open operations: %v", err)
+	}
+	ids := make([]string, 0, len(got))
+	for _, o := range got {
+		ids = append(ids, o.ID)
+	}
+	if want := []string{first, second, third}; !slices.Equal(ids, want) {
+		t.Errorf("open operations = %v, want %v (oldest first)", ids, want)
+	}
+
+	// Past the cap, the oldest rows come back with the truncation error.
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO rubrik_operations (id, owner, cluster_id, kind, namespace, rsc_object_id, request_hash, state)
+		SELECT gen_random_uuid(), 'user-1', $1, 'snapshot', 'team-d', gen_random_uuid()::text, 'hash-1', 'running'
+		FROM generate_series(1, $2::int)`, cluster, maxOpenOperations); err != nil {
+		t.Fatalf("seeding past the cap: %v", err)
+	}
+	got, err = s.OpenOperations(ctx, cluster)
+	if !errors.Is(err, ErrRubrikOperationsTruncated) || len(got) != maxOpenOperations || got[0].ID != first {
+		t.Errorf("past the cap = %d rows, %v; want the oldest %d, first %s, with ErrRubrikOperationsTruncated",
+			len(got), err, maxOpenOperations, first)
+	}
+}

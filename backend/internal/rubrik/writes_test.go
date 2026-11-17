@@ -50,39 +50,17 @@ type fakeOps struct {
 	blockingErr error
 }
 
-// blocking mirrors the store's rubrikOpBlockedBy: the open operations that
-// refuse op, oldest first. The caller holds f.mu.
+// blocking is the store's in-flight rule (store.RubrikOperationBlocks, held
+// to the SQL by the store's parity test): the open operations that refuse
+// op, oldest first. The caller holds f.mu.
 func (f *fakeOps) blocking(op store.RubrikOperation) []store.RubrikOperation {
 	var out []store.RubrikOperation
 	for _, x := range f.ops {
-		if x.ClusterID != op.ClusterID || !openState(x.State) {
-			continue
-		}
-		sameObject := x.RSCObjectID == op.RSCObjectID &&
-			(x.Kind == store.RubrikOpRestore || (op.Kind != store.RubrikOpSnapshot && x.Kind == store.RubrikOpSLAAssign))
-		intoNamespace := x.Kind == store.RubrikOpRestore &&
-			(op.WritesIntoAll || slices.ContainsFunc(opNamespaces(op), func(ns string) bool {
-				return slices.Contains(opNamespaces(x), ns)
-			}))
-		if sameObject || intoNamespace {
+		if store.RubrikOperationBlocks(x, op) {
 			out = append(out, x)
 		}
 	}
 	slices.SortFunc(out, func(a, b store.RubrikOperation) int { return a.CreatedAt.Compare(b.CreatedAt) })
-	return out
-}
-
-// opNamespaces mirrors the store's rubrikOpNamespaces.
-func opNamespaces(op store.RubrikOperation) []string {
-	out := append([]string{op.Namespace}, op.AlsoWritesInto...)
-	if op.Kind == store.RubrikOpRestore {
-		var src struct {
-			Into []string `json:"into"`
-		}
-		if json.Unmarshal(op.Source, &src) == nil {
-			out = append(out, src.Into...)
-		}
-	}
 	return out
 }
 
@@ -96,10 +74,6 @@ func (f *fakeOps) BlockingOperations(_ context.Context, op store.RubrikOperation
 }
 
 func newFakeOps() *fakeOps { return &fakeOps{ops: map[string]store.RubrikOperation{}} }
-
-func openState(state string) bool {
-	return state == store.RubrikOpApplying || state == store.RubrikOpRunning || state == store.RubrikOpUnknown
-}
 
 func (f *fakeOps) InsertOperation(_ context.Context, op store.RubrikOperation) (store.RubrikOperation, error) {
 	f.mu.Lock()
