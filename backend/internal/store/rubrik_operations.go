@@ -8,8 +8,10 @@ package store
 // second time (docs/solutions/tracked-apply-durable-intent.md).
 //
 // Each RSC object allows one in-flight SLA change or restore, and a snapshot
-// is refused while a restore is in flight. An unknown outcome keeps blocking
-// until a refresh settles it, because the mutation may have been applied.
+// is refused while a restore is in flight. An in-flight restore also refuses
+// every write into a namespace it restores into. An unknown outcome keeps
+// blocking until a refresh settles it, because the mutation may have been
+// applied.
 
 import (
 	"context"
@@ -72,8 +74,8 @@ var (
 	// tell a replay from a reused id.
 	ErrRubrikOperationExists = errors.New("rubrik operation id already used")
 	// ErrRubrikOperationInFlight is returned by InsertOperation when another
-	// open operation on the same RSC object blocks this one. Nothing is
-	// written.
+	// open operation on the same RSC object, or an open restore into the same
+	// namespace, blocks this one. Nothing is written.
 	ErrRubrikOperationInFlight = errors.New("another rubrik operation on the object is in flight")
 	// ErrRubrikOperationStateChanged is returned by UpdateOperation when the
 	// row is no longer in a state the caller allowed: another request or the
@@ -200,16 +202,21 @@ func jsonOrEmpty(what string, raw json.RawMessage) ([]byte, error) {
 //   - ErrRubrikOperationExists when op.ID is taken, whatever the stored row
 //     holds;
 //   - ErrRubrikOperationInFlight when an open operation (applying, running or
-//     unknown) on the same cluster and RSC object blocks it: an SLA change
-//     or restore blocks another SLA change or restore, and a restore also
-//     blocks a snapshot.
+//     unknown) on the same cluster blocks it: on the same RSC object, an SLA
+//     change or restore blocks another SLA change or restore, and a restore
+//     also blocks a snapshot; and an open restore blocks every write into a
+//     namespace it restores into, whichever object that write acts on.
 //
-// The SLA-change and restore exclusion holds across replicas through the
-// idx_rubrik_operations_in_flight partial unique index. The snapshot rule
-// rests on the NOT EXISTS below alone, so a snapshot and a restore inserted
-// in the same instant can both be recorded. That window is accepted: it
-// never lets two restores or two SLA changes through, and RSC still runs
-// the jobs one after the other.
+// The namespaces an operation writes into are its Namespace and, for a
+// restore, the namespaces its Source lists under "into" (a protection-set
+// restore writes into every namespace the set covers).
+//
+// The SLA-change and restore exclusion on one object holds across replicas
+// through the idx_rubrik_operations_in_flight partial unique index. The
+// snapshot rule and the namespace rule rest on the NOT EXISTS below alone,
+// so two writes inserted in the same instant can both be recorded. That
+// window is accepted: it never lets two restores or two SLA changes of one
+// object through, and RSC still runs the jobs one after the other.
 func (s *RubrikStore) InsertOperation(ctx context.Context, op RubrikOperation) (RubrikOperation, error) {
 	id, err := parseRubrikOperationID(op.ID)
 	if err != nil {
@@ -243,20 +250,27 @@ func (s *RubrikStore) InsertOperation(ctx context.Context, op RubrikOperation) (
 	//	restore       -         blocked     blocked
 	//
 	// The sla_assign and restore cells are also idx_rubrik_operations_in_flight,
-	// which must keep the same kinds and states ($10).
+	// which must keep the same kinds and states ($10). Across objects, an
+	// open restore blocks every new operation that writes into one of its
+	// namespaces ($11).
 	out, err := scanRubrikOperation(s.pool.QueryRow(ctx, `
 		INSERT INTO rubrik_operations (id, owner, cluster_id, kind, namespace, rsc_object_id,
 			request_hash, request, source, state)
 		SELECT $1::uuid, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::jsonb, $9::jsonb, 'applying'
 		WHERE NOT EXISTS (
 			SELECT 1 FROM rubrik_operations
-			WHERE cluster_id = $3::text AND rsc_object_id = $6::text
+			WHERE cluster_id = $3::text
 			  AND state = ANY($10::text[])
-			  AND (kind = 'restore' OR ($4::text <> 'snapshot' AND kind = 'sla_assign'))
+			  AND (
+			        (rsc_object_id = $6::text
+			         AND (kind = 'restore' OR ($4::text <> 'snapshot' AND kind = 'sla_assign')))
+			     OR (kind = 'restore'
+			         AND (namespace = ANY($11::text[]) OR source -> 'into' ?| $11::text[]))
+			  )
 		)
 		RETURNING `+rubrikOperationColumns,
 		id, op.Owner, op.ClusterID, op.Kind, op.Namespace, op.RSCObjectID, op.RequestHash, request, source,
-		rubrikOpOpen))
+		rubrikOpOpen, rubrikOpNamespaces(op)))
 	if err == nil {
 		return out, nil
 	}
@@ -274,6 +288,23 @@ func (s *RubrikStore) InsertOperation(ctx context.Context, op RubrikOperation) (
 		return RubrikOperation{}, ErrRubrikOperationExists
 	}
 	return RubrikOperation{}, fmt.Errorf("inserting rubrik operation: %w", err)
+}
+
+// rubrikOpNamespaces lists the namespaces op writes into: its Namespace and,
+// for a restore, those its Source lists under "into". An unreadable Source
+// adds nothing; jsonOrEmpty has already refused one that is not JSON.
+func rubrikOpNamespaces(op RubrikOperation) []string {
+	out := []string{op.Namespace}
+	if op.Kind == RubrikOpRestore && len(op.Source) > 0 {
+		var src struct {
+			Into []string `json:"into"`
+		}
+		if json.Unmarshal(op.Source, &src) == nil {
+			out = append(out, src.Into...)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // blockedInsert names why an insert of id was refused by the in-flight

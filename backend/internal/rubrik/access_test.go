@@ -496,6 +496,50 @@ func TestActionFlagsAgreeWithCheckAction(t *testing.T) {
 	}
 }
 
+// An object whose namespaces cannot be named is never offered a restore,
+// admins included, because POST /restores refuses it (scopeRefusal) after
+// CheckAction lets an admin through. The flag and the restore-targets
+// refusal come from one place, restoreRefusal, so they cannot drift from
+// that rule again; snapshot and SLA controls are not affected.
+func TestRestoreFlagFollowsTheScopeRule(t *testing.T) {
+	ctx := context.Background()
+	unresolvedNS := objNS("u", "team-a", idSLA, nil)
+	unresolvedNS.Coverage = Coverage{Unresolved: true}
+	for name, c := range map[string]struct {
+		object Object
+		want   Refusal
+	}{
+		"set covering every namespace": {objSet("all", "cluster", Coverage{All: true}, idSLA, nil), refusalSetScopeUnknown},
+		"unresolved set":               {objSet("unres", "cluster", Coverage{Unresolved: true}, idSLA, nil), refusalSetScopeUnknown},
+		"unresolved namespace object":  {unresolvedNS, refusalSourceUnknown},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := NewAccess(newFakeChecker(), twoTeams(t), true)
+			v := viewer(t, a, admin)
+			r, err := v.restoreRefusal(ctx, validTarget(), c.object)
+			if err != nil || r != c.want {
+				t.Fatalf("restoreRefusal = %q, %v; want %q", r, err, c.want)
+			}
+			f, err := v.ActionFlags(ctx, validTarget(), c.object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.CanRestore {
+				t.Errorf("flags = %+v; CanRestore offered for a restore POST /restores refuses", f)
+			}
+			for action, got := range map[Action]bool{ActionSnapshot: f.CanSnapshot, ActionChangeSLA: f.CanChangeSLA} {
+				r, err := v.CheckAction(ctx, validTarget(), action, c.object, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got != (r == RefusalNone) {
+					t.Errorf("%s flag = %v, but CheckAction says %q", action, got, r)
+				}
+			}
+		})
+	}
+}
+
 // Covers AE10's second line: a non-admin never gets a view of a remote
 // cluster, whatever grants they hold there.
 func TestRemoteClusterIsAdminOnly(t *testing.T) {
