@@ -14,6 +14,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/store"
 )
 
 // The read endpoints (U6) serve every authenticated user. Visibility is
@@ -456,7 +457,8 @@ func (h *Handler) HandleSLADomains(w http.ResponseWriter, r *http.Request) {
 }
 
 // visibleObjectViews filters the cluster's objects for the viewer, sorted by
-// name and id, each with its compliance and write controls. It also drops
+// name and id, each with its compliance and write controls, less those an
+// open operation blocks (clearInFlight). It also drops
 // history the viewer may not see from the object itself (Viewer.ClampHistory):
 // for a non-admin, the newest snapshot time of an object that is not
 // namespace-scoped, or that predates its namespace, belongs to snapshots only
@@ -480,7 +482,60 @@ func (h *Handler) visibleObjectViews(ctx context.Context, v *Viewer, t Target, o
 		}
 		out = append(out, ObjectView{Object: o, Compliance: compliance(o), ActionFlags: flags})
 	}
+	h.clearInFlight(ctx, t, out)
 	return out, nil
+}
+
+// clearInFlight turns off each write control an open operation would refuse
+// (U6, KTD7), so the UI does not offer a write the server answers with 409
+// operation_in_flight. The open operations are read once per request, and
+// only when some control is on. When they cannot be listed, or there are
+// more than the store returns, every control is turned off: the read is
+// still served, and the writes themselves check again. Without an operation
+// store there are no writes to block.
+//
+// Like the 409 it saves, this tells the viewer only that a write is blocked,
+// never by what.
+func (h *Handler) clearInFlight(ctx context.Context, t Target, views []ObjectView) {
+	if h.ops == nil || !slices.ContainsFunc(views, func(ov ObjectView) bool { return ov.ActionFlags != (ActionFlags{}) }) {
+		return
+	}
+	open, err := h.ops.OpenOperations(ctx, t.ClusterID)
+	if err != nil {
+		h.logger.Error("rubrik read: listing open operations failed; write controls turned off", "cluster", t.ClusterID, "error", err)
+		for i := range views {
+			views[i].ActionFlags = ActionFlags{}
+		}
+		return
+	}
+	for i := range views {
+		views[i].ActionFlags = withoutInFlight(open, t.ClusterID, views[i].Object, views[i].ActionFlags)
+	}
+}
+
+// withoutInFlight clears the flags in f whose write on o one of open would
+// refuse, asking store.RubrikOperationBlocks the question send asks the
+// store. A snapshot or SLA change writes into every namespace o covers. A
+// restore is checked against o itself and, for a protection set, which
+// restores in place, against the namespaces it covers; a per-namespace
+// object's target is picked in the dialog, so a restore into it is refused
+// only by the request.
+func withoutInFlight(open []store.RubrikOperation, clusterID string, o Object, f ActionFlags) ActionFlags {
+	blocked := func(next store.RubrikOperation) bool {
+		return slices.ContainsFunc(open, func(x store.RubrikOperation) bool { return store.RubrikOperationBlocks(x, next) })
+	}
+	write := func(kind string) store.RubrikOperation {
+		return store.RubrikOperation{ClusterID: clusterID, Kind: kind, RSCObjectID: o.ID,
+			AlsoWritesInto: o.Coverage.Namespaces, WritesIntoAll: o.Coverage.All || o.Coverage.Unresolved}
+	}
+	restore := store.RubrikOperation{ClusterID: clusterID, Kind: store.RubrikOpRestore, RSCObjectID: o.ID}
+	if o.Family == FamilyProtectionSet {
+		restore.AlsoWritesInto = o.Coverage.Namespaces
+	}
+	f.CanSnapshot = f.CanSnapshot && !blocked(write(store.RubrikOpSnapshot))
+	f.CanChangeSLA = f.CanChangeSLA && !blocked(write(store.RubrikOpSLAAssign))
+	f.CanRestore = f.CanRestore && !blocked(restore)
+	return f
 }
 
 // namespaceRow builds ns's row. Protection and compliance come from every

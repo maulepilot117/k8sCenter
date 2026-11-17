@@ -48,6 +48,9 @@ type fakeOps struct {
 	updateCtxErr error
 	// blockingErr fails BlockingOperations.
 	blockingErr error
+	// openErr fails OpenOperations; openCalls counts its calls.
+	openErr   error
+	openCalls int
 }
 
 // blocking is the store's in-flight rule (store.RubrikOperationBlocks, held
@@ -71,6 +74,25 @@ func (f *fakeOps) BlockingOperations(_ context.Context, op store.RubrikOperation
 		return nil, f.blockingErr
 	}
 	return f.blocking(op), nil
+}
+
+// OpenOperations lists clusterID's operations that are not final, oldest
+// first, as the store does.
+func (f *fakeOps) OpenOperations(_ context.Context, clusterID string) ([]store.RubrikOperation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.openCalls++
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	var out []store.RubrikOperation
+	for _, x := range f.ops {
+		if x.ClusterID == clusterID && !store.RubrikOperationFinal(x.State) {
+			out = append(out, x)
+		}
+	}
+	slices.SortFunc(out, func(a, b store.RubrikOperation) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	return out, nil
 }
 
 func newFakeOps() *fakeOps { return &fakeOps{ops: map[string]store.RubrikOperation{}} }

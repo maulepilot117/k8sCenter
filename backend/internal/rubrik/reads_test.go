@@ -1,13 +1,18 @@
 package rubrik
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/store"
 )
 
 // readFixture is the handler fixture with the local cluster's namespaces,
@@ -479,5 +484,135 @@ func TestSLADomainsSortedCopy(t *testing.T) {
 	}
 	if n := fx.rsc.count("SLADomains"); n != 1 {
 		t.Errorf("SLADomains fetched %d times, want once", n)
+	}
+}
+
+// openOp is an operation row as the store holds it, created now. into is a
+// restore's Source "into".
+func openOp(cluster, kind, object, namespace, state string, into ...string) store.RubrikOperation {
+	now := time.Now()
+	op := store.RubrikOperation{ID: uuid.NewString(), Owner: "u-bob", ClusterID: cluster, Kind: kind,
+		Namespace: namespace, RSCObjectID: object, State: state, CreatedAt: now, UpdatedAt: now}
+	if len(into) > 0 {
+		op.Source, _ = json.Marshal(map[string][]string{"into": into})
+	}
+	return op
+}
+
+// withOps gives the fixture an operation store holding rows.
+func withOps(fx *handlerFixture, rows ...store.RubrikOperation) *fakeOps {
+	ops := newFakeOps()
+	for _, r := range rows {
+		ops.ops[r.ID] = r
+	}
+	fx.h.ops = ops
+	return ops
+}
+
+// U6, KTD7: an open operation turns off each control whose write the
+// server would refuse as in flight, on the object, on its namespace's row
+// and in the namespace detail, and leaves the rest on.
+func TestActionFlagsClearWhileAnOperationIsOpen(t *testing.T) {
+	const other = "99999999-9999-4999-8999-999999999999"
+	all := ActionFlags{CanSnapshot: true, CanChangeSLA: true, CanRestore: true}
+	for name, c := range map[string]struct {
+		open store.RubrikOperation
+		want ActionFlags
+	}{
+		"no operation":                     {store.RubrikOperation{}, all},
+		"sla change of the object":         {openOp("local", store.RubrikOpSLAAssign, idNS, "team-a", store.RubrikOpRunning), ActionFlags{CanSnapshot: true}},
+		"restore from the object":          {openOp("local", store.RubrikOpRestore, idNS, "team-z", store.RubrikOpUnknown, "team-z"), ActionFlags{}},
+		"restore being sent":               {openOp("local", store.RubrikOpRestore, idNS, "team-z", store.RubrikOpApplying, "team-z"), ActionFlags{}},
+		"snapshot of the object":           {openOp("local", store.RubrikOpSnapshot, idNS, "team-a", store.RubrikOpRunning), all},
+		"restore into the namespace":       {openOp("local", store.RubrikOpRestore, other, "team-a", store.RubrikOpRunning, "team-a"), ActionFlags{CanRestore: true}},
+		"restore into another namespace":   {openOp("local", store.RubrikOpRestore, other, "team-z", store.RubrikOpRunning, "team-z"), all},
+		"finished restore from the object": {openOp("local", store.RubrikOpRestore, idNS, "team-a", store.RubrikOpFailed, "team-a"), all},
+		"restore on another cluster":       {openOp("remote-1", store.RubrikOpRestore, idNS, "team-a", store.RubrikOpRunning, "team-a"), all},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fx, _ := readFixture(t, map[string]time.Time{"team-a": created, "team-z": created}, true)
+			if c.open.ID != "" {
+				withOps(fx, c.open)
+			} else {
+				withOps(fx)
+			}
+			list := responseData[NamespaceList](t, fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces", nil))
+			if got := list.Objects[0].ActionFlags; got != c.want {
+				t.Errorf("object flags = %+v, want %+v", got, c.want)
+			}
+			if got := rowFor(t, list, "team-a").ActionFlags; got != c.want {
+				t.Errorf("row flags = %+v, want %+v", got, c.want)
+			}
+			detail := responseData[NamespaceDetail](t, fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces/team-a", nil))
+			if len(detail.Objects) != 1 || detail.Objects[0].ActionFlags != c.want || detail.Namespace.ActionFlags != c.want {
+				t.Errorf("detail = %+v, want flags %+v", detail, c.want)
+			}
+		})
+	}
+}
+
+// A protection set writes into every namespace it covers, so a restore
+// into any of them blocks its snapshot, its SLA change and its in-place
+// restore; a set whose coverage is everything or unknown is blocked by any
+// open restore.
+func TestSetActionFlagsFollowItsCoverage(t *testing.T) {
+	const other = "99999999-9999-4999-8999-999999999999"
+	ns := map[string]time.Time{"team-a": created, "team-b": created, "team-z": created}
+	all := ActionFlags{CanSnapshot: true, CanChangeSLA: true, CanRestore: true}
+	for name, c := range map[string]struct {
+		cov  Coverage
+		into string
+		want ActionFlags
+	}{
+		"restore into a covered namespace": {Coverage{Namespaces: []string{"team-a", "team-b"}}, "team-b", ActionFlags{}},
+		"restore elsewhere":                {Coverage{Namespaces: []string{"team-a", "team-b"}}, "team-z", all},
+		// Such a set cannot be restored through k8sCenter at all.
+		"every namespace": {Coverage{All: true}, "team-z", ActionFlags{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fx, _ := readFixture(t, ns, true)
+			useSets(fx, objSet(idWide, "namespace", c.cov, idSLA, nil))
+			withOps(fx, openOp("local", store.RubrikOpRestore, other, c.into, store.RubrikOpRunning, c.into))
+			list := responseData[NamespaceList](t, fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces", nil))
+			if len(list.Objects) != 1 || list.Objects[0].ActionFlags != c.want {
+				t.Fatalf("objects = %+v, want the set with flags %+v", list.Objects, c.want)
+			}
+		})
+	}
+}
+
+// When the open operations cannot be listed, or there are more than the
+// store returns, every control is off and the read is still served.
+func TestActionFlagsFailClosedWithoutOpenOperations(t *testing.T) {
+	for name, err := range map[string]error{
+		"listing failed": errors.New("store down"),
+		"truncated":      store.ErrRubrikOperationsTruncated,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fx, _ := readFixture(t, map[string]time.Time{"team-a": created}, true)
+			withOps(fx).openErr = err
+			rec := fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces", nil)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			list := responseData[NamespaceList](t, rec)
+			if got := list.Objects[0].ActionFlags; got != (ActionFlags{}) {
+				t.Errorf("object flags = %+v, want none", got)
+			}
+			if got := rowFor(t, list, "team-a").ActionFlags; got != (ActionFlags{}) {
+				t.Errorf("row flags = %+v, want none", got)
+			}
+		})
+	}
+}
+
+// A read offering no control does not list the open operations.
+func TestNoControlsListsNoOperations(t *testing.T) {
+	fx, _ := readFixture(t, map[string]time.Time{"team-a": created}, false)
+	ops := withOps(fx)
+	fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces", nil)
+	fx.do(t, admin, "local", http.MethodGet, "/rubrik/namespaces/team-a", nil)
+	if ops.openCalls != 0 {
+		t.Errorf("open operations listed %d times with writes off, want 0", ops.openCalls)
 	}
 }
