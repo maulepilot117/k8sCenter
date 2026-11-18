@@ -329,7 +329,7 @@ func TestFeed_NamespaceScope(t *testing.T) {
 	reader := uniqueName(t)
 	count := func(namespaces []string, all bool) int {
 		t.Helper()
-		c, err := s.UnreadCount(ctx, reader, namespaces, all)
+		c, err := s.UnreadCount(ctx, reader, FeedScope{Namespaces: namespaces, AllNamespaces: all})
 		if err != nil {
 			t.Fatalf("UnreadCount: %v", err)
 		}

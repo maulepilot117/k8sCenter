@@ -231,17 +231,57 @@ type Rule struct {
 	UpdatedBy      string     `json:"updatedBy,omitempty"`
 }
 
-// ListOpts controls notification feed pagination and filtering.
+// RubrikScope is the feed's scope for rows from SourceRubrik (KTD11). Rubrik
+// rows do not follow the namespace scope the other sources use. The zero
+// value admits no Rubrik row, so a caller that leaves it unset, or whose
+// visibility check failed, fails closed.
+type RubrikScope struct {
+	// All admits every Rubrik row (admins).
+	All bool
+	// Namespaces admits a Rubrik row on the local cluster whose namespace
+	// is listed, when the row was created at or after that namespace's
+	// creation time. Rows raised before then belong to an earlier
+	// namespace of the same name and stay admin-only (R6). A row with no
+	// namespace, or one on a remote cluster, is admin-only.
+	//
+	// The check compares when the row was stored, not when its event
+	// happened. So the emitter must name a namespace only for an event of
+	// the namespace that exists now, and store any other event (a relic's,
+	// or an earlier namespace's raised late) with no namespace. It must
+	// also set the cluster id explicitly, because an empty one counts as
+	// the local cluster.
+	Namespaces []RubrikNamespace
+}
+
+// RubrikNamespace is one namespace whose Rubrik rows a non-admin may see,
+// with the creation time of the namespace that exists now.
+type RubrikNamespace struct {
+	Name  string
+	Since time.Time
+}
+
+// FeedScope is the set of feed rows a user may see.
 //
-// Namespace scope: cluster-scoped rows (empty resource_ns) are always listed.
-// Namespaced rows are listed only when their namespace is in Namespaces, or
-// when AllNamespaces is set (admins only). The zero value therefore admits no
-// namespaced rows: an unset or empty Namespaces fails closed rather than
-// reading as "no filter".
+// Namespace scope (every source but Rubrik): cluster-scoped rows (empty
+// resource_ns) are always visible. Namespaced rows are visible only when
+// their namespace is in Namespaces, or when AllNamespaces is set (admins
+// only). The zero value therefore admits no namespaced rows: an unset or
+// empty Namespaces fails closed rather than reading as "no filter".
+//
+// Rubrik rows follow Rubrik alone.
+type FeedScope struct {
+	Namespaces    []string
+	AllNamespaces bool
+	Rubrik        RubrikScope
+}
+
+// ListOpts controls notification feed pagination and filtering. Its
+// Namespaces, AllNamespaces and Rubrik fields are the FeedScope.
 type ListOpts struct {
 	UserID        string
 	Namespaces    []string
 	AllNamespaces bool
+	Rubrik        RubrikScope
 	Source        Source
 	Severity      Severity
 	ReadFilter    string // "read", "unread", or "" (all)
