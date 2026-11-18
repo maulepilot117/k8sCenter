@@ -1,11 +1,14 @@
 package notifications
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,9 +34,24 @@ type Handler struct {
 	RBACChecker *auth.RBACChecker
 	// Namespaces lists the local cluster's namespaces (the informer cache),
 	// which the RBAC summary narrows to a non-admin's feed scope.
-	Namespaces  corev1listers.NamespaceLister
+	Namespaces corev1listers.NamespaceLister
+	// Rubrik decides which namespaces' Rubrik rows a non-admin may see
+	// (KTD11). Without it, Rubrik rows are admin-only.
+	Rubrik      RubrikVisibility
 	AuditLogger audit.Logger
 	Logger      *slog.Logger
+}
+
+// RubrikVisibility is the Rubrik package's answer to which namespaces'
+// Rubrik rows a user may see (KTD11). It is defined here so this package
+// does not import the Rubrik one.
+//
+// AllowedNamespaces returns which of candidates user may see on clusterID,
+// each with the creation time of the namespace that exists now. admin is
+// true for a user who sees every row. One failed check fails the whole
+// answer.
+type RubrikVisibility interface {
+	AllowedNamespaces(ctx context.Context, user *auth.User, clusterID string, candidates []string) (allowed map[string]time.Time, admin bool, err error)
 }
 
 // --- Feed endpoints (all authenticated users) ---
@@ -57,6 +75,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		UserID:        user.KubernetesUsername,
 		Namespaces:    namespaces,
 		AllNamespaces: all,
+		Rubrik:        h.rubrikScope(r, user),
 		Source:        Source(r.URL.Query().Get("source")),
 		Severity:      Severity(r.URL.Query().Get("severity")),
 		ReadFilter:    r.URL.Query().Get("read"),
@@ -109,7 +128,8 @@ func (h *Handler) HandleUnreadCount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := h.Service.store.UnreadCount(r.Context(), user.KubernetesUsername, namespaces, all)
+	scope := FeedScope{Namespaces: namespaces, AllNamespaces: all, Rubrik: h.rubrikScope(r, user)}
+	count, err := h.Service.store.UnreadCount(r.Context(), user.KubernetesUsername, scope)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to count unread", "")
 		return
@@ -134,7 +154,7 @@ func (h *Handler) HandleMarkRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Service.store.MarkRead(r.Context(), user.KubernetesUsername, id); err != nil {
+	if err := h.Service.store.MarkRead(r.Context(), user.KubernetesUsername, id, h.rubrikScope(r, user)); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to mark read", "")
 		return
 	}
@@ -150,7 +170,7 @@ func (h *Handler) HandleMarkAllRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Service.store.MarkAllRead(r.Context(), user.KubernetesUsername); err != nil {
+	if err := h.Service.store.MarkAllRead(r.Context(), user.KubernetesUsername, h.rubrikScope(r, user)); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to mark all read", "")
 		return
 	}
@@ -589,6 +609,67 @@ func (h *Handler) accessibleNamespaces(r *http.Request, user *auth.User) (namesp
 		}
 	}
 	return namespaces, false, nil
+}
+
+// rubrikScope returns the Rubrik rows user may see in the feed (KTD11). It
+// never fails: when the scope cannot be computed, Rubrik rows are hidden
+// and the rest of the feed is still served.
+func (h *Handler) rubrikScope(r *http.Request, user *auth.User) RubrikScope {
+	return h.rubrikScopeFrom(r.Context(), user, h.Service.store.RubrikFeedNamespaces)
+}
+
+// rubrikScopeFrom is rubrikScope with the candidate namespaces taken from
+// candidates. Admins see every Rubrik row. Anyone else sees the local
+// cluster's rows in the candidates the provider allows, from each
+// namespace's creation time on. Without a provider, or when candidates or
+// the provider fail, the scope is the zero value, which admits no Rubrik
+// row.
+func (h *Handler) rubrikScopeFrom(ctx context.Context, user *auth.User, candidates func(context.Context) ([]string, error)) RubrikScope {
+	if auth.IsAdmin(user) {
+		return RubrikScope{All: true}
+	}
+	if !rubrikProviderSet(h.Rubrik) {
+		return RubrikScope{}
+	}
+	names, err := candidates(ctx)
+	if err != nil {
+		h.Logger.Warn("rubrik feed namespaces failed; hiding Rubrik rows", "user", user.KubernetesUsername, "error", err)
+		return RubrikScope{}
+	}
+	if len(names) == 0 {
+		return RubrikScope{}
+	}
+	allowed, admin, err := h.Rubrik.AllowedNamespaces(ctx, user, k8s.LocalClusterID, names)
+	if err != nil {
+		h.Logger.Warn("rubrik feed visibility failed; hiding Rubrik rows", "user", user.KubernetesUsername, "error", err)
+		return RubrikScope{}
+	}
+	// The admin check above already ran on the same rule. A provider that
+	// calls a non-admin an admin is out of step with it, and fails closed
+	// rather than widening the feed.
+	if admin {
+		return RubrikScope{}
+	}
+	scope := RubrikScope{Namespaces: make([]RubrikNamespace, 0, len(allowed))}
+	for name, since := range allowed {
+		scope.Namespaces = append(scope.Namespaces, RubrikNamespace{Name: name, Since: since})
+	}
+	slices.SortFunc(scope.Namespaces, func(a, b RubrikNamespace) int { return strings.Compare(a.Name, b.Name) })
+	return scope
+}
+
+// rubrikProviderSet reports whether p is a usable provider. An interface
+// holding a nil pointer is not nil, and calling it would panic.
+func rubrikProviderSet(p RubrikVisibility) bool {
+	if p == nil {
+		return false
+	}
+	v := reflect.ValueOf(p)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return !v.IsNil()
+	}
+	return true
 }
 
 // validateChannelURLs validates webhook/Slack URLs against the SSRF blocklist.

@@ -183,13 +183,12 @@ func (s *Store) ListNotifications(ctx context.Context, opts ListOpts) ([]Notific
 
 	args := []any{opts.UserID}
 	where := "WHERE 1=1"
-	argIdx := 2
 
-	if clause, arg, ok := namespaceClause(opts.AllNamespaces, opts.Namespaces, argIdx); ok {
+	if clause, scopeArgs, ok := feedClause(opts.scope(), len(args)+1); ok {
 		where += " AND " + clause
-		args = append(args, arg)
-		argIdx++
+		args = append(args, scopeArgs...)
 	}
+	argIdx := len(args) + 1
 	if opts.Source != "" {
 		where += fmt.Sprintf(" AND n.source = $%d", argIdx)
 		args = append(args, string(opts.Source))
@@ -280,19 +279,80 @@ func namespaceClause(all bool, namespaces []string, argIdx int) (clause string, 
 	return fmt.Sprintf("(n.resource_ns = ANY($%d) OR n.resource_ns = '')", argIdx), namespaces, true
 }
 
-// UnreadCount returns the number of unread notifications for a user, scoped
-// as ListOpts is: cluster-scoped rows, plus rows in namespaces, plus every
-// namespaced row when allNamespaces is set.
-func (s *Store) UnreadCount(ctx context.Context, userID string, namespaces []string, allNamespaces bool) (int, error) {
+// rubrikSource is SourceRubrik as a SQL literal. It is a constant, so
+// writing it into the query text binds nothing a caller controls.
+const rubrikSource = "'" + string(SourceRubrik) + "'"
+
+// rubrikClause returns the predicate a Rubrik row must meet to be visible in
+// scope (KTD11), bound from $argIdx, and the values to bind. ok is false
+// only for scope.All, which adds no predicate.
+//
+// A row passes when it is on the local cluster (an empty cluster id is the
+// local one, as in dedup), its namespace is listed, and it was created at or
+// after that namespace's creation time. An empty list passes no row. So
+// does a listed namespace with no creation time, because it could not tell
+// an earlier namespace's rows from the current one's.
+func rubrikClause(scope RubrikScope, argIdx int) (clause string, args []any, ok bool) {
+	if scope.All {
+		return "", nil, false
+	}
+	names := make([]string, 0, len(scope.Namespaces))
+	since := make([]time.Time, 0, len(scope.Namespaces))
+	for _, ns := range scope.Namespaces {
+		if ns.Name == "" || ns.Since.IsZero() {
+			continue
+		}
+		names = append(names, ns.Name)
+		since = append(since, ns.Since)
+	}
+	clause = fmt.Sprintf(`(n.resource_ns <> '' AND (n.cluster_id = '' OR n.cluster_id = $%d) AND EXISTS (
+		SELECT 1 FROM unnest($%d::text[], $%d::timestamptz[]) AS v(name, since)
+		WHERE v.name = n.resource_ns AND n.created_at >= v.since))`, argIdx, argIdx+1, argIdx+2)
+	return clause, []any{k8s.LocalClusterID, names, since}, true
+}
+
+// feedClause returns the feed's visibility predicate for scope, bound from
+// $argIdx, and the values to bind. Rows from every source but Rubrik keep
+// namespaceClause unchanged, and Rubrik rows meet rubrikClause instead. ok
+// is false only when the scope admits every row (an admin's).
+func feedClause(scope FeedScope, argIdx int) (clause string, args []any, ok bool) {
+	general, nsArg, nsOK := namespaceClause(scope.AllNamespaces, scope.Namespaces, argIdx)
+	if nsOK {
+		args = append(args, nsArg)
+		argIdx++
+	} else {
+		general = "TRUE"
+	}
+	rubrik, rubrikArgs, rubrikOK := rubrikClause(scope.Rubrik, argIdx)
+	if !nsOK && !rubrikOK {
+		return "", nil, false
+	}
+	if !rubrikOK {
+		rubrik = "TRUE"
+	}
+	args = append(args, rubrikArgs...)
+	clause = fmt.Sprintf("((n.source <> %s AND %s) OR (n.source = %s AND %s))",
+		rubrikSource, general, rubrikSource, rubrik)
+	return clause, args, true
+}
+
+// scope returns the FeedScope opts carries.
+func (opts ListOpts) scope() FeedScope {
+	return FeedScope{Namespaces: opts.Namespaces, AllNamespaces: opts.AllNamespaces, Rubrik: opts.Rubrik}
+}
+
+// UnreadCount returns the number of unread notifications for a user that
+// scope lets them see, as ListNotifications would list them.
+func (s *Store) UnreadCount(ctx context.Context, userID string, scope FeedScope) (int, error) {
 	query := `
 		SELECT COUNT(*) FROM nc_notifications n
 		LEFT JOIN nc_reads nr ON nr.notification_id = n.id AND nr.user_id = $1
 		WHERE nr.notification_id IS NULL
 		  AND n.created_at > now() - INTERVAL '30 days'`
 	args := []any{userID}
-	if clause, arg, ok := namespaceClause(allNamespaces, namespaces, 2); ok {
+	if clause, scopeArgs, ok := feedClause(scope, 2); ok {
 		query += " AND " + clause
-		args = append(args, arg)
+		args = append(args, scopeArgs...)
 	}
 
 	var count int
@@ -303,30 +363,53 @@ func (s *Store) UnreadCount(ctx context.Context, userID string, namespaces []str
 	return count, nil
 }
 
-// MarkRead marks a single notification as read for a user.
-func (s *Store) MarkRead(ctx context.Context, userID, notificationID string) error {
-	_, err := s.pool.Exec(ctx, `
+// MarkRead marks a single notification as read for a user. A Rubrik row
+// outside rubrik is left unread, and the call still succeeds, as it does
+// for a visible row. Other rows keep the unfiltered behaviour, so an id
+// that names no row still fails on the foreign key, as it always has. That
+// difference tells a caller a hidden Rubrik id exists, which reveals
+// nothing new: the live push already sends every Rubrik row's id to every
+// subscriber.
+func (s *Store) MarkRead(ctx context.Context, userID, notificationID string, rubrik RubrikScope) error {
+	query := `
 		INSERT INTO nc_reads (user_id, notification_id)
-		VALUES ($1, $2)
-		ON CONFLICT DO NOTHING`,
-		userID, notificationID)
-	if err != nil {
+		SELECT $1::text, $2::uuid`
+	args := []any{userID, notificationID}
+	if clause, rubrikArgs, ok := rubrikClause(rubrik, 3); ok {
+		query += fmt.Sprintf(`
+		WHERE NOT EXISTS (
+			SELECT 1 FROM nc_notifications n
+			WHERE n.id = $2::uuid AND n.source = %s AND NOT COALESCE(%s, FALSE))`, rubrikSource, clause)
+		args = append(args, rubrikArgs...)
+	}
+	query += `
+		ON CONFLICT DO NOTHING`
+	if _, err := s.pool.Exec(ctx, query, args...); err != nil {
 		return fmt.Errorf("mark read: %w", err)
 	}
 	return nil
 }
 
-// MarkAllRead marks all notifications as read for a user (batched to avoid WAL pressure).
-func (s *Store) MarkAllRead(ctx context.Context, userID string) error {
-	for {
-		tag, err := s.pool.Exec(ctx, `
+// MarkAllRead marks all notifications as read for a user (batched to avoid
+// WAL pressure). Rubrik rows outside rubrik stay unread. Other rows keep the
+// unfiltered behaviour they have always had here.
+func (s *Store) MarkAllRead(ctx context.Context, userID string, rubrik RubrikScope) error {
+	query := `
 			INSERT INTO nc_reads (user_id, notification_id)
 			SELECT $1, n.id FROM nc_notifications n
 			LEFT JOIN nc_reads nr ON nr.notification_id = n.id AND nr.user_id = $1
 			WHERE nr.notification_id IS NULL
-			  AND n.created_at > now() - INTERVAL '90 days'
-			LIMIT 5000`,
-			userID)
+			  AND n.created_at > now() - INTERVAL '90 days'`
+	args := []any{userID}
+	if clause, rubrikArgs, ok := rubrikClause(rubrik, 2); ok {
+		query += fmt.Sprintf(`
+			  AND (n.source <> %s OR %s)`, rubrikSource, clause)
+		args = append(args, rubrikArgs...)
+	}
+	query += `
+			LIMIT 5000`
+	for {
+		tag, err := s.pool.Exec(ctx, query, args...)
 		if err != nil {
 			return fmt.Errorf("mark all read: %w", err)
 		}
@@ -335,6 +418,26 @@ func (s *Store) MarkAllRead(ctx context.Context, userID string) error {
 		}
 	}
 	return nil
+}
+
+// RubrikFeedNamespaces returns the distinct namespaces of the local
+// cluster's Rubrik rows: the candidates whose Rubrik visibility the feed
+// asks about (KTD11). Rows with no namespace, and remote clusters' rows,
+// are admin-only, so they name no candidate.
+func (s *Store) RubrikFeedNamespaces(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT resource_ns FROM nc_notifications
+		WHERE source = `+rubrikSource+` AND resource_ns <> ''
+		  AND (cluster_id = '' OR cluster_id = $1)
+		ORDER BY resource_ns`, k8s.LocalClusterID)
+	if err != nil {
+		return nil, fmt.Errorf("rubrik feed namespaces: %w", err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("rubrik feed namespaces: %w", err)
+	}
+	return names, nil
 }
 
 // PruneOlderThan deletes notifications older than the given duration. Returns count deleted.
