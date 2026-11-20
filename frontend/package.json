@@ -22,7 +22,7 @@
     "react-dom": "19.3.1",
     "react-is": "19.3.1",
     "recharts": "3.10.1",
-    "@babel/core": "^7.29.6",
+    "@babel/core": "^8.1.0",
     "@tailwindcss/vite": "^4.1.10",
     "tailwindcss": "^4.1.10",
     "postcss": "^8.5.7",
