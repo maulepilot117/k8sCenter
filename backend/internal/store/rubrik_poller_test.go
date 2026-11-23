@@ -500,9 +500,10 @@ func TestPruneRubrikHistory(t *testing.T) {
 
 	recorded, err := f.s.CommitPollerTick(ctx, f.lease, f.tick(
 		pollerEvent(RubrikEventSnapshotFailed, "settled"), pollerEvent(RubrikEventSnapshotFailed, "claimable"),
-		pollerEvent(RubrikEventSnapshotFailed, "spent"), pollerEvent(RubrikEventSnapshotFailed, "young")))
-	if err != nil || len(recorded) != 4 {
-		t.Fatalf("CommitPollerTick = (%d, %v); want 4 events", len(recorded), err)
+		pollerEvent(RubrikEventSnapshotFailed, "spent"), pollerEvent(RubrikEventSnapshotFailed, "failed"),
+		pollerEvent(RubrikEventSnapshotFailed, "young")))
+	if err != nil || len(recorded) != 5 {
+		t.Fatalf("CommitPollerTick = (%d, %v); want 5 events", len(recorded), err)
 	}
 	event := map[string]string{}
 	for _, e := range recorded {
@@ -518,9 +519,10 @@ func TestPruneRubrikHistory(t *testing.T) {
 	setDelivery("settled", RubrikDeliveryDelivered, 1)
 	setDelivery("claimable", RubrikDeliveryPending, maxAttempts-1)
 	setDelivery("spent", RubrikDeliveryPending, maxAttempts)
+	setDelivery("failed", RubrikDeliveryFailed, maxAttempts)
 	setDelivery("young", RubrikDeliveryDelivered, 1)
 	old := retention.Events + time.Hour
-	for _, key := range []string{"settled", "claimable", "spent"} {
+	for _, key := range []string{"settled", "claimable", "spent", "failed"} {
 		if _, err := f.pool.Exec(ctx, `UPDATE rubrik_poller_events SET created_at = NOW() - make_interval(secs => $2::double precision)
 			WHERE id = $1::uuid`, event[key], old.Seconds()); err != nil {
 			t.Fatal(err)
@@ -546,6 +548,7 @@ func TestPruneRubrikHistory(t *testing.T) {
 	failedNoStamp := op(RubrikOpFailed, oldOp, false)
 	unknown := op(RubrikOpUnknown, oldOp, false)
 	running := op(RubrikOpRunning, oldOp, false)
+	applying := op(RubrikOpApplying, oldOp, false)
 	recent := op(RubrikOpPartial, retention.Operations-time.Hour, true)
 
 	pruned, err := f.s.PruneRubrikHistory(ctx, retention)
@@ -553,10 +556,10 @@ func TestPruneRubrikHistory(t *testing.T) {
 		t.Fatalf("PruneRubrikHistory: %v", err)
 	}
 	// Other tests share the database, so the counts are lower bounds.
-	if pruned.Events < 2 || pruned.Operations < 2 {
-		t.Errorf("pruned %+v; want at least 2 events and 2 operations", pruned)
+	if pruned.Events < 3 || pruned.Operations < 2 {
+		t.Errorf("pruned %+v; want at least 3 events and 2 operations", pruned)
 	}
-	for key, kept := range map[string]bool{"settled": false, "spent": false, "claimable": true, "young": true} {
+	for key, kept := range map[string]bool{"settled": false, "spent": false, "failed": false, "claimable": true, "young": true} {
 		var n int
 		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM rubrik_poller_events WHERE id = $1::uuid`, event[key]).Scan(&n); err != nil {
 			t.Fatal(err)
@@ -569,7 +572,8 @@ func TestPruneRubrikHistory(t *testing.T) {
 			t.Errorf("event %q: %d event rows, %d delivery rows; kept = %v", key, n, d, kept)
 		}
 	}
-	for id, kept := range map[string]bool{succeeded: false, failedNoStamp: false, unknown: true, running: true, recent: true} {
+	// Applying, running and unknown hold the object's in-flight check: never pruned, however old.
+	for id, kept := range map[string]bool{succeeded: false, failedNoStamp: false, unknown: true, running: true, applying: true, recent: true} {
 		_, err := f.s.GetOperation(ctx, id)
 		if gone := errors.Is(err, ErrRubrikOperationNotFound); gone == kept || (err != nil && !gone) {
 			t.Errorf("operation %s: err %v; kept = %v", id, err, kept)
