@@ -146,6 +146,8 @@ type Poller struct {
 	// sweptTo is, per cluster, the last operation the sweep refreshed; the
 	// next sweep starts after it.
 	sweptTo map[string]store.RubrikOperation
+	// prunedAt is when pruneIfDue last ran.
+	prunedAt time.Time
 }
 
 // DefaultPollerHolder returns a lease holder id unique to this process: the
@@ -221,9 +223,14 @@ func (p *Poller) releaseLeases() {
 	}
 }
 
-// tick ticks every mapped cluster of the connection, one after another,
-// each under its own deadline and panic recovery.
+// tick prunes old history when it is due, then ticks every mapped cluster
+// of the connection, one after another, each under its own deadline and
+// panic recovery.
 func (p *Poller) tick(ctx context.Context) {
+	pruneCtx, cancelPrune := context.WithTimeout(ctx, pollerPruneTimeout)
+	recoverutil.Tick(pruneCtx, p.logger, "rubrik poller retention", p.pruneIfDue)
+	cancelPrune()
+
 	mappings, err := p.store.ListMappings(ctx, p.svc.connectionID)
 	if err != nil {
 		p.logger.Error("rubrik poller: listing mappings failed", "error", err)

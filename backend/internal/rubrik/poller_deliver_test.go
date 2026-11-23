@@ -160,6 +160,21 @@ type fakeSweep struct {
 	listErr   error
 	graces    []time.Duration
 	refreshed []string
+	prunes    []store.RubrikRetention
+	pruneErr  error
+}
+
+func (f *fakeSweep) PruneRubrikHistory(_ context.Context, r store.RubrikRetention) (store.RubrikPruned, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prunes = append(f.prunes, r)
+	return store.RubrikPruned{Events: 1}, f.pruneErr
+}
+
+func (f *fakeSweep) pruneCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.prunes)
 }
 
 func (f *fakeSweep) ExpireApplyingOperations(_ context.Context, _ string, grace time.Duration) (int64, error) {
@@ -493,6 +508,46 @@ func TestPoller_SweepRotatesThroughTheOpenOperations(t *testing.T) {
 	_, _ = fmt.Sscanf(last, "op-%d", &lastIdx)
 	if want := fmt.Sprintf("op-%02d", lastIdx+1); s.refreshed[0] != want {
 		t.Errorf("after the last one settled, the sweep started at %s, want %s", s.refreshed[0], want)
+	}
+}
+
+// The prune runs from the tick at most hourly, keeps every intent the drain
+// can still claim, and a failure waits for the next hour.
+func TestPoller_PruneRunsHourly(t *testing.T) {
+	fx, p, _, _, s := deliveryFixture(t)
+	p.tick(context.Background())
+	p.tick(context.Background())
+	if got := s.pruneCount(); got != 1 {
+		t.Fatalf("two ticks in the same hour pruned %d times, want 1", got)
+	}
+	r := s.prunes[0]
+	if r.MaxDeliveryAttempts != pollerMaxDeliveryAttempts || r.Events < store.RubrikMinRetention || r.Operations < store.RubrikMinRetention {
+		t.Errorf("prune retention %+v; want the drain's %d attempts and retentions of at least %s",
+			r, pollerMaxDeliveryAttempts, store.RubrikMinRetention)
+	}
+	s.pruneErr = errors.New("connection reset")
+	fx.clock.advance(59 * time.Minute) // hourly, not merely "after the interval"
+	p.pruneIfDue(context.Background())
+	if got := s.pruneCount(); got != 1 {
+		t.Errorf("pruned %d times before the hour was up, want 1", got)
+	}
+	fx.clock.advance(time.Minute)
+	p.pruneIfDue(context.Background())
+	p.pruneIfDue(context.Background())
+	if got := s.pruneCount(); got != 2 {
+		t.Errorf("pruned %d times after the hour, want 2: a failed prune waits for the next hour", got)
+	}
+}
+
+// The prune runs even when no cluster can be ticked.
+func TestPoller_PruneRunsWithoutMappings(t *testing.T) {
+	fx, p, _, _, s := deliveryFixture(t)
+	fx.db.mu.Lock()
+	fx.db.mappings = nil
+	fx.db.mu.Unlock()
+	p.tick(context.Background())
+	if got := s.pruneCount(); got != 1 {
+		t.Errorf("a tick with no mappings pruned %d times, want 1", got)
 	}
 }
 

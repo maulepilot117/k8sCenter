@@ -491,3 +491,102 @@ func TestExpireApplyingOperations(t *testing.T) {
 		t.Errorf("a grace below %s was accepted; it would expire a live send", RubrikApplyingMinGrace)
 	}
 }
+
+func TestPruneRubrikHistory(t *testing.T) {
+	f := newPollerFixture(t)
+	ctx := t.Context()
+	const maxAttempts = 3
+	retention := RubrikRetention{Events: RubrikEventRetention, Operations: RubrikOperationRetention, MaxDeliveryAttempts: maxAttempts}
+
+	recorded, err := f.s.CommitPollerTick(ctx, f.lease, f.tick(
+		pollerEvent(RubrikEventSnapshotFailed, "settled"), pollerEvent(RubrikEventSnapshotFailed, "claimable"),
+		pollerEvent(RubrikEventSnapshotFailed, "spent"), pollerEvent(RubrikEventSnapshotFailed, "failed"),
+		pollerEvent(RubrikEventSnapshotFailed, "young")))
+	if err != nil || len(recorded) != 5 {
+		t.Fatalf("CommitPollerTick = (%d, %v); want 5 events", len(recorded), err)
+	}
+	event := map[string]string{}
+	for _, e := range recorded {
+		event[e.DedupKey] = e.ID
+	}
+	setDelivery := func(key, state string, attempts int) {
+		t.Helper()
+		if _, err := f.pool.Exec(ctx, `UPDATE rubrik_poller_deliveries SET state = $2, attempts = $3 WHERE event_id = $1::uuid`,
+			event[key], state, attempts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setDelivery("settled", RubrikDeliveryDelivered, 1)
+	setDelivery("claimable", RubrikDeliveryPending, maxAttempts-1)
+	setDelivery("spent", RubrikDeliveryPending, maxAttempts)
+	setDelivery("failed", RubrikDeliveryFailed, maxAttempts)
+	setDelivery("young", RubrikDeliveryDelivered, 1)
+	old := retention.Events + time.Hour
+	for _, key := range []string{"settled", "claimable", "spent", "failed"} {
+		if _, err := f.pool.Exec(ctx, `UPDATE rubrik_poller_events SET created_at = NOW() - make_interval(secs => $2::double precision)
+			WHERE id = $1::uuid`, event[key], old.Seconds()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	op := func(state string, age time.Duration, finished bool) string {
+		t.Helper()
+		o, err := f.s.InsertOperation(ctx, newRubrikOp(f.cluster, testOwnerID(t), RubrikOpSnapshot))
+		if err != nil {
+			t.Fatalf("InsertOperation: %v", err)
+		}
+		if _, err := f.pool.Exec(ctx, `UPDATE rubrik_operations
+			SET state = $2, updated_at = NOW() - make_interval(secs => $3::double precision),
+			    finished_at = CASE WHEN $4::boolean THEN NOW() - make_interval(secs => $3::double precision) ELSE NULL END
+			WHERE id = $1::uuid`, o.ID, state, age.Seconds(), finished); err != nil {
+			t.Fatal(err)
+		}
+		return o.ID
+	}
+	oldOp := retention.Operations + time.Hour
+	succeeded := op(RubrikOpSucceeded, oldOp, true)
+	failedNoStamp := op(RubrikOpFailed, oldOp, false)
+	unknown := op(RubrikOpUnknown, oldOp, false)
+	running := op(RubrikOpRunning, oldOp, false)
+	applying := op(RubrikOpApplying, oldOp, false)
+	recent := op(RubrikOpPartial, retention.Operations-time.Hour, true)
+
+	pruned, err := f.s.PruneRubrikHistory(ctx, retention)
+	if err != nil {
+		t.Fatalf("PruneRubrikHistory: %v", err)
+	}
+	// Other tests share the database, so the counts are lower bounds.
+	if pruned.Events < 3 || pruned.Operations < 2 {
+		t.Errorf("pruned %+v; want at least 3 events and 2 operations", pruned)
+	}
+	for key, kept := range map[string]bool{"settled": false, "spent": false, "failed": false, "claimable": true, "young": true} {
+		var n int
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM rubrik_poller_events WHERE id = $1::uuid`, event[key]).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		var d int
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM rubrik_poller_deliveries WHERE event_id = $1::uuid`, event[key]).Scan(&d); err != nil {
+			t.Fatal(err)
+		}
+		if (n == 1) != kept || (d == 1) != kept {
+			t.Errorf("event %q: %d event rows, %d delivery rows; kept = %v", key, n, d, kept)
+		}
+	}
+	// Applying, running and unknown hold the object's in-flight check: never pruned, however old.
+	for id, kept := range map[string]bool{succeeded: false, failedNoStamp: false, unknown: true, running: true, applying: true, recent: true} {
+		_, err := f.s.GetOperation(ctx, id)
+		if gone := errors.Is(err, ErrRubrikOperationNotFound); gone == kept || (err != nil && !gone) {
+			t.Errorf("operation %s: err %v; kept = %v", id, err, kept)
+		}
+	}
+
+	for _, bad := range []RubrikRetention{
+		{Events: RubrikMinRetention - time.Minute, Operations: RubrikOperationRetention, MaxDeliveryAttempts: maxAttempts},
+		{Events: RubrikEventRetention, Operations: RubrikMinRetention - time.Minute, MaxDeliveryAttempts: maxAttempts},
+		{Events: RubrikEventRetention, Operations: RubrikOperationRetention},
+	} {
+		if _, err := f.s.PruneRubrikHistory(ctx, bad); err == nil {
+			t.Errorf("PruneRubrikHistory(%+v) was accepted", bad)
+		}
+	}
+}
