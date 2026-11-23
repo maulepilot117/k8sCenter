@@ -797,22 +797,28 @@ func main() {
 	// rubrik.enabled is set, so with it off no /rubrik route exists and no
 	// RSC call is made (R28, KTD12). It needs PostgreSQL for the connection
 	// and mappings; without a database it stays off.
-	var rubrikHandler *rubrik.Handler
+	var (
+		rubrikHandler *rubrik.Handler
+		rubrikStore   *appstore.RubrikStore
+		rubrikService *rubrik.Service
+		rubrikAccess  *rubrik.Access
+	)
 	if cfg.Rubrik.Enabled {
 		if dbPool == nil || clusterStore == nil {
 			logger.Error("rubrik.enabled is set but PostgreSQL is not configured; the Rubrik provider stays off")
 		} else {
 			// The client secret uses the same master secret as cluster
 			// credentials.
-			rubrikStore := appstore.NewRubrikStore(dbPool, dbEncKey)
+			rubrikStore = appstore.NewRubrikStore(dbPool, dbEncKey)
 			rubrikClient := rubrik.NewClient(rubrik.StoreConnection{Store: rubrikStore, ID: appstore.RubrikDefaultConnectionID}, logger)
 			rubrikOps := rubrik.NewOperations(rubrikClient)
-			rubrikService := rubrik.NewService(rubrikOps, rubrikStore, clusterStore, appstore.RubrikDefaultConnectionID, logger, rubrikClient.Flush)
+			rubrikService = rubrik.NewService(rubrikOps, rubrikStore, clusterStore, appstore.RubrikDefaultConnectionID, logger, rubrikClient.Flush)
+			rubrikAccess = rubrik.NewAccess(accessChecker, informerMgr.Namespaces(), cfg.Rubrik.WritesEnabled)
 			h, err := rubrik.NewHandler(rubrik.HandlerDeps{
 				Store:        rubrikStore,
 				Clusters:     clusterStore,
 				Service:      rubrikService,
-				Access:       rubrik.NewAccess(accessChecker, informerMgr.Namespaces(), cfg.Rubrik.WritesEnabled),
+				Access:       rubrikAccess,
 				RSC:          rubrikOps,
 				Client:       rubrikClient,
 				Audit:        auditLogger,
@@ -915,6 +921,33 @@ func main() {
 		defer close(assuranceDone)
 		recoverutil.Safe(logger, "velero assurance collector", func() { veleroAssurance.Start(ctx) })
 	}()
+
+	// Rubrik poller (U10): one leased collector per mapped cluster, raising
+	// Notification Center events and sweeping write operations. It runs only
+	// with the provider on (the handler built), so with rubrik.enabled off no
+	// RSC call is made. The feed's Rubrik filter (KTD11) gets the provider's
+	// access rules here; it is assigned only from the non-nil *rubrik.Access
+	// the handler was built with, so the interface never holds a typed nil
+	// (docs/solutions/go-typed-nil-interface.md), and without it Rubrik rows
+	// stay admin-only.
+	rubrikPollerDone := make(chan struct{})
+	if rubrikHandler != nil {
+		if notifCenterHandler != nil {
+			notifCenterHandler.Rubrik = rubrikAccess
+		}
+		rubrikPoller := rubrik.NewPoller(rubrikService, rubrikStore, "").WithSweep(rubrikStore, rubrikHandler)
+		if notifService != nil {
+			rubrikPoller.WithDelivery(rubrikStore, notifService, informerMgr.Namespaces())
+		}
+		// Start runs outside chi's recovery middleware; close the done
+		// channel outside the recovered closure so shutdown always completes.
+		go func() {
+			defer close(rubrikPollerDone)
+			recoverutil.Safe(logger, "rubrik poller", func() { rubrikPoller.Start(ctx) })
+		}()
+	} else {
+		close(rubrikPollerDone)
+	}
 
 	// External Secrets Operator integration (Phase A — observatory; Phase D
 	// — alerting + threshold annotations; Phase C — DB persistence + drift
@@ -1254,6 +1287,12 @@ func main() {
 	case <-assuranceDone:
 	case <-time.After(3 * time.Second):
 		logger.Warn("backup assurance collector did not stop in time; its lease will expire")
+	}
+	// Likewise the Rubrik poller's cluster leases.
+	select {
+	case <-rubrikPollerDone:
+	case <-time.After(3 * time.Second):
+		logger.Warn("rubrik poller did not stop in time; its leases will expire")
 	}
 
 	// The receipt sweep loop exits on ctx; wait briefly so no database call is
