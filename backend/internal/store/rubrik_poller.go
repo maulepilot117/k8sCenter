@@ -632,3 +632,86 @@ func (s *RubrikStore) ExpireApplyingOperations(ctx context.Context, clusterID st
 	}
 	return tag.RowsAffected(), nil
 }
+
+// ---------------------------------------------------------------------------
+// Retention
+
+// Rubrik history retention defaults. RubrikEventRetention is well past the
+// poller's 24-hour catch-up window, so an event is never pruned while the
+// poller can still read the transition or job that raised it: a pruned event
+// cannot come back under its dedup key. RubrikOperationRetention matches the
+// audit log's 90 days, so an operation can be followed for as long as the
+// write that started it is audited.
+const (
+	RubrikEventRetention     = 30 * 24 * time.Hour
+	RubrikOperationRetention = 90 * 24 * time.Hour
+	// RubrikMinRetention is the shortest retention PruneRubrikHistory
+	// accepts, for the same reason: it must outlive the catch-up window.
+	RubrikMinRetention = 48 * time.Hour
+)
+
+// RubrikRetention says how long PruneRubrikHistory keeps each kind of row.
+type RubrikRetention struct {
+	// Events is how long a poller event, with its delivery, is kept once
+	// the delivery is settled.
+	Events time.Duration
+	// Operations is how long a finished write operation is kept.
+	Operations time.Duration
+	// MaxDeliveryAttempts is the delivery drain's attempt limit. A pending
+	// delivery that reached it can never be claimed again, so it does not
+	// keep its event.
+	MaxDeliveryAttempts int
+}
+
+// RubrikPruned counts the rows one PruneRubrikHistory removed.
+type RubrikPruned struct {
+	Events, Operations int64
+}
+
+// PruneRubrikHistory deletes Rubrik rows past retention, across all
+// clusters, and returns how many it removed of each kind:
+//
+//   - poller events older than r.Events whose delivery is settled, or
+//     pending with its attempts spent; their deliveries go with them. An
+//     event whose delivery can still be claimed is never pruned.
+//   - operations that finished (succeeded, failed or partial) more than
+//     r.Operations ago. An operation that is applying, running or unknown
+//     is never pruned: it still blocks its object's in-flight check.
+//
+// Compliance states need no retention: a tick that sees every object drops
+// the states of objects that are gone, and a removed mapping takes its
+// cluster's states with it.
+//
+// Each delete stands alone; on an error the counts so far are returned with
+// it. A retention below RubrikMinRetention is refused.
+func (s *RubrikStore) PruneRubrikHistory(ctx context.Context, r RubrikRetention) (RubrikPruned, error) {
+	var out RubrikPruned
+	if r.Events < RubrikMinRetention || r.Operations < RubrikMinRetention {
+		return out, fmt.Errorf("prune rubrik history: retention must be at least %s, got events %s and operations %s",
+			RubrikMinRetention, r.Events, r.Operations)
+	}
+	if r.MaxDeliveryAttempts <= 0 {
+		return out, fmt.Errorf("prune rubrik history: maxDeliveryAttempts (%d) must be positive", r.MaxDeliveryAttempts)
+	}
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM rubrik_poller_events e
+		 WHERE e.created_at < NOW() - make_interval(secs => $1::double precision)
+		   AND NOT EXISTS (
+		       SELECT 1 FROM rubrik_poller_deliveries d
+		        WHERE d.event_id = e.id AND d.state = $2 AND d.attempts < $3)`,
+		r.Events.Seconds(), RubrikDeliveryPending, r.MaxDeliveryAttempts)
+	if err != nil {
+		return out, fmt.Errorf("prune rubrik poller events: %w", err)
+	}
+	out.Events = tag.RowsAffected()
+	tag, err = s.pool.Exec(ctx, `
+		DELETE FROM rubrik_operations
+		 WHERE state IN ($2, $3, $4)
+		   AND COALESCE(finished_at, updated_at) < NOW() - make_interval(secs => $1::double precision)`,
+		r.Operations.Seconds(), RubrikOpSucceeded, RubrikOpFailed, RubrikOpPartial)
+	if err != nil {
+		return out, fmt.Errorf("prune rubrik operations: %w", err)
+	}
+	out.Operations = tag.RowsAffected()
+	return out, nil
+}

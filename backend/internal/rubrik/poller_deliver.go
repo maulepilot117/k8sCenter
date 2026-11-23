@@ -66,6 +66,11 @@ const (
 	// one fixed string, so no condition or object travels as identity
 	// metadata to external channels.
 	pollerResourceKind = "RubrikProtection"
+	// pollerPruneInterval spaces the retention prune: housekeeping, so
+	// hourly is plenty, and a failed prune waits for the next hour.
+	pollerPruneInterval = time.Hour
+	// pollerPruneTimeout bounds one prune.
+	pollerPruneTimeout = 30 * time.Second
 	// pollerUnsentReason is what a claimed intent records when the drain
 	// stopped before sending it.
 	pollerUnsentReason = "not sent: delivery stopped before this notification"
@@ -91,10 +96,12 @@ type NamespaceGetter interface {
 	Get(name string) (*corev1.Namespace, error)
 }
 
-// SweepStore is the part of store.RubrikStore the operation sweep uses.
+// SweepStore is the part of store.RubrikStore the operation sweep and the
+// retention prune use.
 type SweepStore interface {
 	ExpireApplyingOperations(ctx context.Context, clusterID string, grace time.Duration) (int64, error)
 	OpenOperations(ctx context.Context, clusterID string) ([]store.RubrikOperation, error)
+	PruneRubrikHistory(ctx context.Context, r store.RubrikRetention) (store.RubrikPruned, error)
 }
 
 // operationRefresher follows an operation's job in RSC and records a change;
@@ -120,8 +127,8 @@ func (p *Poller) WithDelivery(st DeliveryStore, n Notifier, namespaces Namespace
 }
 
 // WithSweep makes the poller sweep each cluster's write operations, refreshing
-// running and unknown ones through h. Both arguments must be non-nil. It
-// returns p.
+// running and unknown ones through h, and prune Rubrik history past
+// retention hourly. Both arguments must be non-nil. It returns p.
 func (p *Poller) WithSweep(st SweepStore, h *Handler) *Poller {
 	p.sweepStore, p.refresher = st, h
 	return p
@@ -335,6 +342,43 @@ func sweepStart(due []store.RubrikOperation, last store.RubrikOperation) int {
 		return i
 	}
 	return 0
+}
+
+// pollerRetention is what the hourly prune keeps: the store's defaults, with
+// the drain's attempt limit, so an intent the drain can still claim keeps
+// its event.
+var pollerRetention = store.RubrikRetention{
+	Events:              store.RubrikEventRetention,
+	Operations:          store.RubrikOperationRetention,
+	MaxDeliveryAttempts: pollerMaxDeliveryAttempts,
+}
+
+// pruneIfDue deletes Rubrik history past retention at most once per
+// pollerPruneInterval, across all clusters, whether or not this replica
+// holds any lease: the deletes are idempotent, so replicas pruning at once
+// do no harm. A failed prune is logged and retried next interval.
+func (p *Poller) pruneIfDue(ctx context.Context) {
+	if p.sweepStore == nil {
+		return
+	}
+	now := p.clock()
+	p.mu.Lock()
+	due := p.prunedAt.IsZero() || now.Sub(p.prunedAt) >= pollerPruneInterval
+	if due {
+		p.prunedAt = now
+	}
+	p.mu.Unlock()
+	if !due {
+		return
+	}
+	n, err := p.sweepStore.PruneRubrikHistory(ctx, pollerRetention)
+	if err != nil {
+		p.logger.Warn("rubrik poller: pruning history failed", "error", err)
+		return
+	}
+	if n.Events > 0 || n.Operations > 0 {
+		p.logger.Info("rubrik poller: pruned history", "events", n.Events, "operations", n.Operations)
+	}
 }
 
 // pollerNotice is the fixed wording of one event kind.
