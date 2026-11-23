@@ -49,8 +49,8 @@ package rubrik
 // RSC no longer lists, the connection and the gap carry no namespace, which
 // makes them admin-only in the feed (KTD10, KTD11).
 //
-// Delivering the events, sweeping operations and the main.go wiring come in
-// the next PR.
+// After each cluster's tick, poller_deliver.go sends the cluster's recorded
+// events to Notification Center and sweeps its write operations.
 
 import (
 	"context"
@@ -132,10 +132,20 @@ type Poller struct {
 	now      func() time.Time
 	interval time.Duration
 
+	// Set by WithDelivery and WithSweep; nil leaves that work undone.
+	deliveries DeliveryStore
+	notifier   Notifier
+	namespaces NamespaceGetter
+	sweepStore SweepStore
+	refresher  operationRefresher
+
 	mu sync.Mutex
 	// held are the clusters whose lease this replica took, released on
 	// shutdown.
 	held map[string]bool
+	// sweptTo is, per cluster, the last operation the sweep refreshed; the
+	// next sweep starts after it.
+	sweptTo map[string]store.RubrikOperation
 }
 
 // DefaultPollerHolder returns a lease holder id unique to this process: the
@@ -163,6 +173,7 @@ func NewPoller(svc *Service, st PollerStore, holder string) *Poller {
 		now:      time.Now,
 		interval: PollInterval,
 		held:     map[string]bool{},
+		sweptTo:  map[string]store.RubrikOperation{},
 	}
 }
 
@@ -229,6 +240,13 @@ func (p *Poller) tick(ctx context.Context) {
 			}
 		})
 		cancel()
+		// Delivery and the sweep run whatever the tick did, under their own
+		// deadline, so a slow RSC read cannot starve them.
+		afterCtx, cancelAfter := context.WithTimeout(ctx, pollerAfterTimeout)
+		recoverutil.Tick(afterCtx, p.logger, "rubrik poller delivery and sweep", func(ctx context.Context) {
+			p.afterTick(ctx, m.ClusterID)
+		})
+		cancelAfter()
 	}
 }
 
@@ -530,7 +548,7 @@ func planTick(in tickInput) store.RubrikPollerTick {
 		end := in.Now.Add(-pollerCatchUp).UTC()
 		tick.Events = append(tick.Events, store.RubrikPollerEvent{
 			Kind: store.RubrikEventMonitoringGap, DedupKey: gap.Format(time.RFC3339Nano), OccurredAt: in.Now,
-			Detail: detail(map[string]any{"gapStart": gap, "gapEnd": end}),
+			Detail: detail(gapDetail{GapStart: gap, GapEnd: end}),
 		})
 	}
 	if !first {
@@ -624,9 +642,17 @@ func eventNamespace(o Object) string {
 	return o.Coverage.Namespaces[0]
 }
 
+// gapDetail is a monitoring gap event's detail: the cursor the poller
+// resumed from, and the start of the catch-up window it read instead.
+// notificationFor reads it back to state the gap (R24).
+type gapDetail struct {
+	GapStart time.Time `json:"gapStart"`
+	GapEnd   time.Time `json:"gapEnd"`
+}
+
 // detail encodes an event's facts. Every value is one the poller computed
 // or an RSC id or time; none is tenant text.
-func detail(v map[string]any) json.RawMessage {
+func detail(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return nil
