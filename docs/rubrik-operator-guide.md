@@ -30,12 +30,22 @@ In your Helm values:
 ```yaml
 rubrik:
   enabled: true        # routes and the poller
-  writesEnabled: false # keep writes off until step 6
+  writesEnabled: false # keep writes off until step 7
 ```
 
 The chart sets `KUBECENTER_RUBRIK_ENABLED` (and `KUBECENTER_RUBRIK_WRITESENABLED` when `writesEnabled` is also true) only when the value is true. Both values must be booleans; the chart's schema refuses a quoted `"false"`.
 
-While `rubrik.enabled` is false, no `/api/v1/rubrik` route exists (every path is a 404) and no call reaches RSC. With `writesEnabled` false, every write is refused, for admins too.
+**Restart the backend after changing either value.** The backend reads these settings once, at startup, and `helm upgrade` does not restart it when only the config changes. Until it restarts, the old setting stays in force, so turning writes off does not take effect:
+
+```bash
+helm upgrade <release> ./helm/kubecenter -n <namespace> -f values.yaml
+kubectl rollout restart deployment/<fullname>-backend -n <namespace>
+kubectl rollout status deployment/<fullname>-backend -n <namespace>
+```
+
+`<fullname>` is the release name, or `<release>-kubecenter` when the release name does not contain `kubecenter` (`kubectl get deploy -n <namespace>` shows it). Then check `writesEnabled` in `GET /api/v1/rubrik/status` (step 4).
+
+While `rubrik.enabled` is false, no `/api/v1/rubrik` route exists (every path is a 404) and no call reaches RSC. With `writesEnabled` false, every snapshot, SLA change and restore is refused, for admins too. Saving the connection and the cluster mappings (steps 4 and 5) still works.
 
 ## 3. Allow egress to the tenant
 
@@ -43,7 +53,7 @@ The backend calls the tenant over HTTPS on port 443.
 
 - **Default NetworkPolicy.** When `networkPolicy.egress.kubernetesApiCIDRs` is empty, the backend's egress rule already allows port 443 to any address except link-local and metadata ranges, so the tenant is reachable with no change.
 - **Restricted API CIDRs.** When you set `kubernetesApiCIDRs`, port 443 is open only to those CIDRs. Add the tenant's addresses to `networkPolicy.egress.extraAllowedCIDRs`. RSC addresses can change; check Rubrik's published egress ranges for your region.
-- **Egress proxy.** The client honors `HTTPS_PROXY` from the backend's environment. The chart has no value for it, so set it on the backend Deployment yourself, and allow egress to the proxy. The tenant URL is still checked against the public-address guard before every request, but the backend resolves the tenant host itself and cannot see the address the proxy connects to.
+- **Egress proxy.** The client honors `HTTPS_PROXY` from the backend's environment. The chart has no value for it, so set it on the backend Deployment yourself (for example with `kubectl set env`), and check it is still set after each chart upgrade. Then allow egress to the proxy. `extraAllowedCIDRs` opens only ports 80, 443 and 5432, so a proxy listening on another port (3128 or 8080, say) needs a NetworkPolicy you add outside the chart. The tenant URL is still checked against the public-address guard before every request, but the backend resolves the tenant host itself and cannot see the address the proxy connects to.
 
 The tenant URL must be `https`, must resolve to a public address, and is checked again at every request. Redirects are never followed.
 
@@ -63,7 +73,7 @@ curl "${AUTH[@]}" -X PUT "$API/rubrik/connection" \
 curl "${AUTH[@]}" "$API/rubrik/status"
 ```
 
-The client secret is stored encrypted (AES-256-GCM, with `database.encryptionKey`, or the JWT secret when that is unset). It is never returned, logged or written to the audit log; status only reports `hasSecret`. To change the client ID without retyping the secret, leave `clientSecret` out. That is refused if the tenant URL moves to another origin: a stored secret is never sent to a different tenant. Moving the connection to another tenant clears every cluster mapping (`mappingsCleared` in the answer).
+The client secret is stored encrypted with AES-256-GCM. The key is `KUBECENTER_DATABASE_ENCRYPTIONKEY`, or the JWT secret when that is unset. The Helm chart does not set the encryption key, so under the chart the key is always the JWT secret: after rotating the JWT secret, save the connection again with `clientSecret`. The client secret is never returned, logged or written to the audit log; status only reports `hasSecret`. To change the client ID without retyping the secret, leave `clientSecret` out. That is refused if the tenant URL moves to another origin: a stored secret is never sent to a different tenant. Moving the connection to another tenant clears every cluster mapping (`mappingsCleared` in the answer).
 
 Connection `health` is one of `ok`, `auth_failed`, `unreachable`, `failing`, `secret_required`, `unknown` (configured, not contacted yet), `unavailable` or `not_configured`. Failures are reported by class only; RSC's own error text is never shown or stored.
 
@@ -99,6 +109,8 @@ Admins see and do everything Rubrik allows (writes still need `writesEnabled`). 
 | Snapshot | `create` `snapshots` | take an on-demand snapshot |
 | SLA change | `update` `slaassignments` | assign or change the SLA domain |
 | Restore | `create` `restores` | restore a snapshot into the namespace |
+
+The write grants do not stand alone. A snapshot or SLA change also needs the Read grant in that namespace. A restore needs the Read grant in the source namespace and the Restore grant in the namespace it writes into. A source whose namespace no longer exists is admin-only.
 
 Read only, for a team's namespace:
 
@@ -150,23 +162,41 @@ A restore into a different namespace also needs `get secrets` in the source name
 
 ## 7. Before enabling writes
 
-A wildcard rule grants the Rubrik verbs too. A Role or ClusterRole with `"*"` in both `apiGroups` and `resources` (for example `cluster-admin`) lets its subjects snapshot, change SLAs and restore through k8sCenter. Find those bindings before you set `writesEnabled: true`:
+Rules you never wrote for Rubrik can grant its verbs. Kubernetes matches a rule's API group and resource separately, so a rule grants a Rubrik verb when:
+
+- its `apiGroups` holds `"*"` or `rubrik.kubecenter.io`, and
+- its `resources` holds `"*"` or the Rubrik resource name (`protections`, `snapshots`, `slaassignments` or `restores`), and
+- its `verbs` holds `"*"` or the verb.
+
+So `cluster-admin` grants them, and so does a rule written for another backup tool with `apiGroups: ["*"]` and `resources: ["restores"]` or `["snapshots"]`. Find those roles and their bindings before you set `writesEnabled: true`:
 
 ```bash
-# ClusterRoles and Roles with a wildcard API group and resource.
-kubectl get clusterroles -o json | jq -r '.items[]
-  | select(any(.rules[]?; ((.apiGroups // []) | index("*")) and ((.resources // []) | index("*"))))
-  | .metadata.name'
-kubectl get roles -A -o json | jq -r '.items[]
-  | select(any(.rules[]?; ((.apiGroups // []) | index("*")) and ((.resources // []) | index("*"))))
-  | "\(.metadata.namespace)/\(.metadata.name)"'
+# Roles and ClusterRoles with a rule that can grant a Rubrik write verb.
+FILTER='any(.rules[]?;
+  ((.apiGroups // []) | any(. == "*" or . == "rubrik.kubecenter.io"))
+  and ((.resources // []) | any(. == "*" or . == "snapshots" or . == "slaassignments" or . == "restores"))
+  and ((.verbs // []) | any(. == "*" or . == "create" or . == "update")))'
+kubectl get clusterroles -o json | jq -r ".items[] | select($FILTER) | \"ClusterRole/\(.metadata.name)\""
+kubectl get roles -A -o json | jq -r ".items[] | select($FILTER) | \"Role/\(.metadata.namespace)/\(.metadata.name)\""
 
-# Who is bound to a role found above.
-kubectl get clusterrolebindings,rolebindings -A -o json | jq -r --arg role <name> '.items[]
-  | select(.roleRef.name == $role) | "\(.metadata.namespace // "-")/\(.metadata.name): \([.subjects[]? | .kind + ":" + .name] | join(", "))"'
+# Who is bound to one of them. Set KIND to Role or ClusterRole and NAME to its name.
+KIND=ClusterRole NAME="cluster-admin"
+kubectl get clusterrolebindings,rolebindings -A -o json | jq -r --arg kind "$KIND" --arg name "$NAME" '.items[]
+  | select(.roleRef.kind == $kind and .roleRef.name == $name)
+  | "\(.metadata.namespace // "-")/\(.metadata.name): \([.subjects[]? | .kind + ":" + .name] | join(", "))"'
 ```
 
-Narrow or accept each binding, then turn writes on:
+For a Role, the bindings that matter are the RoleBindings in the Role's own namespace.
+
+RBAC objects are not the whole answer. k8sCenter asks the API server with a SelfSubjectAccessReview as the user, so anything that authorizes the user also grants the Rubrik verbs. That includes `system:masters` and a cloud provider's IAM authorizer (GKE, EKS, AKS), and neither shows up in the queries above. Spot-check the users and groups who should not have write access:
+
+```bash
+kubectl auth can-i create restores.rubrik.kubecenter.io -n <namespace> --as <user> --as-group <group>
+kubectl auth can-i create snapshots.rubrik.kubecenter.io -n <namespace> --as <user> --as-group <group>
+kubectl auth can-i update slaassignments.rubrik.kubecenter.io -n <namespace> --as <user> --as-group <group>
+```
+
+Narrow or accept each grant, then turn writes on (and restart the backend, as in step 2):
 
 ```yaml
 rubrik:
