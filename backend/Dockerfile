@@ -2,7 +2,7 @@
 # deterministically; a floating minor tag would lag the patch on hosts with
 # cached layers. 1.27.3 clears the release Trivy gate's stdlib HIGHs
 # (CVE-2026-97031, CVE-2026-78667, CVE-2026-78669, CVE-2026-111943).
-FROM golang:1.27.3-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 
 WORKDIR /build
 
