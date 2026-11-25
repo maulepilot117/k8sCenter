@@ -209,6 +209,19 @@ ciliumAgent:
   # max ~(maxConcurrent * 6) nodes can be collected per cycle.
   maxConcurrent: 10
 
+# -- Rubrik Security Cloud backup provider (preview).
+# See docs/rubrik-operator-guide.md before turning either switch on.
+rubrik:
+  # -- Turn on the Rubrik routes and the poller. Needs PostgreSQL; without
+  # it the backend logs an error and the provider stays off. While false, no
+  # /api/v1/rubrik route exists and no call reaches Rubrik.
+  enabled: false
+  # -- Allow on-demand snapshots, SLA changes and restores through
+  # k8sCenter. Has no effect while rubrik.enabled is false. Audit wildcard
+  # RBAC bindings before turning it on (operator guide, "Before enabling
+  # writes").
+  writesEnabled: false
+
 # -- Alerting
 alerting:
   enabled: false

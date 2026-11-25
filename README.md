@@ -36,6 +36,10 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - Flux Notification Controller support (Provider, Alert, Receiver CRUD)
 - GitOps actions: sync, suspend/resume, rollback with real-time WebSocket status updates
 
+**Backup**
+- Velero backups, restores, schedules and storage locations, with backup assurance for the local cluster
+- Rubrik Security Cloud (preview, off by default): per-namespace protection, failed-job notifications and, with writes turned on, on-demand snapshots, SLA changes and restores, each checked against the user's own RBAC grants — see the [Rubrik operator guide](docs/rubrik-operator-guide.md)
+
 **Multi-Cluster**
 - Cluster routing via X-Cluster-ID header with encrypted credential storage
 - SSRF-protected registration, background health probing (60s), connection testing
@@ -250,6 +254,7 @@ See the [wiki](https://github.com/maulepilot117/k8sCenter/wiki) for detailed doc
 - **[API Reference](https://github.com/maulepilot117/k8sCenter/wiki/API-Reference)** — full endpoint listing with auth requirements
 - **[Architecture](https://github.com/maulepilot117/k8sCenter/wiki/Architecture)** — project structure, design decisions, package layout
 - **[Security](SECURITY.md)** — security model, vulnerability reporting
+- **[Rubrik operator guide](docs/rubrik-operator-guide.md)** — RSC service account, connection and cluster mapping, RBAC grants, egress
 
 ## Contributing
 

@@ -113,6 +113,15 @@
         "enabled": { "type": "boolean" }
       }
     },
+    "rubrik": {
+      "type": "object",
+      "description": "Rubrik Security Cloud backup provider (preview). Booleans only: a quoted \"false\" would render as on.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "writesEnabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "mobile": {
       "type": "object",
       "description": "Mobile app Universal Link domain hosting — opt-in.",
