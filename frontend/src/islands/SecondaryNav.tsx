@@ -8,6 +8,11 @@ import {
 import { navCollapsed, toggleNav } from "@/lib/nav.ts";
 import PinnedResources from "@/src/islands/PinnedResources.tsx";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import {
+  ensureRubrikStatus,
+  rubrikNavVisible,
+} from "@/src/lib/rubrik-status.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 function dotColor(h?: Health): string {
@@ -68,6 +73,19 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
   const collapsed = useSignalValue(navCollapsed);
   const domainId = getActiveDomain(currentPath);
   const domain = domainById(domainId);
+  // Entries marked `requires` stay hidden on the server and on the first
+  // client render, so hydration matches, and show once the provider's status
+  // store says it is on.
+  const isClient = useIsClient();
+  const rubrikOn = useSignalValue(rubrikNavVisible);
+  const needsRubrik = !!domain?.groups?.some((g) =>
+    g.items.some((it) => it.requires === "rubrik"),
+  );
+
+  // Ask for the Rubrik status only where this domain has an entry gated on it.
+  useEffect(() => {
+    if (needsRubrik) ensureRubrikStatus();
+  }, [needsRubrik]);
 
   // Keep the grid column width in sync with the collapse state.
   // Must run in an effect (not the render body) to avoid a synchronous
@@ -99,16 +117,23 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
     );
   }
 
+  const shown = (it: NavItem) =>
+    !it.requires || (isClient && it.requires === "rubrik" && rubrikOn);
+  const visibleGroups = domain.groups.map((g) => ({
+    header: g.header,
+    items: g.items.filter(shown),
+  }));
+
   const q = query.trim().toLowerCase();
-  const groups = domain.groups
+  const groups = visibleGroups
     .map((g) => ({
       header: g.header,
       items: g.items.filter((it) => !q || it.label.toLowerCase().includes(q)),
     }))
     .filter((g) => g.items.length);
 
-  // Total nav items in this domain (for the "N items" header badge).
-  const totalItems = domain.groups.reduce((sum, g) => sum + g.items.length, 0);
+  // Nav items this user can see in this domain (the "N items" header badge).
+  const totalItems = visibleGroups.reduce((sum, g) => sum + g.items.length, 0);
 
   const isActive = (it: NavItem) =>
     currentPath === it.href || currentPath.startsWith(`${it.href}/`);

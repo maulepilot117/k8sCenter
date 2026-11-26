@@ -229,6 +229,12 @@ export interface NavItem {
   kind?: string; // k8s plural kind for live count, e.g. "deployments"
   count?: boolean; // show count badge
   health?: Health;
+  /**
+   * An optional provider the entry needs. The nav shows the entry only once
+   * that provider's status store says it is on, never on the server or the
+   * first client render. `flattenGroups` leaves these entries out.
+   */
+  requires?: "rubrik";
 }
 
 export interface NavGroup {
@@ -248,10 +254,13 @@ export interface DomainSection {
 /**
  * Flatten all groups[].items into a single ordered array.
  * Used by CommandPalette, WorkloadsDashboard, and other flat-list consumers.
+ *
+ * Entries marked `requires` are left out: these consumers render without the
+ * provider's status, so they would offer a page that may be switched off.
  */
 export function flattenGroups(section: DomainSection): NavItem[] {
   if (!section.groups) return [];
-  return section.groups.flatMap((g) => g.items);
+  return section.groups.flatMap((g) => g.items.filter((it) => !it.requires));
 }
 
 export const DOMAIN_SECTIONS: DomainSection[] = [
