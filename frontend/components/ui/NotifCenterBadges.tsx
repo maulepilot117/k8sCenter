@@ -18,6 +18,7 @@ const SOURCE_COLORS: Record<NotifSource, string> = {
   velero: "var(--accent)",
   certmanager: "var(--success)",
   external_secrets: "var(--accent-secondary)",
+  rubrik: "var(--success)",
 };
 
 /**

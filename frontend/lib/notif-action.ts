@@ -63,6 +63,11 @@ export function notifActionUrl(
         )}/${encodeURIComponent(n.resourceName)}`;
       }
       return "/external-secrets/dashboard";
+    case "rubrik":
+      // Every Rubrik event (a failed snapshot, SLA compliance, the RSC
+      // connection, a monitoring gap) opens the Rubrik page, which shows the
+      // namespaces the reader may see and, for admins, the connection state.
+      return "/backup/rubrik";
     default: {
       const _exhaustive: never = n.source;
       return null;

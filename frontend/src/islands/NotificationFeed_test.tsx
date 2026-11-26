@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { fetchCurrentUser, logout } from "@/lib/auth.ts";
+import type { AppNotification } from "@/lib/notif-center-types.ts";
 import { disconnectWS } from "@/src/lib/ws.ts";
 import {
   act,
@@ -368,4 +369,104 @@ test("a live notifications event refetches after the debounce with the current f
   expect(lastList().searchParams.get("severity")).toBe("warning");
   expect(lastList().searchParams.get("offset")).toBe("25");
   expect(titles(root)[0]).toBe("Notification 25");
+});
+
+// ---------------------------------------------------------------------------
+// Rubrik (U16)
+
+const asNote = (o: Record<string, unknown>) => o as unknown as AppNotification;
+
+/** A feed that returns one Rubrik row (and an alert row) for every list. */
+function stubRubrikFeed() {
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const url = new URL(String(input), "http://localhost/");
+    calls.push({
+      method: init?.method ?? "GET",
+      url: `${url.pathname}${url.search}`,
+      keepalive: init?.keepalive,
+    });
+    if (url.pathname === "/api/v1/notifications") {
+      return new Response(
+        JSON.stringify({
+          data: [
+            note(1, {
+              source: "rubrik",
+              severity: "warning",
+              title: "Rubrik snapshot failed",
+              resourceKind: "RubrikProtection",
+              resourceNamespace: "team-a",
+              resourceUid: "ev-1",
+            }),
+            note(2, { title: "Other" }),
+          ],
+          metadata: { total: 2 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return json({});
+  }) as unknown as typeof globalThis.fetch;
+}
+
+test("a Rubrik row shows the Rubrik badge and links to the Rubrik page", async () => {
+  stubRubrikFeed();
+  const root = await mount();
+  const row = [...root.querySelectorAll("tbody tr")].find((r) =>
+    r.textContent?.includes("Rubrik snapshot failed"),
+  ) as HTMLElement;
+  const cells = row.querySelectorAll("td");
+  expect(cells[1].textContent).toBe("Rubrik");
+  // The title is drawn as a link: the row has a destination for any reader.
+  expect(cells[2].querySelector("span")?.textContent).toBe(
+    "Rubrik snapshot failed",
+  );
+  expect(row.style.cursor).toBe("pointer");
+  const { notifActionUrl } = await import("@/lib/notif-action.ts");
+  const rubrikNote = note(1, { source: "rubrik", resourceNamespace: "team-a" });
+  expect(notifActionUrl(asNote(rubrikNote))).toBe("/backup/rubrik");
+  // A row with no namespace (a connection or monitoring-gap event) too.
+  expect(notifActionUrl(asNote(note(3, { source: "rubrik" })))).toBe(
+    "/backup/rubrik",
+  );
+});
+
+test("the Source filter offers Rubrik and sends source=rubrik", async () => {
+  stubRubrikFeed();
+  await mount();
+  const options = [...document.querySelectorAll("label")]
+    .find((l) => l.firstChild?.textContent === "Source")
+    ?.querySelectorAll("option");
+  expect([...(options ?? [])].map((o) => o.textContent)).toContain("Rubrik");
+  await choose("Source", "rubrik");
+  expect(lastList().searchParams.get("source")).toBe("rubrik");
+});
+
+test("a title-free Rubrik refresh frame refetches the feed and shows nothing from the frame", async () => {
+  stubRubrikFeed();
+  const root = await mount();
+  const before = lists().length;
+  const sock = FakeSocket.instances.at(-1) as FakeSocket;
+  // KTD11: a Rubrik row's live frame is its id alone, no source or title.
+  await act(async () => {
+    sock.onmessage?.({
+      data: JSON.stringify({
+        type: "event",
+        id: "notif-feed",
+        eventType: "ADDED",
+        object: { id: "frame-only-id" },
+      }),
+    });
+  });
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 2100));
+  });
+  expect(lists()).toHaveLength(before + 1);
+  const text = root.textContent ?? "";
+  expect(text).not.toContain("frame-only-id");
+  expect(text).not.toContain("undefined");
+  // What shows is what the refetched feed returned.
+  expect(titles(root)).toEqual(["Rubrik snapshot failed", "Other"]);
 });

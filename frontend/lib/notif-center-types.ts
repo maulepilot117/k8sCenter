@@ -13,7 +13,13 @@ export type NotifSource =
   | "limits"
   | "velero"
   | "certmanager"
-  | "external_secrets";
+  | "external_secrets"
+  /**
+   * Rubrik backup events (R24). The feed returns a Rubrik row only to admins
+   * and holders of its namespace's Rubrik read grant (KTD11), and its live
+   * frame carries the id alone, so clients refetch rather than read it.
+   */
+  | "rubrik";
 
 /** Notification channel types matching backend notifications.ChannelType */
 export type NotifChannelType = "slack" | "email" | "webhook";
@@ -107,9 +113,10 @@ export const NOTIF_SOURCES: NotifSource[] = [
   "velero",
   "certmanager",
   "external_secrets",
+  "rubrik",
 ];
 
-/** Source category labels for grouped UI rendering. The 11-entry source list
+/** Source category labels for grouped UI rendering. The source list
  * is no longer flat-flat-readable; categories let operators scan by domain.
  * Order within each category is roughly install-base frequency. */
 export const NOTIF_SOURCE_CATEGORIES: ReadonlyArray<{
@@ -130,7 +137,7 @@ export const NOTIF_SOURCE_CATEGORIES: ReadonlyArray<{
   },
   {
     label: "Operations",
-    sources: ["alert", "audit", "gitops", "velero"],
+    sources: ["alert", "audit", "gitops", "velero", "rubrik"],
   },
 ];
 
@@ -161,4 +168,5 @@ export const SOURCE_LABELS: Record<NotifSource, string> = {
   velero: "Backup",
   certmanager: "Certificate",
   external_secrets: "External Secrets",
+  rubrik: "Rubrik",
 };
