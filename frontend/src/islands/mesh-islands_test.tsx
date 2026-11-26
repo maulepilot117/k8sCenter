@@ -26,6 +26,8 @@ afterEach(() => {
   globalThis.history.replaceState({}, "", "/");
 });
 
+const MTLS_PATH = "/api/v1/mesh/mtls";
+
 const wait = (ms: number) =>
   act(async () => {
     await new Promise((r) => setTimeout(r, ms));
@@ -203,8 +205,17 @@ test("MTLSPosture reads the namespace from the URL, debounces typing and drops a
   globalThis.history.replaceState({}, "", "/mtls?namespace=first");
   const calls: string[] = [];
   const releases: Record<string, () => void> = {};
+  // The namespace each mTLS read asked for, in order (null = all).
+  const asked = () =>
+    calls.map((u) =>
+      new URL(u, "http://localhost").searchParams.get("namespace"),
+    );
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = String(input);
+    // Record only this island's reads. A shared store left subscribed by an
+    // earlier test file (one bun process runs them all) can fire its own
+    // debounced request through this stub, which would skew a plain count.
+    if (!url.includes(MTLS_PATH)) return json(null);
     calls.push(url);
     const ns = new URL(url, "http://localhost").searchParams.get("namespace");
     if (ns === "slow") {
@@ -220,20 +231,18 @@ test("MTLSPosture reads the namespace from the URL, debounces typing and drops a
 
   const view = render(<MTLSPosture />);
   await settle();
-  expect(calls.length).toBe(1);
-  expect(calls[0]).toContain("namespace=first");
+  expect(asked()).toEqual(["first"]);
   expect(view.container.textContent).toContain("first");
 
   const input = body().getByPlaceholderText("All namespaces");
   fireEvent.change(input, { target: { value: "slow" } });
   await wait(400);
-  expect(calls.length).toBe(2);
-  expect(calls[1]).toContain("namespace=slow");
+  expect(asked()).toEqual(["first", "slow"]);
   expect(globalThis.location.search).toContain("namespace=slow");
 
   fireEvent.change(input, { target: { value: "fast" } });
   await wait(400);
-  expect(calls.length).toBe(3);
+  expect(asked()).toEqual(["first", "slow", "fast"]);
   await settle();
   expect(view.container.textContent).toContain("fast");
 
@@ -246,14 +255,16 @@ test("MTLSPosture reads the namespace from the URL, debounces typing and drops a
 
   fireEvent.click(body().getByRole("button", { name: "Clear" }));
   await wait(400);
-  expect(calls[3]).not.toContain("namespace=");
+  expect(asked()).toEqual(["first", "slow", "fast", null]);
 });
 
 test("MTLSPosture Refresh cancels a pending debounce and cards expand", async () => {
   setAccessToken("t");
   const calls: string[] = [];
   globalThis.fetch = (async (input: string | URL | Request) => {
-    calls.push(String(input));
+    const url = String(input);
+    if (!url.includes(MTLS_PATH)) return json(null);
+    calls.push(url);
     return json({
       status: meshStatus,
       workloads: [
