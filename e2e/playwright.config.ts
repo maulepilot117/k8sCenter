@@ -44,6 +44,11 @@ export default defineConfig({
         KUBECENTER_DATABASE_URL:
           process.env.KUBECENTER_DATABASE_URL ??
           "postgresql://k8scenter:k8scenter@localhost:5432/k8scenter?sslmode=disable",
+        // Mount the Rubrik routes (preview, off by default). With the provider
+        // off every /v1/rubrik path is a 404, which api-routes.spec.ts reads as
+        // a route mismatch. No connection or mapping is saved, so nothing
+        // calls RSC, and writes stay off (rubrik.writesEnabled).
+        KUBECENTER_RUBRIK_ENABLED: "true",
       },
     },
     {
