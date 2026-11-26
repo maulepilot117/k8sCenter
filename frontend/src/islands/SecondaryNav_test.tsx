@@ -1,5 +1,4 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import type { NavItem } from "@/lib/constants.ts";
 import type { RubrikStatus } from "@/lib/rubrik-types.ts";
 import { hydrate } from "@/src/test-utils/hydrate.tsx";
 import { body, render, settle, setupDom } from "@/src/test-utils/render.tsx";
@@ -24,16 +23,21 @@ const {
 const { selectedCluster, switchCluster } = await import("@/src/lib/cluster.ts");
 
 const STATUS = "/api/v1/rubrik/status";
-const RUBRIK_ITEM: NavItem = {
-  label: "Rubrik",
-  href: "/backup/rubrik",
-  requires: "rubrik",
-};
 
 const backup = DOMAIN_SECTIONS.find((s) => s.id === "backup");
 if (!backup?.groups?.[0]) throw new Error("backup section has no group");
 const backupGroup = backup.groups[0];
-const plainBackupHrefs = backupGroup.items.map((it) => it.href);
+// The Backup group's entries that always show; its Rubrik entry is gated.
+const plainBackupHrefs = backupGroup.items
+  .filter((it) => !it.requires)
+  .map((it) => it.href);
+if (
+  !backupGroup.items.some(
+    (it) => it.href === "/backup/rubrik" && it.requires === "rubrik",
+  )
+) {
+  throw new Error("the Backup group has no gated Rubrik entry");
+}
 
 function status(): RubrikStatus {
   return {
@@ -57,8 +61,6 @@ beforeEach(() => {
   resetRubrikStatusForTest();
   statusCalls = [];
   statusReply = () => reply(200, { data: status() });
-  // A Rubrik entry in the Backup group, as PR13 adds one.
-  backupGroup.items.push(RUBRIK_ITEM);
   globalThis.fetch = (async (
     input: string | URL | Request,
     init?: RequestInit,
@@ -75,7 +77,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  backupGroup.items = backupGroup.items.filter((it) => it !== RUBRIK_ITEM);
   resetRubrikStatusForTest();
 });
 

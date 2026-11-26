@@ -599,6 +599,7 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
           { label: "Restores", href: "/backup/restores" },
           { label: "Schedules", href: "/backup/schedules" },
           { label: "Assurance", href: "/backup/assurance" },
+          { label: "Rubrik", href: "/backup/rubrik", requires: "rubrik" },
         ],
       },
     ],
