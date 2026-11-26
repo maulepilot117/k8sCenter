@@ -12,7 +12,14 @@
  * id.
  */
 
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type MutableRefObject,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
@@ -67,6 +74,13 @@ export function objectLabel(o: RubrikObject): string {
     : `Namespace ${o.name}`;
 }
 
+/** objectLabel for mid-sentence use: only the kind is lower case, never the name. */
+function objectPhrase(o: RubrikObject): string {
+  return o.family === "protectionSet"
+    ? `protection set ${o.name}`
+    : `namespace ${o.name}`;
+}
+
 /** The server's refusal in the page's words. */
 export function writeError(err: unknown): string {
   if (!(err instanceof ApiError)) {
@@ -82,37 +96,56 @@ export function writeError(err: unknown): string {
 }
 
 /**
- * Sends one write with an operation id that stays the same across retries
- * of the same request (`key`) and changes when the request changes.
+ * The operation id of each request not yet answered, by request key. It is
+ * held by the panel, not the dialog, so a request re-sent after the dialog
+ * was closed and opened again (say after a network error) keeps its id, and
+ * the server answers it from its record instead of running it twice.
  */
-function useOperationSubmit(onStarted: (op: RubrikOperation) => void) {
-  const op = useRef<{ key: string; id: string } | null>(null);
+export type OperationIds = MutableRefObject<Map<string, string>>;
+
+export function useOperationIds(): OperationIds {
+  return useRef(new Map<string, string>());
+}
+
+/**
+ * Sends one write under the id `ids` holds for its request `key`, minting
+ * one the first time. A changed request is a new key and a new id. The id is
+ * dropped once the server has answered with an operation.
+ */
+function useOperationSubmit(
+  ids: OperationIds,
+  onStarted: (op: RubrikOperation) => void,
+) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reason, setReason] = useState<string | undefined>();
 
   async function submit(
     key: string,
     send: (operationId: string) => Promise<{ data: RubrikOperation }>,
-  ): Promise<boolean> {
-    if (op.current?.key !== key) op.current = { key, id: uuidv4() };
+  ): Promise<{ ok: boolean; reason?: string }> {
+    let id = ids.current.get(key);
+    if (!id) {
+      id = uuidv4();
+      ids.current.set(key, id);
+    }
     setBusy(true);
     setError(null);
-    setReason(undefined);
     try {
-      const res = await send(op.current.id);
-      op.current = null;
+      const res = await send(id);
+      ids.current.delete(key);
       onStarted(res.data);
-      return true;
+      return { ok: true };
     } catch (err) {
       setError(writeError(err));
-      setReason(err instanceof ApiError ? err.reason : undefined);
-      return false;
+      return {
+        ok: false,
+        reason: err instanceof ApiError ? err.reason : undefined,
+      };
     } finally {
       setBusy(false);
     }
   }
-  return { busy, error, reason, submit };
+  return { busy, error, submit };
 }
 
 /** The SLA domains the service account can see, loaded once. */
@@ -152,16 +185,28 @@ function Modal({
 }) {
   const box = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  // Held in a ref so a parent re-render (a new inline onClose) does not run
+  // the effect again and pull focus back to the first field.
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
+    // Focus returns to what opened the dialog when it closes.
+    const opener =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") close.current();
     };
     globalThis.addEventListener("keydown", onKey);
     box.current
       ?.querySelector<HTMLElement>("input, select, button:not([disabled])")
       ?.focus();
-    return () => globalThis.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    return () => {
+      globalThis.removeEventListener("keydown", onKey);
+      if (opener?.isConnected) opener.focus();
+    };
+  }, []);
   return (
     <div
       className="glass-scrim fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -300,11 +345,13 @@ export function RubrikWriteControls({
   namespace,
   detail,
   writesEnabled,
+  operationIds,
   onStarted,
 }: {
   namespace: string;
   detail: RubrikNamespaceDetail;
   writesEnabled: boolean;
+  operationIds: OperationIds;
   onStarted: (op: RubrikOperation) => void;
 }) {
   const [open, setOpen] = useState<"snapshot" | "sla" | null>(null);
@@ -314,9 +361,13 @@ export function RubrikWriteControls({
   const slaTargets = row.canChangeSla ? targets(detail, "canChangeSla") : [];
 
   if (snapshotTargets.length === 0 && slaTargets.length === 0) {
-    // Only a set covering several namespaces is managed by an admin; any
-    // other reason (grants, an operation in flight) shows no note.
-    const managed = detail.objects.some((o) => !o.relic && multiNamespace(o));
+    // The note is for one case only: no object here may be acted on by a
+    // non-admin at all (no action target), because what protects the
+    // namespace is a set covering several. Missing grants or an operation
+    // in flight on a target show no note.
+    const managed =
+      row.actionTargets.length === 0 &&
+      detail.objects.some((o) => !o.relic && multiNamespace(o));
     return managed ? (
       <p className="m-0 text-[13px] text-text-muted">
         Managed by an admin: this namespace is protected by a set that covers
@@ -355,6 +406,7 @@ export function RubrikWriteControls({
         <SnapshotDialog
           namespace={namespace}
           objects={snapshotTargets}
+          operationIds={operationIds}
           onStarted={done}
           onClose={() => setOpen(null)}
         />
@@ -365,6 +417,7 @@ export function RubrikWriteControls({
           objects={slaTargets}
           all={detail.objects}
           hiddenObjects={!!row.hiddenObjects}
+          operationIds={operationIds}
           onStarted={done}
           onClose={() => setOpen(null)}
         />
@@ -376,11 +429,13 @@ export function RubrikWriteControls({
 function SnapshotDialog({
   namespace,
   objects,
+  operationIds,
   onStarted,
   onClose,
 }: {
   namespace: string;
   objects: RubrikObject[];
+  operationIds: OperationIds;
   onStarted: (op: RubrikOperation) => void;
   onClose: () => void;
 }) {
@@ -388,13 +443,19 @@ function SnapshotDialog({
     objects.length === 1 ? objects[0].id : "",
   );
   const [slaId, setSlaId] = useState<string | null>(null);
-  const { busy, error, reason, submit } = useOperationSubmit(onStarted);
+  // Objects the server said need an SLA picked (sla_required): its view may
+  // be newer than the page's. Kept per object, so the picker stays while a
+  // retry is sent and does not follow the user to another object.
+  const [serverNeedsSla, setServerNeedsSla] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const { busy, error, submit } = useOperationSubmit(operationIds, onStarted);
   const object = objects.find((o) => o.id === objectId);
   // RSC needs an SLA domain for an on-demand snapshot. An object with none
-  // takes one picked here; the server's sla_required also asks for one.
+  // takes one picked here.
   const needSla =
     !!object &&
-    (!slaProtects(object.effectiveSla) || reason === "sla_required");
+    (!slaProtects(object.effectiveSla) || serverNeedsSla.has(object.id));
   const { domains, failed } = useSlaDomains(needSla);
   const ready = !!object && (!needSla || !!slaId);
 
@@ -415,16 +476,22 @@ function SnapshotDialog({
             onClick={() => {
               if (!object) return;
               const sla = needSla ? (slaId ?? "") : "";
-              void submit(`${object.id}|${sla}`, (operationId) =>
-                apiPost<RubrikOperation>(
-                  `/v1/rubrik/namespaces/${encodeURIComponent(namespace)}/snapshots`,
-                  {
-                    operationId,
-                    objectId: object.id,
-                    ...(needSla ? { slaId: sla } : {}),
-                  },
-                ),
-              );
+              void submit(
+                `snapshot|${namespace}|${object.id}|${sla}`,
+                (operationId) =>
+                  apiPost<RubrikOperation>(
+                    `/v1/rubrik/namespaces/${encodeURIComponent(namespace)}/snapshots`,
+                    {
+                      operationId,
+                      objectId: object.id,
+                      ...(needSla ? { slaId: sla } : {}),
+                    },
+                  ),
+              ).then((res) => {
+                if (res.reason === "sla_required") {
+                  setServerNeedsSla((prev) => new Set(prev).add(object.id));
+                }
+              });
             }}
           >
             {busy ? "Starting…" : "Take snapshot"}
@@ -442,8 +509,8 @@ function SnapshotDialog({
       )}
       {object && !needSla && (
         <p className="m-0 text-[13.5px] text-text-secondary">
-          The snapshot runs under {objectLabel(object).toLowerCase()}'s SLA
-          domain, {slaLabel(object.effectiveSla)}, and expires by its rules.
+          The snapshot runs under the SLA domain of {objectPhrase(object)},{" "}
+          {slaLabel(object.effectiveSla)}, and expires by its rules.
         </p>
       )}
       {needSla && (
@@ -475,6 +542,7 @@ function SlaDialog({
   objects,
   all,
   hiddenObjects,
+  operationIds,
   onStarted,
   onClose,
 }: {
@@ -483,6 +551,7 @@ function SlaDialog({
   /** Every object covering the namespace that the user sees. */
   all: RubrikObject[];
   hiddenObjects: boolean;
+  operationIds: OperationIds;
   onStarted: (op: RubrikOperation) => void;
   onClose: () => void;
 }) {
@@ -491,7 +560,7 @@ function SlaDialog({
   );
   // null: nothing chosen yet; "": remove the SLA domain.
   const [slaId, setSlaId] = useState<string | null>(null);
-  const { busy, error, submit } = useOperationSubmit(onStarted);
+  const { busy, error, submit } = useOperationSubmit(operationIds, onStarted);
   const { domains, failed } = useSlaDomains(true);
   const object = objects.find((o) => o.id === objectId);
   const current = object?.effectiveSla;
@@ -527,11 +596,13 @@ function SlaDialog({
             disabled={!ready || busy}
             onClick={() => {
               if (!object || slaId === null) return;
-              void submit(`${object.id}|${slaId}`, (operationId) =>
-                apiPut<RubrikOperation>(
-                  `/v1/rubrik/namespaces/${encodeURIComponent(namespace)}/sla`,
-                  { operationId, objectId: object.id, slaId },
-                ),
+              void submit(
+                `sla|${namespace}|${object.id}|${slaId}`,
+                (operationId) =>
+                  apiPut<RubrikOperation>(
+                    `/v1/rubrik/namespaces/${encodeURIComponent(namespace)}/sla`,
+                    { operationId, objectId: object.id, slaId },
+                  ),
               );
             }}
           >
@@ -556,7 +627,7 @@ function SlaDialog({
         <>
           <div>
             <label className={LABEL_CLASS} htmlFor="rubrik-sla-new">
-              New SLA domain for {objectLabel(object).toLowerCase()}
+              New SLA domain for {objectPhrase(object)}
             </label>
             <SlaSelect
               id="rubrik-sla-new"
@@ -581,8 +652,8 @@ function SlaDialog({
               {others.length > 0 ? (
                 <>
                   {namespace} is still protected by{" "}
-                  {others.map(objectLabel).join(", ").toLowerCase()}. Existing
-                  snapshots are kept.
+                  {others.map(objectPhrase).join(", ")}. Existing snapshots are
+                  kept.
                 </>
               ) : (
                 <>
@@ -630,16 +701,29 @@ export function restorable(s: RubrikSnapshot): boolean {
   return !s.expired && !s.corrupted && !s.quarantined;
 }
 
+/**
+ * The namespaces a restore into `target` writes into, as the server's
+ * restoreInto decides: the target alone for a per-namespace object, every
+ * namespace a protection set protects for a set (it restores in place).
+ */
+function restoreInto(o: RubrikObject, target: string): string[] {
+  if (o.family !== "protectionSet") return [target];
+  const ns = [...new Set(o.coverage.namespaces ?? [])].sort();
+  return ns.includes(target) ? ns : [target];
+}
+
 export function RubrikRestoreDialog({
   namespace,
   object,
   snapshot,
+  operationIds,
   onStarted,
   onClose,
 }: {
   namespace: string;
   object: RubrikObject;
   snapshot: RubrikSnapshot;
+  operationIds: OperationIds;
   onStarted: (op: RubrikOperation) => void;
   onClose: () => void;
 }) {
@@ -647,7 +731,7 @@ export function RubrikRestoreDialog({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [target, setTarget] = useState("");
   const [confirming, setConfirming] = useState(false);
-  const { busy, error, submit } = useOperationSubmit(onStarted);
+  const { busy, error, submit } = useOperationSubmit(operationIds, onStarted);
 
   useEffect(() => {
     let cancelled = false;
@@ -673,6 +757,8 @@ export function RubrikRestoreDialog({
   }, [namespace, object.id]);
 
   const taken = new Date(snapshot.time).toLocaleString();
+  const into = target ? restoreInto(object, target) : [];
+  const several = into.length > 1;
 
   if (confirming && target) {
     return (
@@ -683,22 +769,34 @@ export function RubrikRestoreDialog({
         loading={busy}
         typeToConfirm={target}
         message={
-          <>
-            Restore the snapshot of {objectLabel(object).toLowerCase()} taken{" "}
-            {taken} into <strong>{target}</strong>. {info?.overwriteNotice} Type
-            the namespace name to confirm.
-          </>
+          several ? (
+            <>
+              Restore the snapshot of {objectPhrase(object)} taken {taken} in
+              place into every namespace the set protects:{" "}
+              <strong>{into.join(", ")}</strong>. Existing objects with the same
+              names in each of these namespaces may be replaced. Type {target}{" "}
+              to confirm.
+            </>
+          ) : (
+            <>
+              Restore the snapshot of {objectPhrase(object)} taken {taken} into{" "}
+              <strong>{target}</strong>. {info?.overwriteNotice} Type the
+              namespace name to confirm.
+            </>
+          )
         }
         onConfirm={() => {
-          void submit(`${object.id}|${snapshot.id}|${target}`, (operationId) =>
-            apiPost<RubrikOperation>(RESTORES_URL, {
-              operationId,
-              objectId: object.id,
-              snapshotId: snapshot.id,
-              targetNamespace: target,
-            }),
-          ).then((ok) => {
-            if (!ok) setConfirming(false);
+          void submit(
+            `restore|${object.id}|${snapshot.id}|${target}`,
+            (operationId) =>
+              apiPost<RubrikOperation>(RESTORES_URL, {
+                operationId,
+                objectId: object.id,
+                snapshotId: snapshot.id,
+                targetNamespace: target,
+              }),
+          ).then((res) => {
+            if (!res.ok) setConfirming(false);
           });
         }}
         onCancel={() => setConfirming(false)}
@@ -729,7 +827,7 @@ export function RubrikRestoreDialog({
       }
     >
       <p className="m-0 text-[13.5px] text-text-secondary">
-        Snapshot of {objectLabel(object).toLowerCase()}, taken {taken}.
+        Snapshot of {objectPhrase(object)}, taken {taken}.
       </p>
       {loadError && <Alert variant="error">{loadError}</Alert>}
       {!info && !loadError && (
@@ -772,8 +870,17 @@ export function RubrikRestoreDialog({
           )}
         </div>
       )}
-      {info?.overwriteNotice && list.length > 0 && (
-        <Alert variant="warning">{info.overwriteNotice}</Alert>
+      {several ? (
+        <Alert variant="warning">
+          This restores in place into every namespace the set protects:{" "}
+          {into.join(", ")}. Existing objects with the same names in each of
+          them may be replaced.
+        </Alert>
+      ) : (
+        info?.overwriteNotice &&
+        list.length > 0 && (
+          <Alert variant="warning">{info.overwriteNotice}</Alert>
+        )
       )}
       {error && (
         <div role="alert">

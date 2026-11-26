@@ -23,6 +23,7 @@ import {
   RubrikRestoreDialog,
   RubrikWriteControls,
   restorable,
+  useOperationIds,
 } from "@/components/rubrik/RubrikWriteDialogs.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -610,6 +611,8 @@ function DetailPanel({
   } | null>(null);
   const gen = useRef(0);
   const heading = useRef<HTMLHeadingElement>(null);
+  // Held here, so a request re-sent from a dialog opened again keeps its id.
+  const operationIds = useOperationIds();
 
   // The panel takes focus when it opens, so keyboard and screen-reader users
   // land in it; closing returns focus to the namespace button (see close).
@@ -710,6 +713,7 @@ function DetailPanel({
           namespace={namespace}
           detail={data}
           writesEnabled={writesEnabled}
+          operationIds={operationIds}
           onStarted={started}
         />
         {data.objects.length === 0 ? (
@@ -780,6 +784,7 @@ function DetailPanel({
           namespace={namespace}
           object={restoring.object}
           snapshot={restoring.snapshot}
+          operationIds={operationIds}
           onStarted={started}
           onClose={() => setRestoring(null)}
         />

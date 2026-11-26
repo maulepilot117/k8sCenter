@@ -27,6 +27,8 @@ setupDom({ browser: true });
 const { RubrikWriteControls, RubrikRestoreDialog } = await import(
   "./RubrikWriteDialogs.tsx"
 );
+type Ids = import("./RubrikWriteDialogs.tsx").OperationIds;
+const newIds = (): Ids => ({ current: new Map<string, string>() });
 const { RubrikJobStatus } = await import("./RubrikJobStatus.tsx");
 const { default: RubrikDashboard } = await import(
   "@/src/islands/RubrikDashboard.tsx"
@@ -36,6 +38,8 @@ const { resetRubrikStatusForTest } = await import("@/src/lib/rubrik-status.ts");
 const bunFetch = globalThis.fetch;
 afterAll(() => {
   globalThis.fetch = bunFetch;
+  // Bun runs every file in one process: leave api.ts as it was found.
+  setAccessToken(null);
   resetRubrikStatusForTest();
 });
 
@@ -148,17 +152,27 @@ const click = async (name: string | RegExp) => {
   await settle();
 };
 
-function controls(d: RubrikNamespaceDetail, writesEnabled = true) {
+function controls(
+  d: RubrikNamespaceDetail,
+  writesEnabled = true,
+  ids: Ids = newIds(),
+) {
   const started: RubrikOperation[] = [];
-  const view = render(
+  const element = (next: RubrikNamespaceDetail) => (
     <RubrikWriteControls
       namespace="shop"
-      detail={d}
+      detail={next}
       writesEnabled={writesEnabled}
+      operationIds={ids}
       onStarted={(op) => started.push(op)}
-    />,
+    />
   );
-  return { started, view };
+  const view = render(element(d));
+  return {
+    started,
+    view,
+    rerender: (next: RubrikNamespaceDetail) => view.rerender(element(next)),
+  };
 }
 
 test("with writes disabled no write control renders", async () => {
@@ -244,7 +258,7 @@ test("a namespace covered by a multi-namespace set shows the admin note and no c
     canChangeSla: false,
     canRestore: false,
   });
-  const { view } = controls(detail([set]));
+  const { view } = controls(detail([set], { actionTargets: [] }));
   await settle();
   body().getByText(/Managed by an admin/);
   expect(body().queryByRole("button")).toBeNull();
@@ -410,6 +424,7 @@ test("the restore confirm stays disabled until the target namespace is typed exa
       namespace="shop"
       object={object()}
       snapshot={{ id: "snap-1", time: NOW }}
+      operationIds={newIds()}
       onStarted={(op) => started.push(op)}
       onClose={() => {}}
     />,
@@ -465,6 +480,7 @@ test("a refused restore shows the server's reason back in the form", async () =>
       namespace="shop"
       object={object()}
       snapshot={{ id: "snap-1", time: NOW }}
+      operationIds={newIds()}
       onStarted={() => {}}
       onClose={() => {}}
     />,
@@ -537,5 +553,222 @@ test("an operation read that turns 404 stops polling and says it is no longer vi
   expect(reads).toBe(1);
   await wait(40);
   expect(reads).toBe(1);
+  view.unmount();
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes
+
+const setOver = (namespaces: string[], name = "tier") =>
+  object({
+    family: "protectionSet",
+    id: "set-1",
+    name,
+    coverage: { namespaces },
+  });
+
+test("a set restore names every namespace it writes into, not only the target", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop/restore-targets?objectId=set-1"] =
+    () =>
+      ok({
+        objectId: "set-1",
+        sourceNamespace: "",
+        inPlaceOnly: true,
+        targets: ["shop"],
+        overwriteNotice:
+          "Existing objects in the target namespace with the same names may be replaced.",
+      });
+  const view = render(
+    <RubrikRestoreDialog
+      namespace="shop"
+      object={setOver(["shop", "cart"])}
+      snapshot={{ id: "snap-1", time: NOW }}
+      operationIds={newIds()}
+      onStarted={() => {}}
+      onClose={() => {}}
+    />,
+  );
+  await settle();
+  const form = body().getByRole("dialog");
+  expect(form.textContent).toContain(
+    "restores in place into every namespace the set protects: cart, shop",
+  );
+  await click("Continue");
+  const confirm = body().getByRole("dialog");
+  expect(confirm.textContent).toContain("cart, shop");
+  expect(confirm.textContent).not.toContain("in the target namespace");
+  view.unmount();
+});
+
+test("the admin note does not show when a target exists but its controls are off", async () => {
+  // shop has its own object (a target) with an operation in flight, and a
+  // cluster-wide set also covers it: the controls are off, but not because
+  // an admin manages the namespace.
+  const own = object({ canSnapshot: false, canChangeSla: false });
+  const wide = object({
+    family: "protectionSet",
+    id: "set-all",
+    name: "everything",
+    coverage: { all: true },
+    canSnapshot: false,
+    canChangeSla: false,
+    canRestore: false,
+  });
+  const { view } = controls(detail([own, wide], { actionTargets: [own.id] }));
+  await settle();
+  expect(body().queryByText(/Managed by an admin/)).toBeNull();
+  expect(body().queryByRole("button")).toBeNull();
+  view.unmount();
+});
+
+test("the server's sla_required keeps the picker for that object, through a failed retry", async () => {
+  let attempt = 0;
+  routes["POST /api/v1/rubrik/namespaces/shop/snapshots"] = () => {
+    attempt++;
+    if (attempt === 1) {
+      return fail(
+        400,
+        "sla_required",
+        "the object has no SLA domain; choose one for the snapshot",
+      );
+    }
+    if (attempt === 2) throw new TypeError("network down");
+    return ok(operation(), 201);
+  };
+  const other = object({ id: "obj-b", name: "shop-b" });
+  const d = detail([object(), other]);
+  const { view } = controls(d);
+  await click("Take snapshot");
+  fireEvent.click(body().getByLabelText("Namespace shop · SLA Gold"));
+  const submit = () =>
+    body()
+      .getAllByRole("button", { name: "Take snapshot" })
+      .at(-1) as HTMLButtonElement;
+  await act(async () => {
+    fireEvent.click(submit());
+  });
+  await settle();
+  const picker = () =>
+    body().queryByLabelText(
+      /This object has no SLA domain/,
+    ) as HTMLSelectElement | null;
+  expect(picker()).not.toBeNull();
+  // Another object keeps its own SLA: no picker, and no slaId would be sent.
+  fireEvent.click(body().getByLabelText("Namespace shop-b · SLA Gold"));
+  expect(picker()).toBeNull();
+  fireEvent.click(body().getByLabelText("Namespace shop · SLA Gold"));
+  fireEvent.change(picker() as HTMLSelectElement, {
+    target: { value: "sla-silver" },
+  });
+  await act(async () => {
+    fireEvent.click(submit());
+  });
+  await settle();
+  // The network error leaves the picker, and the retry is the same request.
+  expect(picker()?.value).toBe("sla-silver");
+  await act(async () => {
+    fireEvent.click(submit());
+  });
+  await settle();
+  const posts = sent("POST /api/v1/rubrik/namespaces/shop/snapshots");
+  expect(posts).toHaveLength(3);
+  expect(posts[1]?.body).toMatchObject({ slaId: "sla-silver" });
+  expect(posts[2]?.body).toMatchObject({ slaId: "sla-silver" });
+  expect(posts[2]?.body?.operationId).toBe(posts[1]?.body?.operationId);
+  view.unmount();
+});
+
+test("a request sent again from a reopened dialog keeps its operation id", async () => {
+  let attempt = 0;
+  routes["PUT /api/v1/rubrik/namespaces/shop/sla"] = () => {
+    attempt++;
+    if (attempt === 1) throw new TypeError("network down");
+    return ok(operation({ kind: "sla_assign", state: "succeeded" }), 201);
+  };
+  const ids = newIds();
+  const { view } = controls(detail(), true, ids);
+  await click("Change SLA");
+  fireEvent.change(body().getByLabelText(/New SLA domain/), {
+    target: { value: "sla-silver" },
+  });
+  await click("Change SLA domain");
+  body().getByText(/did not reach k8sCenter/);
+  await click("Cancel");
+  await click("Change SLA");
+  fireEvent.change(body().getByLabelText(/New SLA domain/), {
+    target: { value: "sla-silver" },
+  });
+  await click("Change SLA domain");
+  const [first, second] = sent("PUT /api/v1/rubrik/namespaces/shop/sla");
+  expect(second?.body?.operationId).toBe(first?.body?.operationId);
+  // Answered, the id is dropped: a later request of its own gets a new one.
+  expect(ids.current.size).toBe(0);
+  view.unmount();
+});
+
+test("a re-render does not pull focus back to the first field", async () => {
+  const a = object({
+    family: "protectionSet",
+    id: "set-a",
+    name: "web",
+    coverage: { namespaces: ["shop"] },
+  });
+  const b = object({
+    family: "protectionSet",
+    id: "set-b",
+    name: "db",
+    coverage: { namespaces: ["shop"] },
+  });
+  const { view, rerender } = controls(detail([a, b]));
+  await click("Change SLA");
+  fireEvent.click(body().getByLabelText("Protection set db · SLA Gold"));
+  await settle();
+  const select = body().getByLabelText(/New SLA domain/);
+  select.focus();
+  // The panel re-renders (say a job settled and it read the namespace).
+  await act(async () => {
+    rerender(detail([a, b]));
+  });
+  expect(document.activeElement).toBe(select);
+  view.unmount();
+});
+
+test("closing a dialog gives focus back to the button that opened it", async () => {
+  const { view } = controls(detail());
+  const opener = body().getByRole("button", { name: "Change SLA" });
+  opener.focus();
+  await click("Change SLA");
+  expect(document.activeElement).not.toBe(opener);
+  await click("Cancel");
+  expect(document.activeElement).toBe(
+    body().getByRole("button", { name: "Change SLA" }),
+  );
+  view.unmount();
+});
+
+test("object names keep their case in sentences", async () => {
+  const a = object({
+    family: "protectionSet",
+    id: "set-a",
+    name: "Web-Tier",
+    coverage: { namespaces: ["shop"] },
+  });
+  const b = object({
+    family: "protectionSet",
+    id: "set-b",
+    name: "Prod-DB",
+    coverage: { namespaces: ["shop"] },
+  });
+  const { view } = controls(detail([a, b]));
+  await click("Change SLA");
+  fireEvent.click(body().getByLabelText("Protection set Web-Tier · SLA Gold"));
+  fireEvent.change(body().getByLabelText(/New SLA domain/), {
+    target: { value: "__none__" },
+  });
+  const dialog = body().getByRole("dialog");
+  expect(dialog.textContent).toContain(
+    "still protected by protection set Prod-DB",
+  );
+  body().getByLabelText("New SLA domain for protection set Web-Tier");
   view.unmount();
 });
