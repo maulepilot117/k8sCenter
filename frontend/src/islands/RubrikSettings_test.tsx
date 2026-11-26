@@ -113,7 +113,7 @@ interface Call {
 }
 
 let calls: Call[] = [];
-let routes: Record<string, () => Response> = {};
+let routes: Record<string, () => Response | Promise<Response>> = {};
 
 function install() {
   globalThis.fetch = (async (
@@ -329,7 +329,8 @@ test("the local cluster maps under the id local and a taken RSC cluster is disab
   ) as HTMLSelectElement;
   const taken = Array.from(select.options).find((o) => o.value === RSC_A);
   expect(taken?.disabled).toBe(true);
-  expect(taken?.textContent).toContain("mapped to c-2");
+  expect(taken?.textContent).toContain("mapped to edge");
+  expect(taken?.textContent).not.toContain("c-2");
   fireEvent.change(select, { target: { value: RSC_B } });
   await act(async () => {
     fireEvent.click(
@@ -390,5 +391,78 @@ test("without a stored secret the mappings wait for the connection", async () =>
   body().getByText(/Save the connection first/);
   body().getByText("No secret is stored.");
   expect(calls.some((c) => c.url.includes("/rubrik/rsc-clusters"))).toBe(false);
+  unmount();
+});
+
+const CONFLICT = /changed while you were editing, so nothing was saved/;
+
+test("a connection save refused as changed keeps the form and says why after the reload", async () => {
+  routes["PUT /api/v1/rubrik/connection"] = () =>
+    fail(409, "connection_changed", "the connection changed; reload it");
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  // The status reload hangs until released, so the page is seen mid-reload.
+  let release: (r: Response) => void = () => {};
+  routes["GET /api/v1/rubrik/status"] = () =>
+    new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Save connection" }));
+  });
+  await settle();
+  expect(body().queryByText("Loading Rubrik status…")).toBeNull();
+  expect(tenantInput()).not.toBeNull();
+  expect(body().getByRole("alert").textContent).toMatch(CONFLICT);
+  await act(async () => {
+    release(ok(status(connection({ revision: 4, clientId: "client-2" }))));
+  });
+  await settle();
+  // The new revision remounts the form; the notice is held by the page.
+  expect(
+    (document.getElementById("rubrik-client-id") as HTMLInputElement).value,
+  ).toBe("client-2");
+  expect(body().getByRole("alert").textContent).toMatch(CONFLICT);
+  unmount();
+});
+
+test("a mapping save refused as changed says why, and the next save clears it", async () => {
+  defaults(connection(), []);
+  routes["PUT /api/v1/rubrik/mappings/local"] = () =>
+    fail(409, "connection_changed", "the connection changed; reload it");
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  routes["GET /api/v1/rubrik/status"] = () =>
+    ok(status(connection({ revision: 4 })));
+  const pick = () =>
+    body().getByLabelText("RSC cluster for Home (local)") as HTMLSelectElement;
+  fireEvent.change(pick(), { target: { value: RSC_B } });
+  await act(async () => {
+    fireEvent.click(
+      body().getAllByRole("button", { name: "Save mapping" })[0] as HTMLElement,
+    );
+  });
+  await settle();
+  const alerts = body().getAllByRole("alert");
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0]?.textContent).toMatch(CONFLICT);
+  // The save after the reload carries the new revision and clears the notice.
+  routes["PUT /api/v1/rubrik/mappings/local"] = () =>
+    ok(mapping({ rscClusterId: RSC_B, rscClusterName: "prod-west" }));
+  fireEvent.change(pick(), { target: { value: RSC_B } });
+  await act(async () => {
+    fireEvent.click(
+      body().getAllByRole("button", { name: "Save mapping" })[0] as HTMLElement,
+    );
+  });
+  await settle();
+  const puts = calls.filter(
+    (c) => c.method === "PUT" && c.url === "/api/v1/rubrik/mappings/local",
+  );
+  expect(puts.at(-1)?.body).toEqual({
+    rscClusterId: RSC_B,
+    connectionRevision: 4,
+  });
+  expect(body().queryByText(CONFLICT)).toBeNull();
   unmount();
 });

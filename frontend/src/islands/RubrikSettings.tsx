@@ -33,6 +33,7 @@ import type {
   RubrikConnection,
   RubrikConnectionHealth,
   RubrikMapping,
+  RubrikStatus,
 } from "@/lib/rubrik-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
@@ -144,10 +145,40 @@ export default function RubrikSettings() {
   const status = useSignalValue(rubrikStatus);
   /** The connection as the last save returned it. */
   const [saved, setSaved] = useState<RubrikConnection | undefined>();
+  /**
+   * The last enabled answer. A reload (after a save, a conflict or a cluster
+   * switch) puts the store back to "loading"; the page keeps showing this
+   * meanwhile instead of unmounting the forms and what they show.
+   */
+  const [lastEnabled, setLastEnabled] = useState<RubrikStatus | null>(null);
+  /**
+   * Why the last save was refused because the connection changed meanwhile.
+   * Held here, not in the form: the reload that follows brings a new
+   * revision, which remounts the forms.
+   */
+  const [conflict, setConflict] = useState<string | null>(null);
 
   useEffect(() => {
     ensureRubrikStatus();
   }, []);
+  useEffect(() => {
+    if (status.kind === "enabled") setLastEnabled(status.status);
+  }, [status]);
+
+  const onConflict = useCallback(() => {
+    setConflict(
+      "The Rubrik connection changed while you were editing, so nothing was saved. The page now shows the saved connection: check it and try again.",
+    );
+    void reloadRubrikStatus();
+  }, []);
+  const clearConflict = useCallback(() => setConflict(null), []);
+
+  const shown =
+    status.kind === "enabled"
+      ? status.status
+      : status.kind === "loading"
+        ? lastEnabled
+        : null;
 
   let body: ReactNode;
   if (!isClient || (!user && (authLoading || !authLoadAttempted))) {
@@ -165,7 +196,7 @@ export default function RubrikSettings() {
         mappings.
       </Alert>
     );
-  } else if (status.kind === "loading") {
+  } else if (shown === null && status.kind === "loading") {
     body = <p className="text-sm text-text-muted">Loading Rubrik status…</p>;
   } else if (status.kind === "disabled") {
     body = (
@@ -188,8 +219,8 @@ export default function RubrikSettings() {
         </Button>
       </div>
     );
-  } else {
-    const connection = newer(status.status.connection, saved) ?? {
+  } else if (shown !== null) {
+    const connection = newer(shown.connection, saved) ?? {
       configured: false,
       hasSecret: false,
       health: "not_configured" as const,
@@ -198,13 +229,20 @@ export default function RubrikSettings() {
       <>
         <p className="m-0 text-[13px] text-text-muted">
           Writes (snapshots, SLA changes, restores) are{" "}
-          {status.status.writesEnabled ? "on" : "off"}. They are set with the
-          Helm value <code>rubrik.writesEnabled</code>.
+          {shown.writesEnabled ? "on" : "off"}. They are set with the Helm value{" "}
+          <code>rubrik.writesEnabled</code>.
         </p>
+        {conflict && (
+          <div role="alert">
+            <Alert variant="warning">{conflict}</Alert>
+          </div>
+        )}
         <ConnectionForm
           key={`connection-${connection.revision ?? 0}`}
           connection={connection}
+          onConflict={onConflict}
           onSaved={(view, mappingsCleared) => {
+            setConflict(null);
             setSaved(view);
             showToast("Rubrik connection saved", "success");
             if (mappingsCleared) {
@@ -220,6 +258,8 @@ export default function RubrikSettings() {
           <Mappings
             key={`mappings-${connection.revision ?? 0}`}
             connection={connection}
+            onConflict={onConflict}
+            onSaved={clearConflict}
           />
         ) : (
           <section className={SECTION_CLASS}>
@@ -253,9 +293,12 @@ export default function RubrikSettings() {
 function ConnectionForm({
   connection,
   onSaved,
+  onConflict,
 }: {
   connection: RubrikConnection;
   onSaved: (view: RubrikConnection, mappingsCleared: boolean) => void;
+  /** The save was refused because the connection changed meanwhile. */
+  onConflict: () => void;
 }) {
   const [tenantUrl, setTenantUrl] = useState(connection.tenantUrl ?? "");
   const [clientId, setClientId] = useState(connection.clientId ?? "");
@@ -294,11 +337,13 @@ function ConnectionForm({
       const { mappingsCleared, ...view } = res.data;
       onSaved(view, mappingsCleared);
     } catch (err) {
+      if (err instanceof ApiError && err.reason === "connection_changed") {
+        // The page shows it: the reload that follows remounts this form.
+        onConflict();
+        return;
+      }
       if (!mounted.current) return;
       setError(errorMessage(err, "The connection could not be saved."));
-      if (err instanceof ApiError && err.reason === "connection_changed") {
-        void reloadRubrikStatus();
-      }
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -430,7 +475,20 @@ const STATE_TEXT: Partial<Record<RubrikClusterState, string>> = {
   not_configured: "No Rubrik connection is configured.",
 };
 
-function Mappings({ connection }: { connection: RubrikConnection }) {
+/** How the page names a cluster record. */
+function clusterLabel(c: ClusterRecord): string {
+  return `${c.displayName || c.name}${c.isLocal ? " (local)" : ""}`;
+}
+
+function Mappings({
+  connection,
+  onConflict,
+  onSaved,
+}: {
+  connection: RubrikConnection;
+  onConflict: () => void;
+  onSaved: () => void;
+}) {
   const [lists, setLists] = useState<Lists | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const gen = useRef(0);
@@ -471,6 +529,11 @@ function Mappings({ connection }: { connection: RubrikConnection }) {
       gen.current++;
     };
   }, [load]);
+
+  // Names for the "mapped to" text, keyed by the id the Rubrik API uses.
+  const labels = new Map(
+    (lists?.clusters ?? []).map((c) => [mappingId(c), clusterLabel(c)]),
+  );
 
   return (
     <section className={SECTION_CLASS} aria-labelledby="rubrik-mappings">
@@ -521,8 +584,13 @@ function Mappings({ connection }: { connection: RubrikConnection }) {
                   (m) => m.clusterId === mappingId(c),
                 )}
                 rsc={lists.rsc}
+                labels={labels}
                 revision={connection.revision ?? 0}
-                onChanged={() => void load()}
+                onConflict={onConflict}
+                onChanged={() => {
+                  onSaved();
+                  void load();
+                }}
               />
             ))}
           </ul>
@@ -536,20 +604,25 @@ function MappingRow({
   cluster,
   mapping,
   rsc,
+  labels,
   revision,
+  onConflict,
   onChanged,
 }: {
   cluster: ClusterRecord;
   mapping: RubrikMapping | undefined;
   rsc: RscCluster[] | null;
+  /** Cluster names keyed by the id the Rubrik API uses. */
+  labels: Map<string, string>;
   revision: number;
+  onConflict: () => void;
   onChanged: () => void;
 }) {
   const id = mappingId(cluster);
   const [choice, setChoice] = useState(mapping?.rscClusterId ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const label = `${cluster.displayName || cluster.name}${cluster.isLocal ? " (local)" : ""}`;
+  const label = clusterLabel(cluster);
   const selectId = `rubrik-map-${id}`;
   const invalid = mapping?.state === "mapping_invalid";
   // A mapping whose RSC cluster RSC no longer lists.
@@ -573,10 +646,12 @@ function MappingRow({
       showToast(`${label} mapped`, "success");
       onChanged();
     } catch (err) {
-      setError(errorMessage(err, "The mapping could not be saved."));
       if (err instanceof ApiError && err.reason === "connection_changed") {
-        void reloadRubrikStatus();
+        // The page shows it: the reload that follows remounts the mappings.
+        onConflict();
+        return;
       }
+      setError(errorMessage(err, "The mapping could not be saved."));
     } finally {
       setBusy(false);
     }
@@ -650,7 +725,9 @@ function MappingRow({
                   <option key={r.id} value={r.id} disabled={!!takenBy}>
                     {r.name}
                     {r.family === "protectionSet" ? " (protection set)" : ""}
-                    {takenBy ? ` — mapped to ${takenBy}` : ""}
+                    {takenBy
+                      ? ` — mapped to ${labels.get(takenBy) ?? takenBy}`
+                      : ""}
                   </option>
                 );
               })}
