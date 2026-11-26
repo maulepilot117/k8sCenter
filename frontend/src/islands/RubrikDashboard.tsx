@@ -18,11 +18,28 @@ import {
   useRef,
   useState,
 } from "react";
+import { RubrikJobStatus } from "@/components/rubrik/RubrikJobStatus.tsx";
+import {
+  RubrikRestoreDialog,
+  RubrikWriteControls,
+  restorable,
+} from "@/components/rubrik/RubrikWriteDialogs.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge, { type Tone } from "@/components/ui/glass/StatusBadge.tsx";
 import { Tabs } from "@/components/ui/Tabs.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
+import type {
+  RubrikCompliance as Compliance,
+  RubrikFreshness as Freshness,
+  RubrikJobState as JobStatus,
+  RubrikNamespaceDetail as NamespaceDetail,
+  RubrikNamespaceList as NamespaceList,
+  RubrikObjectDetail as ObjectDetail,
+  RubrikObject,
+  RubrikOperation,
+  RubrikSnapshot as Snapshot,
+} from "@/lib/rubrik-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import {
   ensureRubrikStatus,
@@ -35,98 +52,6 @@ import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 // Full literal: e2e/tests/api-routes.spec.ts checks every quoted "/v1/..."
 // path is mounted.
 const NAMESPACES_URL = "/v1/rubrik/namespaces";
-
-// ---------------------------------------------------------------------------
-// Wire types (backend/internal/rubrik/reads.go and model.go)
-
-type Compliance = "unknown" | "in_compliance" | "out_of_compliance";
-type JobStatus =
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "partial"
-  | "canceled"
-  | "unknown";
-
-/** How current a part of an answer is. `error` is the failed fetch's class. */
-interface Freshness {
-  fetchedAt: string;
-  stale: boolean;
-  error?: string;
-}
-
-interface SlaRef {
-  id: string;
-  name: string;
-}
-
-interface RubrikObject {
-  family: "namespace" | "protectionSet";
-  id: string;
-  /** The namespace for a per-namespace object, the set name for a set. */
-  name: string;
-  setType?: string;
-  coverage: { all?: boolean; namespaces?: string[]; unresolved?: boolean };
-  configuredSla: SlaRef;
-  effectiveSla: SlaRef;
-  slaAssignment?: string;
-  newestSnapshot?: string;
-  relic?: boolean;
-  compliance: Compliance;
-}
-
-interface NamespaceRow {
-  namespace: string;
-  protected: boolean;
-  compliance: Compliance;
-  lastSnapshot?: string;
-  objectIds: string[];
-  /** More objects cover the namespace than the user may see. */
-  hiddenObjects?: boolean;
-}
-
-interface NamespaceList {
-  noAccess: boolean;
-  namespaces: NamespaceRow[];
-  objects: RubrikObject[];
-  freshness?: Freshness;
-}
-
-interface Snapshot {
-  id: string;
-  time: string;
-  expires?: string;
-  expired?: boolean;
-  onDemand?: boolean;
-  corrupted?: boolean;
-  quarantined?: boolean;
-}
-
-interface Job {
-  id: string;
-  objectId: string;
-  type: string;
-  status: JobStatus;
-  startTime?: string;
-  lastUpdated?: string;
-  message?: string;
-  failureReason?: string;
-}
-
-interface ObjectDetail extends RubrikObject {
-  snapshots: Snapshot[];
-  snapshotsFreshness?: Freshness;
-  snapshotsError?: string;
-  jobs: Job[];
-  jobsFreshness?: Freshness;
-  jobsError?: string;
-}
-
-interface NamespaceDetail {
-  namespace: NamespaceRow;
-  objects: ObjectDetail[];
-  freshness: Freshness;
-}
 
 // ---------------------------------------------------------------------------
 // Text
@@ -405,7 +330,14 @@ export default function RubrikDashboard() {
       </div>
       {body}
       {selected && list.kind === "loaded" && (
-        <DetailPanel key={selected} namespace={selected} onClose={close} />
+        <DetailPanel
+          key={selected}
+          namespace={selected}
+          writesEnabled={
+            status.kind === "enabled" && status.status.writesEnabled
+          }
+          onClose={close}
+        />
       )}
     </div>
   );
@@ -661,13 +593,21 @@ type DetailState =
 
 function DetailPanel({
   namespace,
+  writesEnabled,
   onClose,
 }: {
   namespace: string;
+  writesEnabled: boolean;
   onClose: () => void;
 }) {
   const [state, setState] = useState<DetailState>({ kind: "loading" });
   const [tab, setTab] = useState("snapshots");
+  /** Writes started from this panel, newest first, shown with their status. */
+  const [ops, setOps] = useState<RubrikOperation[]>([]);
+  const [restoring, setRestoring] = useState<{
+    object: ObjectDetail;
+    snapshot: Snapshot;
+  } | null>(null);
   const gen = useRef(0);
   const heading = useRef<HTMLHeadingElement>(null);
 
@@ -677,34 +617,38 @@ function DetailPanel({
     heading.current?.focus();
   }, []);
 
-  const load = useCallback(async () => {
-    const g = ++gen.current;
-    setState({ kind: "loading" });
-    try {
-      const res = await apiGet<NamespaceDetail>(
-        `${NAMESPACES_URL}/${encodeURIComponent(namespace)}`,
-      );
-      if (gen.current !== g) return;
-      setState({ kind: "loaded", data: res.data });
-    } catch (err) {
-      if (gen.current !== g) return;
-      if (err instanceof ApiError && err.status === 404) {
-        setState({ kind: "gone" });
-        return;
+  /** Reads the namespace; `quiet` keeps what is shown while it reads. */
+  const load = useCallback(
+    async (quiet = false) => {
+      const g = ++gen.current;
+      if (!quiet) setState({ kind: "loading" });
+      try {
+        const res = await apiGet<NamespaceDetail>(
+          `${NAMESPACES_URL}/${encodeURIComponent(namespace)}`,
+        );
+        if (gen.current !== g) return;
+        setState({ kind: "loaded", data: res.data });
+      } catch (err) {
+        if (gen.current !== g) return;
+        if (err instanceof ApiError && err.status === 404) {
+          setState({ kind: "gone" });
+          return;
+        }
+        const reason = err instanceof ApiError ? err.reason : undefined;
+        setState({
+          kind: "failed",
+          // A setup refusal (409) explains itself; anything else is a failure.
+          message:
+            err instanceof ApiError && err.status === 409 ? (
+              setupText(reason ?? "")
+            ) : (
+              <>{failureText(reason)}.</>
+            ),
+        });
       }
-      const reason = err instanceof ApiError ? err.reason : undefined;
-      setState({
-        kind: "failed",
-        // A setup refusal (409) explains itself; anything else is a failure.
-        message:
-          err instanceof ApiError && err.status === 409 ? (
-            setupText(reason ?? "")
-          ) : (
-            <>{failureText(reason)}.</>
-          ),
-      });
-    }
-  }, [namespace]);
+    },
+    [namespace],
+  );
 
   useEffect(() => {
     void load();
@@ -715,11 +659,24 @@ function DetailPanel({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      // A dialog opened from the panel takes Escape for itself.
+      if (e.key !== "Escape") return;
+      if (document.querySelector('[aria-modal="true"]')) return;
+      onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // A started write shows its status here; when it settles the namespace is
+  // read again, so the new snapshot, job or SLA shows.
+  const started = useCallback((op: RubrikOperation) => {
+    setRestoring(null);
+    setOps((prev) => [op, ...prev.filter((o) => o.id !== op.id)]);
+  }, []);
+  const settled = useCallback(() => {
+    void load(true);
+  }, [load]);
 
   let content: ReactNode;
   if (state.kind === "loading") {
@@ -749,6 +706,12 @@ function DetailPanel({
     content = (
       <div className="flex flex-col gap-3">
         <FreshnessNote freshness={data.freshness} what="objects" />
+        <RubrikWriteControls
+          namespace={namespace}
+          detail={data}
+          writesEnabled={writesEnabled}
+          onStarted={started}
+        />
         {data.objects.length === 0 ? (
           <p className="m-0 text-sm text-text-muted">
             No Rubrik object you can see protects this namespace.
@@ -762,7 +725,13 @@ function DetailPanel({
                 id: "snapshots",
                 label: "Snapshots",
                 content: () => (
-                  <ObjectSections objects={data.objects} part="snapshots" />
+                  <ObjectSections
+                    objects={data.objects}
+                    part="snapshots"
+                    onRestore={(object, snapshot) =>
+                      setRestoring({ object, snapshot })
+                    }
+                  />
                 ),
               },
               {
@@ -798,7 +767,23 @@ function DetailPanel({
           Close
         </Button>
       </div>
+      {ops.length > 0 && (
+        <div className="flex flex-col gap-2" aria-label="Rubrik operations">
+          {ops.map((op) => (
+            <RubrikJobStatus key={op.id} operation={op} onSettled={settled} />
+          ))}
+        </div>
+      )}
       {content}
+      {restoring && (
+        <RubrikRestoreDialog
+          namespace={namespace}
+          object={restoring.object}
+          snapshot={restoring.snapshot}
+          onStarted={started}
+          onClose={() => setRestoring(null)}
+        />
+      )}
     </aside>
   );
 }
@@ -806,9 +791,11 @@ function DetailPanel({
 function ObjectSections({
   objects,
   part,
+  onRestore,
 }: {
   objects: ObjectDetail[];
   part: "snapshots" | "jobs";
+  onRestore?: (object: ObjectDetail, snapshot: Snapshot) => void;
 }) {
   return (
     <div className="flex flex-col gap-4 pt-3">
@@ -825,7 +812,7 @@ function ObjectSections({
             </span>
           </h3>
           {part === "snapshots" ? (
-            <SnapshotList object={o} />
+            <SnapshotList object={o} onRestore={onRestore} />
           ) : (
             <JobList object={o} />
           )}
@@ -850,7 +837,16 @@ function snapshotState(s: Snapshot): { label: string; tone: Tone } {
   return { label: "Available", tone: "ok" };
 }
 
-function SnapshotList({ object }: { object: ObjectDetail }) {
+function SnapshotList({
+  object,
+  onRestore,
+}: {
+  object: ObjectDetail;
+  onRestore?: (object: ObjectDetail, snapshot: Snapshot) => void;
+}) {
+  // The restore control follows the server's flag for the object; a
+  // snapshot RSC marks expired, corrupted or quarantined is never offered.
+  const canRestore = object.canRestore && !!onRestore;
   if (object.snapshotsError) {
     return <PartError reason={object.snapshotsError} what="Snapshots" />;
   }
@@ -866,6 +862,11 @@ function SnapshotList({ object }: { object: ObjectDetail }) {
               <th className={TH}>Time</th>
               <th className={TH}>Status</th>
               <th className={TH}>Expires</th>
+              {canRestore && (
+                <th className={TH}>
+                  <span className="sr-only">Actions</span>
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -883,6 +884,21 @@ function SnapshotList({ object }: { object: ObjectDetail }) {
                     <StatusBadge label={st.label} tone={st.tone} />
                   </td>
                   <td className={TD}>{when(s.expires)}</td>
+                  {canRestore && (
+                    <td className={TD}>
+                      {restorable(s) && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          aria-label={`Restore the snapshot from ${when(s.time)}`}
+                          onClick={() => onRestore?.(object, s)}
+                        >
+                          Restore
+                        </Button>
+                      )}
+                    </td>
+                  )}
                 </tr>
               );
             })}
