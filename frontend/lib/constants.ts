@@ -636,6 +636,7 @@ export const SETTINGS_SECTION: DomainSection = {
         { label: "Users", href: "/settings/users" },
         { label: "Authentication", href: "/settings/auth" },
         { label: "Audit Log", href: "/settings/audit" },
+        { label: "Rubrik", href: "/settings/rubrik", requires: "rubrik" },
       ],
     },
   ],
