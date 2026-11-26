@@ -120,15 +120,17 @@ FROM debian:trixie AS security-patch
 COPY --from=runtime-base /var/lib/dpkg/status.d/libssl3t64 /tmp/libssl3t64-orig
 COPY --from=runtime-base /var/lib/dpkg/status.d/libc6 /tmp/libc6-orig
 COPY --from=runtime-base /var/lib/dpkg/status.d/zlib1g /tmp/zlib1g-orig
+COPY --from=runtime-base /var/lib/dpkg/status.d/libzstd1 /tmp/libzstd1-orig
 
 RUN set -e && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
       libssl3t64 \
       libc6 \
-      zlib1g && \
+      zlib1g \
+      libzstd1 && \
     mkdir -p /patch/usr/lib && \
-    for pkg in libssl3t64 libc6 zlib1g; do \
+    for pkg in libssl3t64 libc6 zlib1g libzstd1; do \
       INSTALLED_VER=$(dpkg-query -W -f='${Version}' "$pkg") && \
       [ -n "$INSTALLED_VER" ] || { echo "ERROR: dpkg-query returned empty version for $pkg" >&2; exit 1; } && \
       [ -f "/usr/share/doc/$pkg/changelog.Debian.gz" ] || \
@@ -192,6 +194,7 @@ COPY --from=security-patch /patch/usr/lib/ /usr/lib/
 COPY --from=security-patch /patch/libssl3t64-status /var/lib/dpkg/status.d/libssl3t64
 COPY --from=security-patch /patch/libc6-status /var/lib/dpkg/status.d/libc6
 COPY --from=security-patch /patch/zlib1g-status /var/lib/dpkg/status.d/zlib1g
+COPY --from=security-patch /patch/libzstd1-status /var/lib/dpkg/status.d/libzstd1
 
 WORKDIR /app
 
