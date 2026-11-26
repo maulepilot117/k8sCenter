@@ -575,3 +575,92 @@ func TestRubrikStore_ListComplianceStates(t *testing.T) {
 		t.Errorf("ListComplianceStates = %+v; want obj-a out of compliance then obj-b late", got)
 	}
 }
+
+// Contact outcomes stamp only the revision they were made under, keep the
+// other outcome's time, and accept only the CHECK's kinds.
+func TestRubrikStore_RecordsContactHealth(t *testing.T) {
+	pool := testDB(t)
+	ctx := t.Context()
+	s := NewRubrikStore(pool, rubrikTestKey)
+	id, c := newRubrikTestConnection(t, s, "https://tenant.my.rubrik.com")
+	if c.LastSuccessAt != nil || c.LastFailureAt != nil || c.LastFailureKind != "" {
+		t.Fatalf("new connection health = %+v; want nothing recorded", c)
+	}
+	read := func() RubrikConnection {
+		t.Helper()
+		got, _, err := s.GetConnection(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	if ok, err := s.RecordConnectionSuccess(ctx, id, c.Revision); err != nil || !ok {
+		t.Fatalf("RecordConnectionSuccess = (%v, %v); want a write", ok, err)
+	}
+	got := read()
+	if got.LastSuccessAt == nil || got.LastFailureAt != nil || got.LastFailureKind != "" {
+		t.Fatalf("after a success = %+v; want only the success", got)
+	}
+	success := *got.LastSuccessAt
+
+	if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, RubrikFailureAuth); err != nil || !ok {
+		t.Fatalf("RecordConnectionFailure = (%v, %v); want a write", ok, err)
+	}
+	got = read()
+	if got.LastFailureAt == nil || got.LastFailureKind != RubrikFailureAuth {
+		t.Fatalf("after a failure = %+v; want auth_failed recorded", got)
+	}
+	if got.LastSuccessAt == nil || !got.LastSuccessAt.Equal(success) {
+		t.Errorf("a failure moved the last success: %v, want %v", got.LastSuccessAt, success)
+	}
+	if got.LastFailureAt.Before(success) {
+		t.Errorf("failure at %v is before the earlier success at %v", got.LastFailureAt, success)
+	}
+
+	for _, kind := range []string{RubrikFailureAuth, RubrikFailureUnreachable, RubrikFailureRateLimited,
+		RubrikFailureGraphQL, RubrikFailureUnreadable} {
+		if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, kind); err != nil || !ok {
+			t.Errorf("kind %q = (%v, %v); want the CHECK to accept it", kind, ok, err)
+		}
+	}
+	for _, kind := range []string{"", "rsc_error", "not_configured", "connection refused by 10.0.0.1"} {
+		if _, err := s.RecordConnectionFailure(ctx, id, c.Revision, kind); !errors.Is(err, ErrRubrikFailureKind) {
+			t.Errorf("kind %q = %v; want ErrRubrikFailureKind", kind, err)
+		}
+	}
+	if got := read(); got.LastFailureKind != RubrikFailureUnreadable {
+		t.Errorf("refused kinds changed the row: kind = %q", got.LastFailureKind)
+	}
+
+	// A save between the contact and its record clears the health and
+	// advances the revision, so the old revision's outcome is dropped.
+	saved, err := s.UpsertConnection(ctx, id, RubrikConnectionWrite{
+		TenantURL: "https://tenant.my.rubrik.com", ClientID: "client-2", KeptFrom: "https://tenant.my.rubrik.com", UpdatedBy: "admin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.LastSuccessAt != nil || saved.LastFailureAt != nil || saved.LastFailureKind != "" {
+		t.Fatalf("save kept health %+v; want it cleared", saved)
+	}
+	if ok, err := s.RecordConnectionSuccess(ctx, id, c.Revision); err != nil || ok {
+		t.Errorf("success at the old revision = (%v, %v); want no write", ok, err)
+	}
+	if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, RubrikFailureUnreachable); err != nil || ok {
+		t.Errorf("failure at the old revision = (%v, %v); want no write", ok, err)
+	}
+	if got := read(); got.LastSuccessAt != nil || got.LastFailureAt != nil || got.LastFailureKind != "" {
+		t.Fatalf("old-revision outcomes landed on the new settings: %+v", got)
+	}
+	if ok, err := s.RecordConnectionFailure(ctx, id, saved.Revision, RubrikFailureUnreachable); err != nil || !ok {
+		t.Fatalf("failure at the new revision = (%v, %v); want a write", ok, err)
+	}
+	if got := read(); got.LastFailureKind != RubrikFailureUnreachable || got.LastSuccessAt != nil {
+		t.Errorf("after a new-revision failure = %+v", got)
+	}
+
+	if ok, err := s.RecordConnectionSuccess(ctx, testOwnerID(t), 1); err != nil || ok {
+		t.Errorf("success for a missing connection = (%v, %v); want no write and no error", ok, err)
+	}
+}
