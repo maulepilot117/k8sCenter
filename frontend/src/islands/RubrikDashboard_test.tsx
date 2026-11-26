@@ -99,7 +99,7 @@ const fail = (code: number, reason: string | undefined, message: string) =>
   reply(code, { error: { code, message, reason } });
 
 let calls: string[] = [];
-let routes: Record<string, () => Response> = {};
+let routes: Record<string, () => Response | Promise<Response>> = {};
 
 beforeEach(() => {
   calls = [];
@@ -130,7 +130,7 @@ test("lists each namespace with its protection, SLA, compliance and fetch time",
   const { unmount } = render(<RubrikDashboard />);
   await settle();
   body().getByText("Preview");
-  body().getByText(/Fetched from RSC/);
+  body().getByText(/Namespaces fetched from RSC/);
   const shop = nsRow("shop");
   expect(shop.textContent).toContain("Protected");
   expect(shop.textContent).toContain("Gold");
@@ -283,7 +283,7 @@ test("the detail panel shows snapshots and jobs, with RSC's failure reason", asy
     fireEvent.click(body().getByRole("button", { name: "shop" }));
   });
   await settle();
-  const panel = body().getByRole("complementary", {
+  const panel = body().getByRole("dialog", {
     name: "Rubrik details for shop",
   });
   expect(panel.textContent).toContain("Available");
@@ -293,7 +293,7 @@ test("the detail panel shows snapshots and jobs, with RSC's failure reason", asy
   expect(panel.textContent).toContain("Volume snapshot class not found");
   fireEvent.keyDown(document, { key: "Escape" });
   expect(
-    body().queryByRole("complementary", { name: "Rubrik details for shop" }),
+    body().queryByRole("dialog", { name: "Rubrik details for shop" }),
   ).toBeNull();
   unmount();
 });
@@ -329,5 +329,232 @@ test("a detail 404 says the namespace is no longer visible", async () => {
   });
   await settle();
   body().getByText("This namespace is no longer visible to you in Rubrik.");
+  unmount();
+});
+
+const STALE = { fetchedAt: FETCHED, stale: true, error: "unreachable" };
+const unprotected = (namespace: string) =>
+  row({
+    namespace,
+    protected: false,
+    compliance: "unknown",
+    lastSnapshot: undefined,
+    objectIds: [],
+    actionTargets: [],
+  });
+
+test("AE6: in stale data an unprotected namespace reads Unknown, never Not protected", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(list({ namespaces: [row(), unprotected("pay")], freshness: STALE }));
+  const { unmount } = render(<RubrikDashboard />);
+  await settle();
+  expect(nsRow("pay").textContent).toContain("Unknown");
+  expect(body().queryByText("Not protected")).toBeNull();
+  unmount();
+});
+
+test("objects no namespace lists are shown, so a covered remote cluster never looks empty", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(
+      list({
+        namespaces: [],
+        objects: [
+          object({
+            family: "protectionSet",
+            id: "set-all",
+            name: "whole-cluster",
+            setType: "cluster",
+            coverage: { all: true },
+          }),
+          object({
+            family: "protectionSet",
+            id: "set-sel",
+            name: "by-label",
+            coverage: { unresolved: true },
+            effectiveSla: { id: "", name: "" },
+          }),
+        ],
+      }),
+    );
+  const { unmount } = render(<RubrikDashboard />);
+  await settle();
+  expect(body().queryByText(/No namespaces to show/)).toBeNull();
+  body().getByRole("heading", { name: "Other Rubrik objects" });
+  const all = body().getByTestId("rubrik-object-set-all");
+  expect(all.textContent).toContain("Protection set whole-cluster");
+  expect(all.textContent).toContain("Every namespace");
+  expect(all.textContent).toContain("Gold");
+  const sel = body().getByTestId("rubrik-object-set-sel");
+  expect(sel.textContent).toContain("Namespaces RSC does not resolve");
+  expect(sel.textContent).toContain("No SLA");
+  unmount();
+});
+
+test("a namespace covered only by hidden objects does not claim it has no snapshot", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(
+      list({
+        namespaces: [
+          row({ objectIds: [], lastSnapshot: undefined, hiddenObjects: true }),
+        ],
+        objects: [],
+      }),
+    );
+  const { unmount } = render(<RubrikDashboard />);
+  await settle();
+  const shop = nsRow("shop");
+  expect(shop.textContent).toContain("Not visible to you");
+  expect(shop.textContent).not.toContain("None");
+  unmount();
+});
+
+test("an unreadable setup offers Retry, which reads the status again", async () => {
+  routes["GET /api/v1/rubrik/status"] = () => ok(status("unavailable"));
+  const { unmount } = render(<RubrikDashboard />);
+  await settle();
+  body().getByText("This cluster's Rubrik setup could not be read.");
+  routes["GET /api/v1/rubrik/status"] = () => ok(status());
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Retry" }));
+  });
+  await settle();
+  expect(nsRow("shop").textContent).toContain("Protected");
+  unmount();
+});
+
+test("a missing RSC cluster sends the admin to settings, not to an admin", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    fail(409, "rsc_cluster_missing", "Rubrik is not set up for this cluster");
+  const { unmount } = render(<RubrikDashboard />);
+  await settle();
+  body().getByText(/RSC no longer lists the cluster this one is mapped to/);
+  body().getByRole("link", { name: "Rubrik settings" });
+  expect(body().queryByText(/Ask an admin/)).toBeNull();
+  unmount();
+});
+
+test("k8sCenter's own failures are not blamed on RSC", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    fail(503, "access_check_failed", "Rubrik access could not be checked");
+  routes["GET /api/v1/rubrik/namespaces/shop"] = () =>
+    fail(409, "not_set_up", "Rubrik is not set up for this cluster");
+  const { unmount } = render(<RubrikDashboard />);
+  await settle();
+  const alert = body().getByRole("alert").textContent ?? "";
+  expect(alert).toContain("Your Rubrik access could not be checked");
+  expect(alert).not.toContain("RSC");
+  // The detail panel explains a setup refusal with the setup text.
+  routes["GET /api/v1/rubrik/namespaces"] = () => ok(list());
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Retry" }));
+  });
+  await settle();
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "shop" }));
+  });
+  await settle();
+  const panel = body().getByRole("dialog", {
+    name: "Rubrik details for shop",
+  });
+  expect(panel.textContent).toContain("Rubrik is not set up for this cluster");
+  expect(panel.textContent).not.toContain("could not be loaded");
+  unmount();
+});
+
+test("a failed refresh keeps the last list, marked, with the panel still open", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(list({ namespaces: [row(), unprotected("pay")] }));
+  routes["GET /api/v1/rubrik/namespaces/shop"] = () =>
+    ok({
+      namespace: row(),
+      freshness: { fetchedAt: FETCHED, stale: false },
+      objects: [],
+    });
+  const { unmount } = render(<RubrikDashboard />);
+  await settle();
+  expect(nsRow("pay").textContent).toContain("Not protected");
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "shop" }));
+  });
+  await settle();
+  // The refresh hangs until released, so its busy state can be seen.
+  let release: (r: Response) => void = () => {};
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Refresh" }));
+  });
+  const busy = body().getByRole("button", { name: "Refreshing…" });
+  expect((busy as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => {
+    release(fail(503, "store_unavailable", "store down"));
+  });
+  await settle();
+  const alerts = body()
+    .getAllByRole("alert")
+    .map((a: HTMLElement) => a.textContent)
+    .join(" ");
+  expect(alerts).toContain("k8sCenter's database could not be read");
+  expect(alerts).toContain("The list below is the one loaded before.");
+  expect(nsRow("shop").textContent).toContain("Protected");
+  // Until a refresh succeeds, "not protected" is not asserted.
+  expect(nsRow("pay").textContent).toContain("Unknown");
+  body().getByRole("dialog", { name: "Rubrik details for shop" });
+  unmount();
+});
+
+test("the panel takes focus when it opens and gives it back when it closes", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = () =>
+    ok({
+      namespace: row(),
+      freshness: { fetchedAt: FETCHED, stale: false },
+      objects: [],
+    });
+  const { unmount } = render(<RubrikDashboard />);
+  await settle();
+  const button = body().getByRole("button", { name: "shop" });
+  button.focus();
+  await act(async () => {
+    fireEvent.click(button);
+  });
+  await settle();
+  expect(document.activeElement?.tagName).toBe("H2");
+  expect(document.activeElement?.textContent).toBe("shop");
+  fireEvent.keyDown(document, { key: "Escape" });
+  await settle();
+  expect(document.activeElement).toBe(
+    body().getByRole("button", { name: "shop" }),
+  );
+  unmount();
+});
+
+test("snapshots and jobs show their own fetch times", async () => {
+  const minutesAgo = (m: number) =>
+    new Date(Date.now() - m * 60_000).toISOString();
+  routes["GET /api/v1/rubrik/namespaces/shop"] = () =>
+    ok({
+      namespace: row(),
+      freshness: { fetchedAt: minutesAgo(0), stale: false },
+      objects: [
+        {
+          ...object(),
+          snapshots: [],
+          snapshotsFreshness: { fetchedAt: minutesAgo(4), stale: false },
+          jobs: [],
+          jobsFreshness: { fetchedAt: minutesAgo(9), stale: false },
+        },
+      ],
+    });
+  const { unmount } = render(<RubrikDashboard />);
+  await settle();
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "shop" }));
+  });
+  await settle();
+  body().getByText("Snapshots fetched from RSC 4m ago");
+  fireEvent.click(body().getByRole("tab", { name: "Jobs" }));
+  body().getByText("Jobs fetched from RSC 9m ago");
   unmount();
 });

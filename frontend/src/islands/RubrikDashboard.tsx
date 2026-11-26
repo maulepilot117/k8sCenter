@@ -23,7 +23,6 @@ import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge, { type Tone } from "@/components/ui/glass/StatusBadge.tsx";
 import { Tabs } from "@/components/ui/Tabs.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
-import type { RubrikClusterState } from "@/lib/rubrik-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import {
   ensureRubrikStatus,
@@ -132,18 +131,31 @@ interface NamespaceDetail {
 // ---------------------------------------------------------------------------
 // Text
 
-/** What a failed RSC fetch's reason class means, in the page's words. */
+/**
+ * What a failed read's reason means, in the page's words. RSC's own classes
+ * come first; the rest are k8sCenter's, and say so rather than blame RSC.
+ */
 const FAILURE_TEXT: Record<string, string> = {
   auth_failed: "RSC refused k8sCenter's client ID or secret",
   unreachable: "RSC could not be reached",
   rate_limited: "RSC is rate limiting requests",
   rsc_error: "RSC returned an answer k8sCenter could not use",
   store_unavailable: "k8sCenter's database could not be read",
+  access_check_failed: "Your Rubrik access could not be checked",
+  admin_only: "Rubrik data on remote clusters is available to admins only",
 };
 
 function failureText(reason: string | undefined): string {
-  return (reason && FAILURE_TEXT[reason]) || "RSC could not be asked";
+  return (
+    (reason && FAILURE_TEXT[reason]) || "The Rubrik data could not be loaded"
+  );
 }
+
+const SETTINGS_LINK = (
+  <a className="text-accent underline" href="/settings/rubrik">
+    Rubrik settings
+  </a>
+);
 
 const COMPLIANCE: Record<Compliance, { label: string; tone: Tone }> = {
   in_compliance: { label: "In compliance", tone: "ok" },
@@ -160,40 +172,38 @@ const JOB_STATUS: Record<JobStatus, { label: string; tone: Tone }> = {
   unknown: { label: "Unknown", tone: "neutral" },
 };
 
-/** Why the cluster has no list to show, for a status that is not mapped. */
-function setupText(state: RubrikClusterState): ReactNode {
+/**
+ * Why the cluster has no list to show: a status state other than mapped, or
+ * the reason of a read refused as not set up (409). `rsc_cluster_missing`
+ * is a read reason only, sent to admins.
+ */
+function setupText(state: string): ReactNode {
   switch (state) {
     case "admin_only":
       return "Rubrik data on remote clusters is available to admins only.";
     case "not_configured":
       return (
-        <>
-          No Rubrik connection is configured. Set it up in{" "}
-          <a className="text-accent underline" href="/settings/rubrik">
-            Rubrik settings
-          </a>
-          .
-        </>
+        <>No Rubrik connection is configured. Set it up in {SETTINGS_LINK}.</>
       );
     case "not_mapped":
       return (
         <>
           This cluster is not mapped to an RSC cluster. Map it in{" "}
-          <a className="text-accent underline" href="/settings/rubrik">
-            Rubrik settings
-          </a>
-          .
+          {SETTINGS_LINK}.
         </>
       );
     case "mapping_invalid":
       return (
         <>
           This cluster's mapping no longer matches its registration. Confirm it
-          again in{" "}
-          <a className="text-accent underline" href="/settings/rubrik">
-            Rubrik settings
-          </a>
-          .
+          again in {SETTINGS_LINK}.
+        </>
+      );
+    case "rsc_cluster_missing":
+      return (
+        <>
+          RSC no longer lists the cluster this one is mapped to. Map it again in{" "}
+          {SETTINGS_LINK}.
         </>
       );
     case "unavailable":
@@ -217,8 +227,15 @@ function slaName(o: RubrikObject): string {
 type ListState =
   | { kind: "idle" }
   | { kind: "loading" }
-  | { kind: "loaded"; data: NamespaceList }
-  | { kind: "failed"; reason?: string; message: string; setup?: string };
+  | {
+      kind: "loaded";
+      data: NamespaceList;
+      /** A refresh is in flight. */
+      refreshing?: boolean;
+      /** The last refresh failed; `data` is the list loaded before it. */
+      refreshError?: string;
+    }
+  | { kind: "failed"; message: string; setup?: string };
 
 export default function RubrikDashboard() {
   const isClient = useIsClient();
@@ -226,6 +243,8 @@ export default function RubrikDashboard() {
   const [list, setList] = useState<ListState>({ kind: "idle" });
   const [selected, setSelected] = useState<string | null>(null);
   const gen = useRef(0);
+  /** The namespace button that opened the panel, focused again on close. */
+  const opener = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     ensureRubrikStatus();
@@ -236,7 +255,11 @@ export default function RubrikDashboard() {
 
   const load = useCallback(async () => {
     const g = ++gen.current;
-    setList((prev) => (prev.kind === "loaded" ? prev : { kind: "loading" }));
+    setList((prev) =>
+      prev.kind === "loaded"
+        ? { ...prev, refreshing: true }
+        : { kind: "loading" },
+    );
     try {
       const res = await apiGet<NamespaceList>(NAMESPACES_URL);
       if (gen.current !== g) return;
@@ -244,14 +267,35 @@ export default function RubrikDashboard() {
     } catch (err) {
       if (gen.current !== g) return;
       const reason = err instanceof ApiError ? err.reason : undefined;
-      setList({
-        kind: "failed",
-        reason,
-        message: failureText(reason),
-        setup:
-          err instanceof ApiError && err.status === 409 ? reason : undefined,
+      const setup =
+        err instanceof ApiError && err.status === 409 ? reason : undefined;
+      setList((prev) => {
+        // A failed refresh keeps the list it had, marked as not current;
+        // only a setup refusal replaces it, since the list no longer applies.
+        if (prev.kind === "loaded" && !setup) {
+          return {
+            kind: "loaded",
+            data: prev.data,
+            refreshError: failureText(reason),
+          };
+        }
+        return { kind: "failed", message: failureText(reason), setup };
       });
+      if (setup) setSelected(null);
     }
+  }, []);
+
+  const open = useCallback((ns: string) => {
+    opener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setSelected(ns);
+  }, []);
+  const close = useCallback(() => {
+    setSelected(null);
+    opener.current?.focus();
+    opener.current = null;
   }, []);
 
   // Each status answer (one per cluster switch) starts a fresh list.
@@ -288,17 +332,28 @@ export default function RubrikDashboard() {
       </div>
     );
   } else if (!mapped) {
+    const state = status.status.cluster.state;
     body = (
-      <Alert variant="info">{setupText(status.status.cluster.state)}</Alert>
+      <div className="flex flex-col items-start gap-2">
+        <Alert variant="info">{setupText(state)}</Alert>
+        {state === "unavailable" && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => void reloadRubrikStatus()}
+          >
+            Retry
+          </Button>
+        )}
+      </div>
     );
   } else if (list.kind === "idle" || list.kind === "loading") {
     body = <p className="text-sm text-text-muted">Loading namespaces…</p>;
   } else if (list.kind === "failed") {
     const lastSuccess = status.status.connection?.lastSuccessAt;
     body = list.setup ? (
-      <Alert variant="info">
-        {setupText(list.setup as RubrikClusterState)}
-      </Alert>
+      <Alert variant="info">{setupText(list.setup)}</Alert>
     ) : (
       <div className="flex flex-col items-start gap-2">
         <div role="alert" className="w-full">
@@ -332,7 +387,9 @@ export default function RubrikDashboard() {
     body = (
       <NamespaceTable
         data={list.data}
-        onOpen={setSelected}
+        refreshing={!!list.refreshing}
+        refreshError={list.refreshError}
+        onOpen={open}
         onRefresh={() => void load()}
       />
     );
@@ -348,11 +405,7 @@ export default function RubrikDashboard() {
       </div>
       {body}
       {selected && list.kind === "loaded" && (
-        <DetailPanel
-          key={selected}
-          namespace={selected}
-          onClose={() => setSelected(null)}
-        />
+        <DetailPanel key={selected} namespace={selected} onClose={close} />
       )}
     </div>
   );
@@ -366,6 +419,7 @@ function FreshnessNote({
   what,
 }: {
   freshness: Freshness | undefined;
+  /** What the data are, plural and lower case: "namespaces", "snapshots". */
   what: string;
 }) {
   if (!freshness) return null;
@@ -381,7 +435,8 @@ function FreshnessNote({
   }
   return (
     <p className="m-0 text-xs text-text-muted">
-      Fetched from RSC {timeAgo(freshness.fetchedAt)}
+      {what[0]?.toUpperCase()}
+      {what.slice(1)} fetched from RSC {timeAgo(freshness.fetchedAt)}
     </p>
   );
 }
@@ -389,12 +444,25 @@ function FreshnessNote({
 const TH = "px-3 py-2 text-left text-[12px] font-semibold text-text-muted";
 const TD = "px-3 py-2 align-top text-[13px] text-text-primary";
 
+/** What an object no namespace row lists covers, for admins (KTD4, R7). */
+function coverageText(o: RubrikObject): string {
+  if (o.relic) return "No longer seen by RSC";
+  if (o.coverage.all) return "Every namespace";
+  if (o.coverage.unresolved) return "Namespaces RSC does not resolve";
+  const ns = o.coverage.namespaces ?? [];
+  return ns.length > 0 ? ns.join(", ") : "No namespace";
+}
+
 function NamespaceTable({
   data,
+  refreshing,
+  refreshError,
   onOpen,
   onRefresh,
 }: {
   data: NamespaceList;
+  refreshing: boolean;
+  refreshError: string | undefined;
   onOpen: (ns: string) => void;
   onRefresh: () => void;
 }) {
@@ -402,19 +470,40 @@ function NamespaceTable({
   const rows = [...data.namespaces].sort((a, b) =>
     a.namespace.localeCompare(b.namespace),
   );
+  const listed = new Set(data.namespaces.flatMap((r) => r.objectIds));
+  const others = data.objects
+    .filter((o) => !listed.has(o.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  // While the data may be out of date, "not protected" may only mean RSC
+  // could not be asked about a namespace, so it is never asserted (AE6).
+  const uncertain = !!data.freshness?.stale || !!refreshError;
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <FreshnessNote freshness={data.freshness} what="namespaces" />
-        <Button type="button" variant="secondary" size="sm" onClick={onRefresh}>
-          Refresh
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={refreshing}
+          onClick={onRefresh}
+        >
+          {refreshing ? "Refreshing…" : "Refresh"}
         </Button>
       </div>
-      {rows.length === 0 ? (
+      {refreshError && (
+        <div role="alert">
+          <Alert variant="error">
+            {refreshError}. The list below is the one loaded before.
+          </Alert>
+        </div>
+      )}
+      {rows.length === 0 && others.length === 0 && (
         <p className="m-0 text-sm text-text-muted">
           No namespaces to show on this cluster.
         </p>
-      ) : (
+      )}
+      {rows.length > 0 && (
         <div className="overflow-x-auto rounded-xl border border-border-subtle bg-surface">
           <table className="w-full border-collapse">
             <thead>
@@ -451,6 +540,8 @@ function NamespaceTable({
                     <td className={TD}>
                       {row.protected ? (
                         <StatusBadge label="Protected" tone="ok" />
+                      ) : uncertain ? (
+                        <StatusBadge label="Unknown" tone="warn" />
                       ) : (
                         <StatusBadge label="Not protected" tone="neutral" />
                       )}
@@ -485,7 +576,11 @@ function NamespaceTable({
                       )}
                     </td>
                     <td className={TD}>
-                      {row.lastSnapshot ? timeAgo(row.lastSnapshot) : "None"}
+                      {row.lastSnapshot
+                        ? timeAgo(row.lastSnapshot)
+                        : row.hiddenObjects
+                          ? "Not visible to you"
+                          : "None"}
                     </td>
                   </tr>
                 );
@@ -493,6 +588,63 @@ function NamespaceTable({
             </tbody>
           </table>
         </div>
+      )}
+      {others.length > 0 && (
+        <section
+          aria-labelledby="rubrik-other-objects"
+          className="flex flex-col gap-2"
+        >
+          <h2
+            id="rubrik-other-objects"
+            className="m-0 text-[14px] font-semibold text-text-primary"
+          >
+            Other Rubrik objects
+          </h2>
+          <p className="m-0 text-xs text-text-muted">
+            Objects that no namespace above lists: sets covering every
+            namespace, sets whose namespaces RSC does not resolve, and objects
+            RSC no longer sees. Only admins see them.
+          </p>
+          <div className="overflow-x-auto rounded-xl border border-border-subtle bg-surface">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b border-border-subtle">
+                  <th className={TH}>Object</th>
+                  <th className={TH}>Covers</th>
+                  <th className={TH}>SLA domain</th>
+                  <th className={TH}>Compliance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {others.map((o) => {
+                  const compliance =
+                    COMPLIANCE[o.compliance] ?? COMPLIANCE.unknown;
+                  return (
+                    <tr
+                      key={o.id}
+                      data-testid={`rubrik-object-${o.id}`}
+                      className="border-b border-border-subtle last:border-b-0"
+                    >
+                      <td className={TD}>
+                        {o.family === "protectionSet"
+                          ? `Protection set ${o.name}`
+                          : `Namespace ${o.name}`}
+                      </td>
+                      <td className={TD}>{coverageText(o)}</td>
+                      <td className={TD}>{slaName(o)}</td>
+                      <td className={TD}>
+                        <StatusBadge
+                          label={compliance.label}
+                          tone={compliance.tone}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
     </div>
   );
@@ -505,7 +657,7 @@ type DetailState =
   | { kind: "loading" }
   | { kind: "loaded"; data: NamespaceDetail }
   | { kind: "gone" }
-  | { kind: "failed"; message: string };
+  | { kind: "failed"; message: ReactNode };
 
 function DetailPanel({
   namespace,
@@ -517,6 +669,13 @@ function DetailPanel({
   const [state, setState] = useState<DetailState>({ kind: "loading" });
   const [tab, setTab] = useState("snapshots");
   const gen = useRef(0);
+  const heading = useRef<HTMLHeadingElement>(null);
+
+  // The panel takes focus when it opens, so keyboard and screen-reader users
+  // land in it; closing returns focus to the namespace button (see close).
+  useEffect(() => {
+    heading.current?.focus();
+  }, []);
 
   const load = useCallback(async () => {
     const g = ++gen.current;
@@ -533,9 +692,16 @@ function DetailPanel({
         setState({ kind: "gone" });
         return;
       }
+      const reason = err instanceof ApiError ? err.reason : undefined;
       setState({
         kind: "failed",
-        message: failureText(err instanceof ApiError ? err.reason : undefined),
+        // A setup refusal (409) explains itself; anything else is a failure.
+        message:
+          err instanceof ApiError && err.status === 409 ? (
+            setupText(reason ?? "")
+          ) : (
+            <>{failureText(reason)}.</>
+          ),
       });
     }
   }, [namespace]);
@@ -567,7 +733,7 @@ function DetailPanel({
   } else if (state.kind === "failed") {
     content = (
       <div className="flex flex-col items-start gap-2">
-        <Alert variant="error">{state.message}.</Alert>
+        <Alert variant="error">{state.message}</Alert>
         <Button
           type="button"
           variant="secondary"
@@ -615,11 +781,17 @@ function DetailPanel({
 
   return (
     <aside
+      role="dialog"
+      aria-modal="false"
       aria-label={`Rubrik details for ${namespace}`}
       className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[640px] flex-col gap-3 overflow-y-auto border-l border-border-subtle bg-surface p-5 shadow-xl"
     >
       <div className="flex items-center justify-between gap-2">
-        <h2 className="m-0 font-mono text-[15px] font-semibold text-text-primary">
+        <h2
+          ref={heading}
+          tabIndex={-1}
+          className="m-0 font-mono text-[15px] font-semibold text-text-primary outline-none"
+        >
           {namespace}
         </h2>
         <Button type="button" variant="secondary" size="sm" onClick={onClose}>
@@ -684,9 +856,7 @@ function SnapshotList({ object }: { object: ObjectDetail }) {
   }
   return (
     <>
-      {object.snapshotsFreshness?.stale && (
-        <FreshnessNote freshness={object.snapshotsFreshness} what="snapshots" />
-      )}
+      <FreshnessNote freshness={object.snapshotsFreshness} what="snapshots" />
       {object.snapshots.length === 0 ? (
         <p className="m-0 text-sm text-text-muted">No snapshots.</p>
       ) : (
@@ -729,9 +899,7 @@ function JobList({ object }: { object: ObjectDetail }) {
   }
   return (
     <>
-      {object.jobsFreshness?.stale && (
-        <FreshnessNote freshness={object.jobsFreshness} what="jobs" />
-      )}
+      <FreshnessNote freshness={object.jobsFreshness} what="jobs" />
       {object.jobs.length === 0 ? (
         <p className="m-0 text-sm text-text-muted">No recent jobs.</p>
       ) : (
