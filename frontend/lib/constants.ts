@@ -595,6 +595,7 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
       {
         header: "Protection",
         items: [
+          { label: "Overview", href: "/backup/overview" },
           { label: "Backups", href: "/backup/backups" },
           { label: "Restores", href: "/backup/restores" },
           { label: "Schedules", href: "/backup/schedules" },
