@@ -84,7 +84,7 @@ jobs:
         with:
           # P2-11 (2026-05-22 audit): match ci.yml, go.mod and
           # backend/Dockerfile so the stdlib security patch never lags.
-          go-version: "1.27.3"
+          go-version: "1.27.4"
           cache-dependency-path: backend/go.sum
       - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
