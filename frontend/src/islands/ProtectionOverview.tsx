@@ -21,6 +21,7 @@ import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import {
   overviewRows,
+  providerNamespaces,
   type RubrikCell,
   type RubrikInput,
   type VeleroCell,
@@ -30,7 +31,11 @@ import type { RubrikNamespaceList } from "@/lib/rubrik-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import type { Backup, VeleroStatus } from "@/lib/velero-types.ts";
 import { clusterEpoch, selectedCluster } from "@/src/lib/cluster.ts";
-import { ensureRubrikStatus, rubrikStatus } from "@/src/lib/rubrik-status.ts";
+import {
+  ensureRubrikStatus,
+  rubrikNavVisible,
+  rubrikStatus,
+} from "@/src/lib/rubrik-status.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
@@ -57,17 +62,89 @@ const ADMIN_SETUP = new Set([
   "rsc_cluster_missing",
 ]);
 
+/** /v1/velero/status also carries why Velero was not detected (remote). */
+type VeleroStatusWire = VeleroStatus & { reason?: string };
+
+/**
+ * Velero as its status says: not detected means not installed only when
+ * discovery found no Velero; a remote cluster that could not be asked
+ * (unreachable, forbidden) is an error, not an absence.
+ */
+function veleroFrom(
+  st: VeleroStatusWire,
+  backups: PromiseSettledResult<{ data: Backup[] }>,
+): VeleroInput {
+  if (!st.detected) {
+    return !st.reason || st.reason === "discovery_missing"
+      ? { kind: "not_installed" }
+      : { kind: "error" };
+  }
+  if (backups.status === "rejected") return { kind: "error" };
+  const data = backups.value.data;
+  return { kind: "loaded", backups: Array.isArray(data) ? data : [] };
+}
+
+/** At most this many pages of 500 namespaces are read. */
+const MAX_NAMESPACE_PAGES = 40;
+
+/**
+ * Every namespace the user can list. The list endpoint pages (100 by
+ * default), so this follows the continue token. `truncated` is set when a
+ * remote read hit its paging cap or the page bound was reached.
+ */
+async function listNamespaces(): Promise<{
+  names: string[];
+  truncated: boolean;
+}> {
+  const names: string[] = [];
+  let token = "";
+  let truncated = false;
+  for (let page = 0; page < MAX_NAMESPACE_PAGES; page++) {
+    const query = token
+      ? `?limit=500&continue=${encodeURIComponent(token)}`
+      : "?limit=500";
+    const res = await apiGet<Array<{ metadata: { name: string } }>>(
+      `${NAMESPACES_URL}${query}`,
+    );
+    if (!Array.isArray(res.data)) throw new Error("no namespace list");
+    names.push(...res.data.map((n) => n.metadata.name));
+    truncated ||= !!res.metadata?.truncated;
+    token = res.metadata?.continue ?? "";
+    if (!token) return { names, truncated };
+  }
+  return { names, truncated: true };
+}
+
 type Base =
   | { kind: "loading" }
   | { kind: "failed" }
-  | { kind: "loaded"; namespaces: string[]; velero: VeleroInput };
+  | {
+      kind: "loaded";
+      namespaces: string[];
+      velero: VeleroInput;
+      /**
+       * The user may not list namespaces (403): the rows are the namespaces
+       * the providers' own answers name instead.
+       */
+      restricted?: boolean;
+      /** The namespace list was cut short. */
+      truncated?: boolean;
+    };
 
 export default function ProtectionOverview() {
   const isClient = useIsClient();
   const cluster = useSignalValue(selectedCluster);
   const epoch = useSignalValue(clusterEpoch);
   const status = useSignalValue(rubrikStatus);
+  const rubrikKnownOn = useSignalValue(rubrikNavVisible);
   const [base, setBase] = useState<Base>({ kind: "loading" });
+  /** Bumped by Refresh to read Rubrik again. */
+  const [rubrikTick, setRubrikTick] = useState(0);
+  /**
+   * The fetch time of the last Rubrik list this page loaded, per cluster:
+   * what an RSC failure with no earlier answer reports as the last fetch.
+   */
+  const lastFetched = useRef(new Map<string, string>());
   const [rubrikList, setRubrikList] = useState<RubrikInput>({
     kind: "loading",
   });
@@ -83,32 +160,29 @@ export default function ProtectionOverview() {
     const g = ++baseGen.current;
     setBase({ kind: "loading" });
     const [ns, veleroStatus, backups] = await Promise.allSettled([
-      apiGet<Array<{ metadata: { name: string } }>>(NAMESPACES_URL),
-      apiGet<VeleroStatus>(VELERO_STATUS_URL),
+      listNamespaces(),
+      apiGet<VeleroStatusWire>(VELERO_STATUS_URL),
       apiGet<Backup[]>(VELERO_BACKUPS_URL),
     ]);
     if (baseGen.current !== g) return;
-    if (ns.status === "rejected" || !Array.isArray(ns.value.data)) {
+    const restricted =
+      ns.status === "rejected" &&
+      ns.reason instanceof ApiError &&
+      ns.reason.status === 403;
+    if (ns.status === "rejected" && !restricted) {
       setBase({ kind: "failed" });
       return;
     }
-    let velero: VeleroInput;
-    if (veleroStatus.status === "rejected") {
-      velero = { kind: "error" };
-    } else if (!veleroStatus.value.data?.detected) {
-      velero = { kind: "not_installed" };
-    } else if (backups.status === "rejected") {
-      velero = { kind: "error" };
-    } else {
-      velero = {
-        kind: "loaded",
-        backups: Array.isArray(backups.value.data) ? backups.value.data : [],
-      };
-    }
+    const velero: VeleroInput =
+      veleroStatus.status === "rejected" || !veleroStatus.value.data
+        ? { kind: "error" }
+        : veleroFrom(veleroStatus.value.data, backups);
     setBase({
       kind: "loaded",
-      namespaces: ns.value.data.map((n) => n.metadata.name),
+      namespaces: ns.status === "fulfilled" ? ns.value.names : [],
       velero,
+      restricted,
+      truncated: ns.status === "fulfilled" && ns.value.truncated,
     });
   }, []);
 
@@ -145,13 +219,15 @@ export default function ProtectionOverview() {
       );
       return;
     }
+    void rubrikTick;
     setRubrikList({ kind: "loading" });
-    const lastSuccessAt = status.status.connection?.lastSuccessAt;
+    const forCluster = selectedCluster.peek();
     apiGet<RubrikNamespaceList>(RUBRIK_NAMESPACES_URL)
       .then((res) => {
-        if (rubrikGen.current === g) {
-          setRubrikList({ kind: "loaded", list: res.data });
-        }
+        if (rubrikGen.current !== g) return;
+        const fetchedAt = res.data.freshness?.fetchedAt;
+        if (fetchedAt) lastFetched.current.set(forCluster, fetchedAt);
+        setRubrikList({ kind: "loaded", list: res.data });
       })
       .catch((err) => {
         if (rubrikGen.current !== g) return;
@@ -165,12 +241,20 @@ export default function ProtectionOverview() {
         } else if (code === 403) {
           setRubrikList({ kind: "not_applicable" });
         } else if (reason && RSC_FAILURE[reason]) {
-          setRubrikList({ kind: "rsc_failing", reason, lastSuccessAt });
+          setRubrikList({
+            kind: "rsc_failing",
+            reason,
+            // The last answer this page saw, else the connection's own
+            // record (admins only, when the server keeps one).
+            lastFetchedAt:
+              lastFetched.current.get(forCluster) ??
+              status.status.connection?.lastSuccessAt,
+          });
         } else {
           setRubrikList({ kind: "error" });
         }
       });
-  }, [status]);
+  }, [status, rubrikTick]);
 
   let body: ReactNode;
   if (!isClient || base.kind === "loading") {
@@ -190,12 +274,45 @@ export default function ProtectionOverview() {
       </div>
     );
   } else {
-    const rows = overviewRows(base.namespaces, base.velero, rubrikList);
-    const showRubrik = rubrikList.kind !== "disabled";
+    const names = base.restricted
+      ? providerNamespaces(base.velero, rubrikList)
+      : base.namespaces;
+    const rows = overviewRows(names, base.velero, rubrikList);
+    // While the status is still loading the column shows only if Rubrik was
+    // on at the last answer, so it does not flash in when the provider is off.
+    const showRubrik =
+      rubrikList.kind !== "disabled" &&
+      (rubrikList.kind !== "loading" ||
+        status.kind !== "loading" ||
+        rubrikKnownOn);
     const fresh =
       rubrikList.kind === "loaded" ? rubrikList.list.freshness : undefined;
     body = (
       <div className="flex flex-col gap-3">
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              void loadBase();
+              setRubrikTick((t) => t + 1);
+            }}
+          >
+            Refresh
+          </Button>
+        </div>
+        {base.restricted && (
+          <Alert variant="info">
+            You may not list this cluster's namespaces, so the overview shows
+            the namespaces the backup providers show you.
+          </Alert>
+        )}
+        {base.truncated && (
+          <Alert variant="warning">
+            The namespace list was cut short, so some namespaces may be missing.
+          </Alert>
+        )}
         {fresh?.stale && (
           <div role="alert">
             <Alert variant="warning">
@@ -303,6 +420,8 @@ function VeleroCellView({ cell }: { cell: VeleroCell }) {
       return <Muted>Velero not installed</Muted>;
     case "none":
       return <Muted>No backup</Muted>;
+    case "none_visible":
+      return <Muted>No backups visible to you</Muted>;
     case "protected":
       return (
         <>
@@ -355,7 +474,9 @@ function RubrikCellView({ cell }: { cell: RubrikCell }) {
           <StatusBadge label="RSC unavailable" tone="warn" />
           <Detail>
             {RSC_FAILURE[cell.reason ?? ""] ?? "RSC could not be asked"}
-            {cell.fetchedAt ? `; last fetched ${timeAgo(cell.fetchedAt)}` : ""}
+            {cell.fetchedAt
+              ? `; last fetched ${timeAgo(cell.fetchedAt)}`
+              : "; no earlier answer to show"}
           </Detail>
         </>
       );

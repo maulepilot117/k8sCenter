@@ -97,17 +97,18 @@ describe("backupCovers", () => {
       true,
     );
   });
-  test("an include list and Velero's wildcards", () => {
+  test("an include list names namespaces; patterns are not expanded, as in Backup Assurance", () => {
     const b = backup({ includedNamespaces: ["shop", "team-*"] });
     expect(backupCovers(b, "shop")).toBe(true);
-    expect(backupCovers(b, "team-x")).toBe(true);
     expect(backupCovers(b, "cart")).toBe(false);
-    expect(backupCovers(backup({ includedNamespaces: ["a.b"] }), "aXb")).toBe(
-      false,
-    );
+    // velero/assurance.go coversNamespace: exact names or "*" only.
+    expect(backupCovers(b, "team-x")).toBe(false);
   });
-  test("an exclude entry wins", () => {
-    const b = backup({ excludedNamespaces: ["kube-*"] });
+  test("an exclude entry naming the namespace wins, even over *", () => {
+    const b = backup({
+      includedNamespaces: ["*"],
+      excludedNamespaces: ["kube-system"],
+    });
     expect(backupCovers(b, "kube-system")).toBe(false);
     expect(backupCovers(b, "shop")).toBe(true);
   });
@@ -234,7 +235,7 @@ beforeEach(() => {
   resetRubrikStatusForTest();
   setAccessToken("t");
   routes = {
-    "GET /api/v1/resources/namespaces": () =>
+    "GET /api/v1/resources/namespaces?limit=500": () =>
       ok([{ metadata: { name: "team-b" } }, { metadata: { name: "team-a" } }]),
     "GET /api/v1/velero/status": () =>
       ok({
@@ -318,31 +319,6 @@ test("a known, unprotected namespace reads Not protected", async () => {
   view.unmount();
 });
 
-test("AE6: an RSC failure shows the last fetch time and never unprotected", async () => {
-  const last = hoursAgo(2);
-  routes["GET /api/v1/rubrik/status"] = () =>
-    ok(
-      status("mapped", {
-        connection: {
-          configured: true,
-          hasSecret: true,
-          health: "auth_failed",
-          lastSuccessAt: last,
-        },
-      }),
-    );
-  routes["GET /api/v1/rubrik/namespaces"] = () =>
-    fail(400, "auth_failed", "RSC refused the client ID or secret");
-  const view = await open();
-  for (const ns of ["team-a", "team-b"]) {
-    const text = cell(ns, "rubrik-cell")?.textContent ?? "";
-    expect(text).toContain("RSC unavailable");
-    expect(text).toContain("last fetched 2h ago");
-  }
-  expect(body().queryByText("Not protected")).toBeNull();
-  view.unmount();
-});
-
 test("with Rubrik disabled the page shows Velero only, with no Rubrik column", async () => {
   routes["GET /api/v1/rubrik/status"] = () =>
     fail(404, undefined, "404 page not found");
@@ -397,10 +373,176 @@ test("with Velero not installed every Velero cell says so, never no backup", asy
 });
 
 test("a namespace list that fails shows the failure and no rows", async () => {
-  routes["GET /api/v1/resources/namespaces"] = () =>
+  routes["GET /api/v1/resources/namespaces?limit=500"] = () =>
     fail(500, undefined, "boom");
   const view = await open();
   body().getByText("The namespaces could not be loaded.");
   expect(body().queryByRole("table")).toBeNull();
+  view.unmount();
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes
+
+const click = async (name: string) => {
+  const { act, fireEvent } = await import("@/src/test-utils/render.tsx");
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name }));
+  });
+  await settle();
+};
+
+test("AE6: an RSC failure reports the last fetch this page saw, never unprotected", async () => {
+  // The server sends no connection to a non-admin, and no lastSuccessAt at
+  // all today: the time comes from the last list the page loaded.
+  const fetchedAt = hoursAgo(2);
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(rubrikList({ freshness: { fetchedAt, stale: false } }));
+  const view = await open();
+  expect(cell("team-a", "rubrik-cell")?.textContent).toContain("Protected");
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    fail(400, "auth_failed", "RSC refused the client ID or secret");
+  await click("Refresh");
+  for (const ns of ["team-a", "team-b"]) {
+    const text = cell(ns, "rubrik-cell")?.textContent ?? "";
+    expect(text).toContain("RSC unavailable");
+    expect(text).toContain("last fetched 2h ago");
+  }
+  expect(body().queryByText("Not protected")).toBeNull();
+  view.unmount();
+});
+
+test("an RSC failure with no earlier answer says so, still never unprotected", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    fail(502, "unreachable", "RSC could not be reached");
+  const view = await open();
+  const text = cell("team-a", "rubrik-cell")?.textContent ?? "";
+  expect(text).toContain("RSC unavailable");
+  expect(text).toContain("no earlier answer to show");
+  expect(body().queryByText("Not protected")).toBeNull();
+  view.unmount();
+});
+
+test("a remote cluster whose Velero cannot be checked is an error, not not-installed", async () => {
+  routes["GET /api/v1/velero/status"] = () =>
+    ok({
+      detected: false,
+      reason: "unreachable",
+      bslCount: 0,
+      vslCount: 0,
+      lastChecked: hoursAgo(0),
+    });
+  const view = await open();
+  expect(cell("team-a", "velero-cell")?.textContent).toBe("Could not load");
+  expect(body().queryByText("Velero not installed")).toBeNull();
+  view.unmount();
+  // discovery_missing does mean absent.
+  routes["GET /api/v1/velero/status"] = () =>
+    ok({
+      detected: false,
+      reason: "discovery_missing",
+      bslCount: 0,
+      vslCount: 0,
+      lastChecked: hoursAgo(0),
+    });
+  resetRubrikStatusForTest();
+  const again = await open();
+  expect(cell("team-a", "velero-cell")?.textContent).toBe(
+    "Velero not installed",
+  );
+  again.unmount();
+});
+
+test("the namespace list follows its continue token past the first page", async () => {
+  routes["GET /api/v1/resources/namespaces?limit=500"] = () =>
+    reply(200, {
+      data: [{ metadata: { name: "team-a" } }],
+      metadata: { total: 2, continue: "1" },
+    });
+  routes["GET /api/v1/resources/namespaces?limit=500&continue=1"] = () =>
+    reply(200, {
+      data: [{ metadata: { name: "team-z" } }],
+      metadata: { total: 2 },
+    });
+  const view = await open();
+  body().getByTestId("overview-team-a");
+  body().getByTestId("overview-team-z");
+  expect(body().queryByText(/cut short/)).toBeNull();
+  view.unmount();
+});
+
+test("a namespace list cut short by a remote paging cap says so", async () => {
+  routes["GET /api/v1/resources/namespaces?limit=500"] = () =>
+    reply(200, {
+      data: [{ metadata: { name: "team-a" } }],
+      metadata: { total: 1, truncated: true },
+    });
+  const view = await open();
+  body().getByText(/The namespace list was cut short/);
+  view.unmount();
+});
+
+test("an empty backup list does not claim a namespace has no backup", async () => {
+  routes["GET /api/v1/velero/backups"] = () => ok([]);
+  const view = await open();
+  expect(cell("team-a", "velero-cell")?.textContent).toBe(
+    "No backups visible to you",
+  );
+  expect(body().queryByText("No backup")).toBeNull();
+  view.unmount();
+});
+
+test("a backup still finishing in a PartiallyFailed sub-phase is not a failure yet", async () => {
+  const cellNow = veleroCell("shop", {
+    kind: "loaded",
+    backups: [
+      backup({
+        name: "now",
+        phase: "WaitingForPluginOperationsPartiallyFailed",
+        completionTime: undefined,
+        startTime: hoursAgo(0),
+      }),
+      backup({
+        name: "finishing",
+        phase: "FinalizingPartiallyFailed",
+        startTime: hoursAgo(1),
+      }),
+      backup({ name: "earlier", completionTime: hoursAgo(5) }),
+    ],
+  });
+  expect(cellNow).toMatchObject({
+    kind: "protected",
+    last: { name: "earlier" },
+  });
+});
+
+test("no Rubrik column flashes in while the status loads with the provider off", async () => {
+  let release: (r: Response) => void = () => {};
+  routes["GET /api/v1/rubrik/status"] = () =>
+    new Promise<Response>((resolve) => {
+      release = resolve;
+    }) as unknown as Response;
+  const view = await open();
+  // The base data are in; the status is not.
+  body().getByTestId("overview-team-a");
+  expect(body().queryByRole("columnheader", { name: /Rubrik/ })).toBeNull();
+  const { act } = await import("@/src/test-utils/render.tsx");
+  await act(async () => {
+    release(fail(404, undefined, "404 page not found"));
+  });
+  await settle();
+  expect(body().queryByRole("columnheader", { name: /Rubrik/ })).toBeNull();
+  view.unmount();
+});
+
+test("a user who may not list namespaces sees the namespaces the providers show", async () => {
+  routes["GET /api/v1/resources/namespaces?limit=500"] = () =>
+    fail(403, undefined, "forbidden");
+  routes["GET /api/v1/velero/backups"] = () => ok([]);
+  const view = await open();
+  body().getByText(/You may not list this cluster's namespaces/);
+  // team-a comes from the Rubrik answer.
+  expect(cell("team-a", "rubrik-cell")?.textContent).toContain("Protected");
+  expect(body().queryByText("The namespaces could not be loaded.")).toBeNull();
   view.unmount();
 });

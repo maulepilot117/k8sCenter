@@ -37,8 +37,11 @@ export type RubrikInput =
   | { kind: "not_applicable" }
   /** No usable mapping. `setupLink` only for the states admins alone see. */
   | { kind: "not_set_up"; setupLink: boolean }
-  /** RSC failed with no earlier answer to show. */
-  | { kind: "rsc_failing"; reason?: string; lastSuccessAt?: string }
+  /**
+   * RSC failed with no earlier answer to show. `lastFetchedAt` is the fetch
+   * time of the last answer this page loaded for the cluster, if any.
+   */
+  | { kind: "rsc_failing"; reason?: string; lastFetchedAt?: string }
   | { kind: "loaded"; list: RubrikNamespaceList };
 
 // ---------------------------------------------------------------------------
@@ -54,8 +57,14 @@ export type VeleroCell =
   | { kind: "loading" }
   | { kind: "error" }
   | { kind: "not_installed" }
-  /** No backup covers the namespace (or the user may list none). */
+  /** Backups were listed, and none covers the namespace. */
   | { kind: "none" }
+  /**
+   * The backup list came back empty. The API answers an empty list both
+   * when there are no backups and when the user may not list them, so the
+   * cell does not claim the namespace has none.
+   */
+  | { kind: "none_visible" }
   | { kind: "protected"; last: BackupPoint }
   /** The newest finished backup failed; `lastGood` is the newest completed one. */
   | { kind: "failed"; failed: BackupPoint; lastGood?: BackupPoint };
@@ -85,35 +94,30 @@ export interface OverviewRow {
 // ---------------------------------------------------------------------------
 // Velero
 
-/** Velero's namespace pattern: `*` any run, `?` one character. */
-function globMatch(pattern: string, name: string): boolean {
-  if (pattern === "*") return true;
-  if (!/[*?]/.test(pattern)) return pattern === name;
-  const re = new RegExp(
-    `^${pattern
-      .split("")
-      .map((c) =>
-        c === "*"
-          ? ".*"
-          : c === "?"
-            ? "."
-            : c.replace(/[.+^${}()|[\]\\]/g, "\\$&"),
-      )
-      .join("")}$`,
+/**
+ * Whether a backup includes namespace `ns`, by the rule Backup Assurance
+ * applies on the server (velero/assurance.go coversNamespace), so the two
+ * Backup pages never disagree: an exclude entry naming `ns` wins, then an
+ * empty or `*` include list covers every namespace, else `ns` must be
+ * named. Other patterns are not expanded.
+ */
+export function backupCovers(b: Backup, ns: string): boolean {
+  if ((b.excludedNamespaces ?? []).includes(ns)) return false;
+  const included = b.includedNamespaces ?? [];
+  return (
+    included.length === 0 || included.includes("*") || included.includes(ns)
   );
-  return re.test(name);
 }
 
 /**
- * Whether a backup includes namespace `ns`: an empty include list (or `*`)
- * means every namespace, and an exclude entry always wins.
+ * Velero phases that are still running although their name says a part
+ * failed: the backup is waiting for plugin operations or finalizing.
  */
-export function backupCovers(b: Backup, ns: string): boolean {
-  const included = b.includedNamespaces ?? [];
-  const inList =
-    included.length === 0 || included.some((p) => globMatch(p, ns));
-  if (!inList) return false;
-  return !(b.excludedNamespaces ?? []).some((p) => globMatch(p, ns));
+function stillRunning(phase: string): boolean {
+  const p = phase.toLowerCase();
+  return (
+    p.startsWith("waitingforpluginoperations") || p.startsWith("finalizing")
+  );
 }
 
 /** `at` is empty for a backup Velero gave no start or completion time. */
@@ -134,14 +138,18 @@ function time(t: string | undefined): number {
  */
 export function veleroCell(ns: string, input: VeleroInput): VeleroCell {
   if (input.kind !== "loaded") return { kind: input.kind };
+  if (input.backups.length === 0) return { kind: "none_visible" };
   let newestFinished: { b: Backup; good: boolean } | null = null;
   let lastGood: Backup | null = null;
   for (const b of input.backups) {
     if (!backupCovers(b, ns)) continue;
-    const cat = getPhaseCategory(b.phase ?? "");
+    const phase = b.phase ?? "";
+    if (stillRunning(phase)) continue;
+    // Completed is good; Failed, PartiallyFailed and FailedValidation all
+    // count as a failure (getPhaseCategory calls each "error").
+    const cat = getPhaseCategory(phase);
     const good = cat === "success";
-    const finished = good || cat === "error" || cat === "warning";
-    if (!finished) continue;
+    if (!good && cat !== "error") continue;
     const at = time(b.completionTime ?? b.startTime);
     if (
       !newestFinished ||
@@ -184,7 +192,7 @@ export function rubrikCell(ns: string, input: RubrikInput): RubrikCell {
       return {
         kind: "rsc_failing",
         reason: input.reason,
-        fetchedAt: input.lastSuccessAt,
+        fetchedAt: input.lastFetchedAt,
       };
   }
   const { list } = input;
@@ -214,6 +222,29 @@ export function rubrikCell(ns: string, input: RubrikInput): RubrikCell {
 
 // ---------------------------------------------------------------------------
 // Rows
+
+/**
+ * The namespaces the providers' own answers name: the Rubrik rows, and the
+ * namespaces Velero backups name explicitly. Used when the user may not list
+ * namespaces, so they still see the namespaces each provider shows them.
+ */
+export function providerNamespaces(
+  velero: VeleroInput,
+  rubrik: RubrikInput,
+): string[] {
+  const out = new Set<string>();
+  if (rubrik.kind === "loaded" && !rubrik.list.noAccess) {
+    for (const r of rubrik.list.namespaces) out.add(r.namespace);
+  }
+  if (velero.kind === "loaded") {
+    for (const b of velero.backups) {
+      for (const ns of b.includedNamespaces ?? []) {
+        if (ns !== "*") out.add(ns);
+      }
+    }
+  }
+  return [...out];
+}
 
 /** One row per listed namespace, sorted, with each provider's cell. */
 export function overviewRows(
