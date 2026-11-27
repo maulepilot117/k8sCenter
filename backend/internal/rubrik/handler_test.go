@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1105,5 +1106,94 @@ func TestStatusWhenTheStoreFails(t *testing.T) {
 	st := responseData[StatusView](t, fx.do(t, owner, "local", http.MethodGet, "/rubrik/status", nil))
 	if st.Cluster.State != StateUnavailable {
 		t.Errorf("state = %q, want %q", st.Cluster.State, StateUnavailable)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helm-suggested tenant URL (rubrik.tenantUrl)
+
+const helmTenant = "https://helm.my.rubrik.com"
+
+// withSuggestion rebuilds fx.h through NewHandler, as main does, with
+// Helm's tenant URL set to raw.
+func (fx *handlerFixture) withSuggestion(t *testing.T, raw string) {
+	t.Helper()
+	h, err := NewHandler(HandlerDeps{
+		Store:              fx.st,
+		Clusters:           fx.clusters,
+		Service:            fx.svc,
+		Access:             fx.h.access,
+		RSC:                fx.rsc,
+		Client:             fx.flush,
+		Audit:              fx.audit,
+		ConnectionID:       testConn,
+		ValidateURL:        func(context.Context, string) error { return nil },
+		SuggestedTenantURL: raw,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	fx.h = h
+}
+
+func TestStatusSuggestsHelmTenantURLOnlyWhileNothingIsSaved(t *testing.T) {
+	fx := newHandlerFixture(t)
+	fx.withSuggestion(t, " "+helmTenant+" ")
+
+	// A saved connection is the one source of truth: Helm's URL is not
+	// offered, even to an admin.
+	rec := fx.do(t, admin, "local", http.MethodGet, "/rubrik/status", nil)
+	wantStatus(t, rec, http.StatusOK)
+	if strings.Contains(rec.Body.String(), "suggestedTenantUrl") || strings.Contains(rec.Body.String(), "helm.my.rubrik") {
+		t.Fatalf("a saved connection still carries the Helm URL: %s", rec.Body.String())
+	}
+	if got := responseData[StatusView](t, rec).Connection.TenantURL; got != testTenant {
+		t.Errorf("tenantUrl = %q, want the saved %q", got, testTenant)
+	}
+
+	// Nothing saved: the admin sees it as a suggestion, trimmed.
+	fx.st.setRevision(0)
+	st := responseData[StatusView](t, fx.do(t, admin, "local", http.MethodGet, "/rubrik/status", nil))
+	if st.Connection == nil || st.Connection.Configured || st.Connection.SuggestedTenantURL != helmTenant {
+		t.Fatalf("unconfigured admin connection = %+v, want suggestion %q", st.Connection, helmTenant)
+	}
+	if st.Connection.TenantURL != "" {
+		t.Errorf("the suggestion is reported as a saved tenantUrl: %+v", st.Connection)
+	}
+
+	// A non-admin never sees it.
+	rec = fx.do(t, owner, "local", http.MethodGet, "/rubrik/status", nil)
+	if strings.Contains(rec.Body.String(), "helm.my.rubrik") || strings.Contains(rec.Body.String(), "suggestedTenantUrl") {
+		t.Errorf("non-admin status carries the Helm URL: %s", rec.Body.String())
+	}
+
+	// Nothing is written: the store still has no connection.
+	if _, _, err := fx.st.GetConnection(context.Background(), testConn); !errors.Is(err, store.ErrRubrikConnectionNotFound) {
+		t.Errorf("GetConnection after status = %v, want not found", err)
+	}
+	if n := len(fx.audit.all()); n != 0 {
+		t.Errorf("status wrote %d audit entries", n)
+	}
+}
+
+func TestSuggestedTenantURLKeepsOnlyAValidTenantAddress(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"", ""},
+		{"   ", ""},
+		{helmTenant, helmTenant},
+		{helmTenant + "/", helmTenant + "/"},
+		{"  " + helmTenant + "\n", helmTenant},
+		{"http://helm.my.rubrik.com", ""},
+		{"https://", ""},
+		{"helm.my.rubrik.com", ""},
+		{"https://user:pw@helm.my.rubrik.com", ""},
+		{helmTenant + "/api", ""},
+		{helmTenant + "?x=1", ""},
+		{helmTenant + "#f", ""},
+		{"https://" + strings.Repeat("a", maxTenantURLBytes) + ".com", ""},
+	} {
+		if got := suggestedTenantURL(c.in, slog.New(slog.DiscardHandler)); got != c.want {
+			t.Errorf("suggestedTenantURL(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

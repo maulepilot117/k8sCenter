@@ -115,6 +115,10 @@ type HandlerDeps struct {
 	// Restorer sends restores; nil means RSC, when it implements
 	// RSCRestorer (*Operations does). Without it restore answers 503.
 	Restorer RSCRestorer
+	// SuggestedTenantURL is Helm's rubrik.tenantUrl: admins see it as
+	// connection.suggestedTenantUrl while no connection is saved, so the
+	// settings page can pre-fill it. It is never stored. "" means none.
+	SuggestedTenantURL string
 }
 
 // Handler serves /v1/rubrik. It exists only while the provider is enabled
@@ -134,6 +138,8 @@ type Handler struct {
 	ops          OperationStore
 	writer       RSCWriter
 	restorer     RSCRestorer
+	// suggested is the valid Helm tenant URL, or "".
+	suggested string
 }
 
 // NewHandler checks d and returns the handler.
@@ -190,6 +196,7 @@ func NewHandler(d HandlerDeps) (*Handler, error) {
 	if h.validateURL == nil {
 		h.validateURL = k8s.ValidateRemoteURLContext
 	}
+	h.suggested = suggestedTenantURL(d.SuggestedTenantURL, h.logger)
 	return h, nil
 }
 
@@ -287,6 +294,9 @@ type ConnectionView struct {
 	LastSuccessAt   *time.Time `json:"lastSuccessAt,omitempty"`
 	LastFailureAt   *time.Time `json:"lastFailureAt,omitempty"`
 	LastFailureKind string     `json:"lastFailureKind,omitempty"`
+	// SuggestedTenantURL is Helm's rubrik.tenantUrl, set only while no
+	// connection is saved; the settings page pre-fills it.
+	SuggestedTenantURL string `json:"suggestedTenantUrl,omitempty"`
 }
 
 // MappingView is one cluster mapping as admins see it.
@@ -421,7 +431,10 @@ func (h *Handler) connectionView(ctx context.Context) ConnectionView {
 	c, _, err := h.store.GetConnection(ctx, h.connectionID)
 	switch {
 	case errors.Is(err, store.ErrRubrikConnectionNotFound):
-		return ConnectionView{Health: HealthNotConfigured}
+		// Helm's URL is offered only while nothing is saved: a saved
+		// connection is the one source of truth, so a later Helm change
+		// never touches it.
+		return ConnectionView{Health: HealthNotConfigured, SuggestedTenantURL: h.suggested}
 	case err != nil:
 		h.logger.Error("rubrik: reading connection failed", "error", err)
 		return ConnectionView{Health: HealthUnavailable}
@@ -639,18 +652,42 @@ func validateConnectionRequest(req connectionRequest) string {
 	case req.ClientSecret != nil && len(*req.ClientSecret) > maxSecretBytes:
 		return "clientSecret is too long"
 	}
-	u, err := url.Parse(req.TenantURL)
+	return validateTenantURL(req.TenantURL)
+}
+
+// validateTenantURL returns the client message for a tenant URL that is not
+// an HTTPS origin, or "". The address check runs separately.
+func validateTenantURL(raw string) string {
+	u, err := url.Parse(raw)
 	switch {
 	case err != nil || !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "":
 		return msgTenantURLInvalid
 	case u.User != nil:
 		return "tenantUrl must not contain credentials"
-	case u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(req.TenantURL, "?#"):
+	case u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(raw, "?#"):
 		return "tenantUrl must not contain a query string or fragment"
 	case u.Path != "" && u.Path != "/":
 		return "tenantUrl must be the tenant's address without a path"
 	}
 	return ""
+}
+
+// suggestedTenantURL is the Helm-supplied tenant URL (rubrik.tenantUrl) the
+// settings page pre-fills while no connection is saved, or "" when it is
+// unset or not a valid tenant URL. It is only a suggestion: nothing writes it
+// to the store, so an admin's save (address-checked, probed and audited) is
+// the one way a connection is made, and once one exists this value is unused.
+func suggestedTenantURL(raw string, logger *slog.Logger) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if len(raw) > maxTenantURLBytes || validateTenantURL(raw) != "" {
+		// The value is not logged: it is the operator's tenant address.
+		logger.Warn("rubrik.tenantUrl is not an HTTPS tenant address without a path; the settings page will not pre-fill it")
+		return ""
+	}
+	return raw
 }
 
 // ---------------------------------------------------------------------------

@@ -824,6 +824,9 @@ func main() {
 				Audit:        auditLogger,
 				Logger:       logger,
 				ConnectionID: appstore.RubrikDefaultConnectionID,
+				// Helm's rubrik.tenantUrl: a pre-fill for the settings
+				// page while no connection is saved, never stored.
+				SuggestedTenantURL: cfg.Rubrik.TenantURL,
 			})
 			if err != nil {
 				logger.Error("building the Rubrik handler failed; the Rubrik provider stays off", "error", err)
