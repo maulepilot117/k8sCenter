@@ -164,6 +164,104 @@ type ListState =
     }
   | { kind: "failed"; message: string; setup?: string };
 
+/** A Kubernetes namespace name (an RFC 1123 label). */
+const NAMESPACE_NAME = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+
+/** A notification link, as the page's query gave it. */
+interface PendingLink {
+  /** A valid namespace name, or absent. */
+  namespace?: string;
+  /** The cluster the link is about. */
+  cluster: string;
+}
+
+type LinkNotice =
+  | { kind: "cluster"; cluster: string }
+  | { kind: "namespace"; namespace: string };
+
+/**
+ * The link the query describes, or null. A namespace that is not a valid
+ * name is dropped, so a crafted query cannot put its own words on the page.
+ */
+function pendingFrom(
+  namespace: string | undefined,
+  cluster: string | undefined,
+): PendingLink | null {
+  const ns =
+    namespace && NAMESPACE_NAME.test(namespace) ? namespace : undefined;
+  if (!ns && !cluster) return null;
+  return { namespace: ns, cluster: cluster || LOCAL_CLUSTER_ID };
+}
+
+/** Drops the link's query from the address, keeping the page. */
+function forgetLinkQuery(): void {
+  const { pathname, search, hash } = globalThis.location;
+  if (!search) return;
+  globalThis.history.replaceState(
+    globalThis.history.state,
+    "",
+    pathname + hash,
+  );
+}
+
+/** One row of GET /v1/clusters, the fields the notice names a cluster by. */
+interface ClusterName {
+  id: string;
+  name: string;
+  displayName?: string;
+  isLocal?: boolean;
+}
+
+/**
+ * Why a link is not being followed. A cluster is named as the picker names
+ * it, read from /v1/clusters (admin-only, as remote links are); when that
+ * fails it is "another cluster", never the query's own text.
+ */
+function LinkNoticeAlert({ notice }: { notice: LinkNotice }) {
+  const [label, setLabel] = useState<string | null>(null);
+  const cluster = notice.kind === "cluster" ? notice.cluster : null;
+  useEffect(() => {
+    setLabel(null);
+    if (!cluster) return;
+    let live = true;
+    apiGet<ClusterName[]>("/v1/clusters", { clusterId: LOCAL_CLUSTER_ID })
+      .then((res) => {
+        const c = (Array.isArray(res.data) ? res.data : []).find((r) =>
+          cluster === LOCAL_CLUSTER_ID ? r.isLocal : r.id === cluster,
+        );
+        if (live && c) setLabel(c.displayName || c.name || null);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [cluster]);
+  if (notice.kind === "namespace") {
+    return (
+      <Alert variant="info">
+        Namespace <code>{notice.namespace}</code> is not in your Rubrik list for
+        this cluster. It may no longer be mapped to Rubrik, or you may not have
+        Rubrik read access there.
+      </Alert>
+    );
+  }
+  return (
+    <Alert variant="info">
+      {label ? (
+        <>
+          This link is about the cluster <strong>{label}</strong>, not the one
+          selected now. Choose it in the cluster picker to see its Rubrik data.
+        </>
+      ) : (
+        <>
+          This link is about another cluster, not the one selected now. Choose
+          it in the cluster picker to see its Rubrik data.
+        </>
+      )}
+    </Alert>
+  );
+}
+
 interface RubrikDashboardProps {
   /**
    * The page's `?namespace=`, set by a notification link: its details open
@@ -185,26 +283,16 @@ export default function RubrikDashboard({
   const gen = useRef(0);
   /** The namespace button that opened the panel, focused again on close. */
   const opener = useRef<HTMLElement | null>(null);
-  /** The link's namespace, until a loaded list answers it. */
-  const pendingLink = useRef(linkNamespace || null);
-  /** Why a link could not be followed. */
-  const [linkNotice, setLinkNotice] = useState<string | null>(null);
+  /** The link, until a loaded list of its own cluster answers it. */
+  const pendingLink = useRef<PendingLink | null>(
+    pendingFrom(linkNamespace, linkCluster),
+  );
+  /** Why a link is not being followed. */
+  const [linkNotice, setLinkNotice] = useState<LinkNotice | null>(null);
 
   useEffect(() => {
     ensureRubrikStatus();
   }, []);
-
-  // A link about another cluster is not followed here: the namespace it names
-  // belongs to that cluster. Switching needs the picker (a switch reloads).
-  useEffect(() => {
-    if (!linkNamespace && !linkCluster) return;
-    const target = linkCluster || LOCAL_CLUSTER_ID;
-    if (target === selectedCluster.value) return;
-    pendingLink.current = null;
-    setLinkNotice(
-      `This link is about cluster ${target}, not the cluster selected now. Choose that cluster in the cluster picker to see its Rubrik data.`,
-    );
-  }, [linkNamespace, linkCluster]);
 
   const mapped =
     status.kind === "enabled" && status.status.cluster.state === "mapped";
@@ -246,13 +334,23 @@ export default function RubrikDashboard({
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    // Opening a namespace by hand answers a "not in your list" notice.
+    setLinkNotice((n) => (n?.kind === "namespace" ? null : n));
     setSelected(ns);
   }, []);
   const close = useCallback(() => {
+    // A panel a link opened has no opener: focus its namespace's row button.
+    const back =
+      opener.current ??
+      (selected
+        ? document.querySelector<HTMLElement>(
+            `[data-testid="rubrik-ns-${selected}"] button`,
+          )
+        : null);
     setSelected(null);
-    opener.current?.focus();
+    back?.focus();
     opener.current = null;
-  }, []);
+  }, [selected]);
 
   // Each status answer (one per cluster switch) starts a fresh list.
   useEffect(() => {
@@ -263,22 +361,46 @@ export default function RubrikDashboard({
     if (mapped) void load();
   }, [status, mapped, load]);
 
-  // The first loaded list answers a pending link: open the namespace when
-  // the list shows it, else say why not. The server decides visibility, so a
-  // namespace missing from the list is never opened.
+  // A pending link is checked against the selected cluster on every status
+  // answer, since the selection can change without a reload (the switcher
+  // falls back to local; deleting the selected cluster does too). A link
+  // about another cluster waits: its namespace belongs to that cluster, and
+  // switching there with the picker reloads this URL and follows it.
   useEffect(() => {
-    const ns = pendingLink.current;
-    if (!ns || list.kind !== "loaded") return;
+    if (status.kind === "loading") return;
+    const link = pendingLink.current;
+    if (!link) {
+      setLinkNotice((n) => (n?.kind === "namespace" ? null : n));
+      return;
+    }
+    setLinkNotice(
+      link.cluster === selectedCluster.value
+        ? null
+        : { kind: "cluster", cluster: link.cluster },
+    );
+  }, [status]);
+
+  // The first loaded list of the link's own cluster answers it: open the
+  // namespace when the list shows it, else say why not. The server decides
+  // visibility, so a namespace missing from the list is never opened. Once
+  // answered, the query leaves the URL, so a later reload does not follow
+  // the link again on whatever cluster is selected then.
+  useEffect(() => {
+    const link = pendingLink.current;
+    if (!link || list.kind !== "loaded") return;
+    if (link.cluster !== selectedCluster.value) return;
     pendingLink.current = null;
+    forgetLinkQuery();
+    const ns = link.namespace;
+    if (!ns) return;
     if (
       !list.data.noAccess &&
       list.data.namespaces.some((r) => r.namespace === ns)
     ) {
+      opener.current = null;
       setSelected(ns);
     } else {
-      setLinkNotice(
-        `Namespace ${ns} is not in your Rubrik list for this cluster. It may no longer be mapped to Rubrik, or you may not have Rubrik read access there.`,
-      );
+      setLinkNotice({ kind: "namespace", namespace: ns });
     }
   }, [list]);
 
@@ -378,7 +500,7 @@ export default function RubrikDashboard({
           Preview
         </span>
       </div>
-      {linkNotice && <Alert variant="info">{linkNotice}</Alert>}
+      {linkNotice && <LinkNoticeAlert notice={linkNotice} />}
       {body}
       {selected && list.kind === "loaded" && (
         <DetailPanel
