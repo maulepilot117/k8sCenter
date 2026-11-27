@@ -466,3 +466,86 @@ test("a mapping save refused as changed says why, and the next save clears it", 
   expect(body().queryByText(CONFLICT)).toBeNull();
   unmount();
 });
+
+const HELM_TENANT = "https://helm.my.rubrik.com";
+
+/** No connection saved; Helm's rubrik.tenantUrl arrives as the suggestion. */
+function unsaved(over: Partial<RubrikConnection> = {}): RubrikConnection {
+  return {
+    configured: false,
+    hasSecret: false,
+    health: "not_configured",
+    suggestedTenantUrl: HELM_TENANT,
+    ...over,
+  };
+}
+
+const tenantNote = () => body().queryByText(/Filled in from the Helm value/);
+
+test("an unsaved connection pre-fills Helm's tenant URL and says where it came from", async () => {
+  defaults(unsaved());
+  routes["PUT /api/v1/rubrik/connection"] = () =>
+    fail(400, "invalid_connection", "nope");
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  const input = tenantInput() as HTMLInputElement;
+  expect(input.value).toBe(HELM_TENANT);
+  expect(tenantNote()).not.toBeNull();
+  expect(input.getAttribute("aria-describedby")).toBe("rubrik-tenant-url-note");
+  // Nothing is saved on load: only the status was read.
+  expect(calls.some((c) => c.method !== "GET")).toBe(false);
+  fireEvent.change(document.getElementById("rubrik-client-id") as HTMLElement, {
+    target: { value: "client-9" },
+  });
+  fireEvent.change(secretInput(), { target: { value: SECRET } });
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Save connection" }));
+  });
+  await settle();
+  const put = calls.find((c) => c.method === "PUT");
+  expect(put?.body).toEqual({
+    tenantUrl: HELM_TENANT,
+    clientId: "client-9",
+    clientSecret: SECRET,
+  });
+  unmount();
+});
+
+test("editing the pre-filled URL drops the Helm note", async () => {
+  defaults(unsaved());
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  fireEvent.change(tenantInput() as HTMLInputElement, {
+    target: { value: "https://typed.my.rubrik.com" },
+  });
+  expect(tenantNote()).toBeNull();
+  expect(tenantInput()?.getAttribute("aria-describedby")).toBeNull();
+  unmount();
+});
+
+test("a saved connection wins over a Helm suggestion", async () => {
+  defaults(connection({ suggestedTenantUrl: HELM_TENANT }));
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  expect(tenantInput()?.value).toBe("https://acme.my.rubrik.com");
+  expect(tenantNote()).toBeNull();
+  unmount();
+});
+
+test("without a Helm suggestion an unsaved connection starts empty", async () => {
+  defaults(unsaved({ suggestedTenantUrl: undefined }));
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  expect(tenantInput()?.value).toBe("");
+  expect(tenantNote()).toBeNull();
+  unmount();
+});
+
+test("a saved URL equal to the Helm value is not labelled as from Helm", async () => {
+  defaults(connection({ suggestedTenantUrl: "https://acme.my.rubrik.com" }));
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  expect(tenantInput()?.value).toBe("https://acme.my.rubrik.com");
+  expect(tenantNote()).toBeNull();
+  unmount();
+});

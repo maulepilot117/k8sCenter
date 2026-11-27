@@ -73,7 +73,7 @@ rubrik:
 
 This is only a suggestion. The saved connection is still the one source of truth.
 
-- While no connection is saved, `GET /api/v1/rubrik/status` gives admins the value as `connection.suggestedTenantUrl`. Nothing is stored and nothing is audited until an admin enters the client ID and secret and saves. The save is checked, probed and audited like any other.
+- While no connection is saved, `GET /api/v1/rubrik/status` gives admins the value as `connection.suggestedTenantUrl`, and **Settings → Rubrik** fills it into the Tenant URL field with a note saying it came from Helm. Nothing is stored and nothing is audited until an admin enters the client ID and secret and saves. The save is checked, probed and audited like any other.
 - Once a connection is saved, the saved URL wins. Changing or removing `tenantUrl` afterwards has no effect; change the URL on the settings page (or with `PUT /rubrik/connection`) instead. Moving to another tenant then needs the client secret again and clears the cluster mappings, as below.
 - Helm supplies the URL only. The client ID and secret are always entered by an admin.
 - The value must be `https://` and a host name, with an optional port and nothing after it: no path, query, fragment or credentials. The chart's schema refuses anything else, so a mistake fails `helm install` or `helm upgrade`. The backend checks the value again at startup; a value it rejects (for example one set without the chart) is dropped with a warning that does not include it, and nothing is pre-filled.
