@@ -51,4 +51,8 @@ data:
   {{- if .Values.rubrik.writesEnabled }}
   KUBECENTER_RUBRIK_WRITESENABLED: "true"
   {{- end }}
+  {{- with .Values.rubrik.tenantUrl | default "" | trim }}
+  # A pre-fill for Settings → Rubrik only; the saved connection wins.
+  KUBECENTER_RUBRIK_TENANTURL: {{ . | quote }}
+  {{- end }}
   {{- end }}

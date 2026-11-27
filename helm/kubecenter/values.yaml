@@ -221,6 +221,12 @@ rubrik:
   # RBAC bindings before turning it on (operator guide, "Before enabling
   # writes").
   writesEnabled: false
+  # -- RSC tenant URL (https://<tenant>.my.rubrik.com) to pre-fill on
+  # Settings → Rubrik while no connection is saved. Only a suggestion: it is
+  # never stored, and the admin still enters the client ID and secret and
+  # saves. Once a connection is saved, the saved URL wins and this value has
+  # no effect. Has no effect while rubrik.enabled is false.
+  tenantUrl: ""
 
 # -- Alerting
 alerting:
