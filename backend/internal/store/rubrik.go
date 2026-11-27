@@ -211,32 +211,52 @@ func validRubrikFailureKind(kind string) bool {
 	return false
 }
 
-// RecordConnectionSuccess stamps the connection's last successful RSC
-// contact with the database's clock. It writes only while the connection is
-// still at revision, the revision the contact was made under, and reports
-// whether it wrote: a save in between advances the revision and clears the
-// recorded health, so an outcome of the previous settings never lands on
-// the new ones. A missing connection is not an error; nothing is written.
-func (s *RubrikStore) RecordConnectionSuccess(ctx context.Context, id string, revision int64) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE rubrik_connection SET last_success_at = now()
-		WHERE id = $1 AND revision = $2`, id, revision)
+// ErrRubrikContactTime is returned by RecordConnectionSuccess and
+// RecordConnectionFailure for a zero contact time. Nothing is written.
+var ErrRubrikContactTime = errors.New("rubrik contact time is required")
+
+// RecordConnectionSuccess records a successful RSC contact that completed
+// at at. at is when the contact finished, not when this write runs, and
+// last_success_at only ever moves forward: a write carrying an older time
+// than the stored one changes nothing. Concurrent outcomes can therefore be
+// written in any order, from any replica, and the stored times still order
+// them as they happened (to the replicas' clock skew), so a success that
+// finished before a failure can never be read as the later outcome.
+//
+// It writes only while the connection is still at revision, the revision
+// the contact was made under: a save in between advances the revision and
+// clears the recorded health, so an outcome of the previous settings never
+// lands on the new ones. It reports whether it wrote; false means a newer
+// success is stored, the revision moved, or the connection is missing,
+// none of which is an error.
+func (s *RubrikStore) RecordConnectionSuccess(ctx context.Context, id string, revision int64, at time.Time) (bool, error) {
+	if at.IsZero() {
+		return false, ErrRubrikContactTime
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE rubrik_connection SET last_success_at = $3
+		WHERE id = $1 AND revision = $2 AND (last_success_at IS NULL OR last_success_at < $3)`,
+		id, revision, at)
 	if err != nil {
 		return false, fmt.Errorf("recording rubrik contact success: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
 }
 
-// RecordConnectionFailure stamps the connection's last failed RSC contact
-// and its kind, one of the RubrikFailure constants, with the database's
-// clock. The last success is kept: health is whichever of the two is later.
-// Like RecordConnectionSuccess it writes only at revision and reports
-// whether it wrote.
-func (s *RubrikStore) RecordConnectionFailure(ctx context.Context, id string, revision int64, kind string) (bool, error) {
+// RecordConnectionFailure records a failed RSC contact that completed at
+// at, with its kind, one of the RubrikFailure constants. The time and kind
+// move together and only forward, as RecordConnectionSuccess describes, so
+// the stored kind is always that of the latest failure. The last success is
+// kept: health is whichever of the two is later.
+func (s *RubrikStore) RecordConnectionFailure(ctx context.Context, id string, revision int64, kind string, at time.Time) (bool, error) {
 	if !validRubrikFailureKind(kind) {
 		return false, ErrRubrikFailureKind
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE rubrik_connection SET last_failure_at = now(), last_failure_kind = $3
-		WHERE id = $1 AND revision = $2`, id, revision, kind)
+	if at.IsZero() {
+		return false, ErrRubrikContactTime
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE rubrik_connection SET last_failure_at = $4, last_failure_kind = $3
+		WHERE id = $1 AND revision = $2 AND (last_failure_at IS NULL OR last_failure_at < $4)`,
+		id, revision, kind, at)
 	if err != nil {
 		return false, fmt.Errorf("recording rubrik contact failure: %w", err)
 	}
