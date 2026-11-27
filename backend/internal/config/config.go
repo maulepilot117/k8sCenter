@@ -206,6 +206,11 @@ type CiliumAgentConfig struct {
 type RubrikConfig struct {
 	Enabled       bool `koanf:"enabled"`       // KUBECENTER_RUBRIK_ENABLED
 	WritesEnabled bool `koanf:"writesenabled"` // KUBECENTER_RUBRIK_WRITESENABLED
+	// TenantURL pre-fills the RSC tenant URL on the settings page while no
+	// connection is saved (KUBECENTER_RUBRIK_TENANTURL). It is never stored:
+	// an admin saves the connection there, and once one exists the saved URL
+	// wins and this value is ignored.
+	TenantURL string `koanf:"tenanturl"`
 }
 
 // LokiConfig holds configuration for Loki log aggregation integration.
