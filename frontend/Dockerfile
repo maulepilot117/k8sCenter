@@ -109,7 +109,7 @@ RUN set -eux; \
 # compare against. A non-Debian base would mean rebuilding this gate from
 # scratch. distroless/base is not an option either -- it ships no libstdc++,
 # and Bun will not start without it.
-FROM gcr.io/distroless/cc-debian13@sha256:58e12be899275afaa05f1b03051ab19037ed7f252528e57a3a9ad7e220a62578 AS runtime-base
+FROM gcr.io/distroless/cc-debian13@sha256:dac90a25ffe03ebaace90cda886b081e61ab6cd77ac47eda51f7bcc15c320765 AS runtime-base
 
 # debian:trixie (NOT -slim) -- the slim variant ships
 # /etc/dpkg/dpkg.cfg.d/docker-clean which path-excludes /usr/share/doc/*,
@@ -187,7 +187,7 @@ RUN set -e && \
 # for the same reason -- shipping a toolchain the running container cannot
 # load still hands Trivy a set of packages to raise release-blocking CVEs on.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian13@sha256:58e12be899275afaa05f1b03051ab19037ed7f252528e57a3a9ad7e220a62578
+FROM gcr.io/distroless/cc-debian13@sha256:dac90a25ffe03ebaace90cda886b081e61ab6cd77ac47eda51f7bcc15c320765
 
 # Overlay patched libraries and their updated package metadata.
 COPY --from=security-patch /patch/usr/lib/ /usr/lib/
