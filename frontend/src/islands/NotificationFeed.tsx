@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import {
+  NotifContext,
   SeverityDot,
   SourceBadge,
 } from "@/components/ui/NotifCenterBadges.tsx";
@@ -366,6 +367,7 @@ export default function NotificationFeed() {
                         ) : (
                           n.title
                         )}
+                        <NotifContext n={n} />
                       </td>
                       <td
                         style={{
