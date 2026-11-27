@@ -59,7 +59,25 @@ The tenant URL must be `https`, must resolve to a public address, and is checked
 
 ## 4. Connect k8sCenter to RSC
 
-The settings page for Rubrik has not shipped yet. Until it does, an admin sets the connection up through the API. Every request needs an admin's access token and the CSRF header.
+An admin saves the connection on **Settings → Rubrik** (`/settings/rubrik`), or through the API below. Every API request needs an admin's access token and the CSRF header.
+
+### Pre-filling the tenant URL from Helm
+
+The chart can supply the tenant URL, so an admin does not have to type it:
+
+```yaml
+rubrik:
+  enabled: true
+  tenantUrl: https://<tenant>.my.rubrik.com
+```
+
+This is only a suggestion. The saved connection is still the one source of truth.
+
+- While no connection is saved, `GET /api/v1/rubrik/status` gives admins the value as `connection.suggestedTenantUrl`. Nothing is stored and nothing is audited until an admin enters the client ID and secret and saves. The save is checked, probed and audited like any other.
+- Once a connection is saved, the saved URL wins. Changing or removing `tenantUrl` afterwards has no effect; change the URL on the settings page (or with `PUT /rubrik/connection`) instead. Moving to another tenant then needs the client secret again and clears the cluster mappings, as below.
+- Helm supplies the URL only. The client ID and secret are always entered by an admin.
+- The value must be `https://` and a host, with no path, query, fragment or credentials. The chart's schema refuses anything else. A value that still fails the backend's check (for example one set without the chart) is dropped at startup with a warning that does not include it.
+- Like the other Rubrik values, the backend reads it at startup, so restart the backend after changing it (step 2).
 
 ```bash
 API=https://k8scenter.example.com/api/v1

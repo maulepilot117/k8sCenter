@@ -118,7 +118,13 @@
       "description": "Rubrik Security Cloud backup provider (preview). Booleans only: a quoted \"false\" would render as on.",
       "properties": {
         "enabled": { "type": "boolean" },
-        "writesEnabled": { "type": "boolean" }
+        "writesEnabled": { "type": "boolean" },
+        "tenantUrl": {
+          "type": "string",
+          "maxLength": 2048,
+          "pattern": "^$|^https://[^/?#@\\s]+/?$",
+          "description": "RSC tenant URL pre-filled on Settings → Rubrik while no connection is saved. Empty, or https:// and a host with no path, query, fragment or credentials. Never stored."
+        }
       },
       "additionalProperties": false
     },
