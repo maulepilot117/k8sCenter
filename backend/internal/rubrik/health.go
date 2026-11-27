@@ -32,18 +32,20 @@ const (
 // StoreConnection does. revision is the connection revision the contact was
 // made under, and an implementation writes nothing once the connection has
 // been saved since. kind is one of the store.RubrikFailure constants: the
-// class of the error, never its text.
+// class of the error, never its text. at is when the contact completed; an
+// implementation keeps only the newest outcome of each kind, so outcomes
+// may arrive in any order.
 type ContactRecorder interface {
-	RecordContactSuccess(ctx context.Context, revision int64) error
-	RecordContactFailure(ctx context.Context, revision int64, kind string) error
+	RecordContactSuccess(ctx context.Context, revision int64, at time.Time) error
+	RecordContactFailure(ctx context.Context, revision int64, kind string, at time.Time) error
 }
 
 // contactStore is the part of store.RubrikStore that records contact
 // outcomes. It is separate from ConnectionStore so that a read-only store
 // stays a valid connection source.
 type contactStore interface {
-	RecordConnectionSuccess(ctx context.Context, id string, revision int64) (bool, error)
-	RecordConnectionFailure(ctx context.Context, id string, revision int64, kind string) (bool, error)
+	RecordConnectionSuccess(ctx context.Context, id string, revision int64, at time.Time) (bool, error)
+	RecordConnectionFailure(ctx context.Context, id string, revision int64, kind string, at time.Time) (bool, error)
 }
 
 var (
@@ -53,23 +55,23 @@ var (
 
 // RecordContactSuccess implements ContactRecorder. It writes nothing when
 // the store cannot record outcomes.
-func (c StoreConnection) RecordContactSuccess(ctx context.Context, revision int64) error {
+func (c StoreConnection) RecordContactSuccess(ctx context.Context, revision int64, at time.Time) error {
 	cs, ok := c.Store.(contactStore)
 	if !ok {
 		return nil
 	}
-	_, err := cs.RecordConnectionSuccess(ctx, c.ID, revision)
+	_, err := cs.RecordConnectionSuccess(ctx, c.ID, revision, at)
 	return err
 }
 
 // RecordContactFailure implements ContactRecorder. It writes nothing when
 // the store cannot record outcomes.
-func (c StoreConnection) RecordContactFailure(ctx context.Context, revision int64, kind string) error {
+func (c StoreConnection) RecordContactFailure(ctx context.Context, revision int64, kind string, at time.Time) error {
 	cs, ok := c.Store.(contactStore)
 	if !ok {
 		return nil
 	}
-	_, err := cs.RecordConnectionFailure(ctx, c.ID, revision, kind)
+	_, err := cs.RecordConnectionFailure(ctx, c.ID, revision, kind, at)
 	return err
 }
 
@@ -110,12 +112,17 @@ type healthMark struct {
 }
 
 // healthTracker throttles a client's outcome writes: at most one per
-// healthWriteInterval while the kind and revision stay the same. It is per
-// replica, so the stored health can trail this replica's latest outcome by
-// up to healthWriteInterval when another replica (or a concurrent call)
-// wrote a different kind in between. A failed write is logged and retried
-// on the next outcome after the interval or of another kind. A nil tracker
-// records nothing.
+// healthWriteInterval while the kind and revision stay the same. Each write
+// carries the time its contact completed and the store keeps only the
+// newest of each kind, so concurrent outcomes may be written in any order:
+// a success that finished before a failure never reads as the later one.
+//
+// The throttle is per replica. When another replica wrote a different
+// outcome since this one's last write, a repeat of this replica's outcome
+// inside the interval is not written, so the stored health can show the
+// other replica's outcome for up to healthWriteInterval, in either
+// direction. A failed write is logged and retried on the next outcome after
+// the interval or of another kind. A nil tracker records nothing.
 type healthTracker struct {
 	rec    ContactRecorder
 	logger *slog.Logger
@@ -129,7 +136,8 @@ func newHealthTracker(rec ContactRecorder, logger *slog.Logger, now func() time.
 	return &healthTracker{rec: rec, logger: logger, now: now}
 }
 
-// observe records the outcome err of a contact made under revision.
+// observe records the outcome err of a contact made under revision. Call it
+// as soon as the contact completes: the time it reads is the outcome's.
 func (h *healthTracker) observe(ctx context.Context, revision int64, err error) {
 	if h == nil {
 		return
@@ -151,9 +159,9 @@ func (h *healthTracker) observe(ctx context.Context, revision int64, err error) 
 	defer cancel()
 	var werr error
 	if kind == "" {
-		werr = h.rec.RecordContactSuccess(wctx, revision)
+		werr = h.rec.RecordContactSuccess(wctx, revision, now)
 	} else {
-		werr = h.rec.RecordContactFailure(wctx, revision, kind)
+		werr = h.rec.RecordContactFailure(wctx, revision, kind, now)
 	}
 	if werr != nil {
 		h.logger.Warn("rubrik: recording connection health failed", "kind", kind, "error", werr)

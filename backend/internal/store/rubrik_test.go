@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -576,8 +577,10 @@ func TestRubrikStore_ListComplianceStates(t *testing.T) {
 	}
 }
 
-// Contact outcomes stamp only the revision they were made under, keep the
-// other outcome's time, and accept only the CHECK's kinds.
+// Contact outcomes carry the time they completed. Each column keeps only
+// the newest, so outcomes written out of order still order as they
+// happened; writes stamp only the revision they were made under and accept
+// only the CHECK's kinds.
 func TestRubrikStore_RecordsContactHealth(t *testing.T) {
 	pool := testDB(t)
 	ctx := t.Context()
@@ -594,43 +597,68 @@ func TestRubrikStore_RecordsContactHealth(t *testing.T) {
 		}
 		return got
 	}
+	// PostgreSQL keeps microseconds.
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	at := func(sec int) time.Time { return base.Add(time.Duration(sec) * time.Second) }
+	same := func(got *time.Time, want time.Time) bool { return got != nil && got.Equal(want) }
 
-	if ok, err := s.RecordConnectionSuccess(ctx, id, c.Revision); err != nil || !ok {
+	if ok, err := s.RecordConnectionSuccess(ctx, id, c.Revision, at(10)); err != nil || !ok {
 		t.Fatalf("RecordConnectionSuccess = (%v, %v); want a write", ok, err)
 	}
 	got := read()
-	if got.LastSuccessAt == nil || got.LastFailureAt != nil || got.LastFailureKind != "" {
-		t.Fatalf("after a success = %+v; want only the success", got)
+	if !same(got.LastSuccessAt, at(10)) || got.LastFailureAt != nil || got.LastFailureKind != "" {
+		t.Fatalf("after a success = %+v; want only the success at its contact time", got)
 	}
-	success := *got.LastSuccessAt
-
-	if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, RubrikFailureAuth); err != nil || !ok {
+	if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, RubrikFailureAuth, at(20)); err != nil || !ok {
 		t.Fatalf("RecordConnectionFailure = (%v, %v); want a write", ok, err)
 	}
 	got = read()
-	if got.LastFailureAt == nil || got.LastFailureKind != RubrikFailureAuth {
-		t.Fatalf("after a failure = %+v; want auth_failed recorded", got)
-	}
-	if got.LastSuccessAt == nil || !got.LastSuccessAt.Equal(success) {
-		t.Errorf("a failure moved the last success: %v, want %v", got.LastSuccessAt, success)
-	}
-	if got.LastFailureAt.Before(success) {
-		t.Errorf("failure at %v is before the earlier success at %v", got.LastFailureAt, success)
+	if !same(got.LastFailureAt, at(20)) || got.LastFailureKind != RubrikFailureAuth || !same(got.LastSuccessAt, at(10)) {
+		t.Fatalf("after a failure = %+v; want auth_failed at 20s and the success kept", got)
 	}
 
-	for _, kind := range []string{RubrikFailureAuth, RubrikFailureUnreachable, RubrikFailureRateLimited,
+	// A success that completed before the failure but is written after it
+	// lands at its own time, so the failure still reads as the later
+	// outcome. An older outcome of either kind changes nothing.
+	if ok, err := s.RecordConnectionSuccess(ctx, id, c.Revision, at(15)); err != nil || !ok {
+		t.Fatalf("late success = (%v, %v); want a write", ok, err)
+	}
+	if ok, err := s.RecordConnectionSuccess(ctx, id, c.Revision, at(12)); err != nil || ok {
+		t.Errorf("success older than the stored one = (%v, %v); want no write", ok, err)
+	}
+	if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, RubrikFailureUnreachable, at(18)); err != nil || ok {
+		t.Errorf("failure older than the stored one = (%v, %v); want no write", ok, err)
+	}
+	if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, RubrikFailureUnreachable, at(20)); err != nil || ok {
+		t.Errorf("failure at the stored time = (%v, %v); want no write", ok, err)
+	}
+	got = read()
+	if !same(got.LastSuccessAt, at(15)) || !same(got.LastFailureAt, at(20)) || got.LastFailureKind != RubrikFailureAuth {
+		t.Fatalf("after out-of-order writes = %+v; want success 15s, auth_failed 20s", got)
+	}
+	if !got.LastFailureAt.After(*got.LastSuccessAt) {
+		t.Fatal("the earlier success reads as the later outcome")
+	}
+
+	for i, kind := range []string{RubrikFailureAuth, RubrikFailureUnreachable, RubrikFailureRateLimited,
 		RubrikFailureGraphQL, RubrikFailureUnreadable} {
-		if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, kind); err != nil || !ok {
+		if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, kind, at(30+i)); err != nil || !ok {
 			t.Errorf("kind %q = (%v, %v); want the CHECK to accept it", kind, ok, err)
 		}
 	}
 	for _, kind := range []string{"", "rsc_error", "not_configured", "connection refused by 10.0.0.1"} {
-		if _, err := s.RecordConnectionFailure(ctx, id, c.Revision, kind); !errors.Is(err, ErrRubrikFailureKind) {
+		if _, err := s.RecordConnectionFailure(ctx, id, c.Revision, kind, at(60)); !errors.Is(err, ErrRubrikFailureKind) {
 			t.Errorf("kind %q = %v; want ErrRubrikFailureKind", kind, err)
 		}
 	}
-	if got := read(); got.LastFailureKind != RubrikFailureUnreadable {
-		t.Errorf("refused kinds changed the row: kind = %q", got.LastFailureKind)
+	if _, err := s.RecordConnectionSuccess(ctx, id, c.Revision, time.Time{}); !errors.Is(err, ErrRubrikContactTime) {
+		t.Errorf("zero success time = %v; want ErrRubrikContactTime", err)
+	}
+	if _, err := s.RecordConnectionFailure(ctx, id, c.Revision, RubrikFailureAuth, time.Time{}); !errors.Is(err, ErrRubrikContactTime) {
+		t.Errorf("zero failure time = %v; want ErrRubrikContactTime", err)
+	}
+	if got := read(); got.LastFailureKind != RubrikFailureUnreadable || !same(got.LastFailureAt, at(34)) {
+		t.Errorf("refused writes changed the row: %+v", got)
 	}
 
 	// A save between the contact and its record clears the health and
@@ -644,23 +672,27 @@ func TestRubrikStore_RecordsContactHealth(t *testing.T) {
 	if saved.LastSuccessAt != nil || saved.LastFailureAt != nil || saved.LastFailureKind != "" {
 		t.Fatalf("save kept health %+v; want it cleared", saved)
 	}
-	if ok, err := s.RecordConnectionSuccess(ctx, id, c.Revision); err != nil || ok {
+	if ok, err := s.RecordConnectionSuccess(ctx, id, c.Revision, at(70)); err != nil || ok {
 		t.Errorf("success at the old revision = (%v, %v); want no write", ok, err)
 	}
-	if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, RubrikFailureUnreachable); err != nil || ok {
+	if ok, err := s.RecordConnectionFailure(ctx, id, c.Revision, RubrikFailureUnreachable, at(70)); err != nil || ok {
 		t.Errorf("failure at the old revision = (%v, %v); want no write", ok, err)
 	}
 	if got := read(); got.LastSuccessAt != nil || got.LastFailureAt != nil || got.LastFailureKind != "" {
 		t.Fatalf("old-revision outcomes landed on the new settings: %+v", got)
 	}
-	if ok, err := s.RecordConnectionFailure(ctx, id, saved.Revision, RubrikFailureUnreachable); err != nil || !ok {
+	if ok, err := s.RecordConnectionFailure(ctx, id, saved.Revision, RubrikFailureUnreachable, at(5)); err != nil || !ok {
 		t.Fatalf("failure at the new revision = (%v, %v); want a write", ok, err)
 	}
 	if got := read(); got.LastFailureKind != RubrikFailureUnreachable || got.LastSuccessAt != nil {
 		t.Errorf("after a new-revision failure = %+v", got)
 	}
 
-	if ok, err := s.RecordConnectionSuccess(ctx, testOwnerID(t), 1); err != nil || ok {
+	missing := testOwnerID(t)
+	if ok, err := s.RecordConnectionSuccess(ctx, missing, 1, at(80)); err != nil || ok {
 		t.Errorf("success for a missing connection = (%v, %v); want no write and no error", ok, err)
+	}
+	if ok, err := s.RecordConnectionFailure(ctx, missing, 1, RubrikFailureAuth, at(80)); err != nil || ok {
+		t.Errorf("failure for a missing connection = (%v, %v); want no write and no error", ok, err)
 	}
 }
