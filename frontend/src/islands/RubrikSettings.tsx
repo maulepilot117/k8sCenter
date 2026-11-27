@@ -306,6 +306,14 @@ function ConnectionForm({
     : (connection.suggestedTenantUrl ?? "");
   const [tenantUrl, setTenantUrl] = useState(connection.tenantUrl ?? suggested);
   const showSuggested = suggested !== "" && tenantUrl.trim() === suggested;
+  // The suggestion can arrive on a later status read (the first one failed)
+  // without a remount: the key is still revision 0. Take it while the admin
+  // has not typed in the field.
+  const tenantTouched = useRef(false);
+  useEffect(() => {
+    if (suggested === "" || tenantTouched.current) return;
+    setTenantUrl(suggested);
+  }, [suggested]);
   const [clientId, setClientId] = useState(connection.clientId ?? "");
   const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
@@ -397,7 +405,10 @@ function ConnectionForm({
             aria-describedby={
               showSuggested ? "rubrik-tenant-url-note" : undefined
             }
-            onChange={(e) => setTenantUrl(e.currentTarget.value)}
+            onChange={(e) => {
+              tenantTouched.current = true;
+              setTenantUrl(e.currentTarget.value);
+            }}
           />
           {showSuggested && (
             <p

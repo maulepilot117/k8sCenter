@@ -36,7 +36,9 @@ mock.module("@/src/lib/toast-store.ts", () => ({
 
 const { default: RubrikSettings } = await import("./RubrikSettings.tsx");
 const { useAuth } = await import("@/lib/auth.ts");
-const { resetRubrikStatusForTest } = await import("@/src/lib/rubrik-status.ts");
+const { reloadRubrikStatus, resetRubrikStatusForTest } = await import(
+  "@/src/lib/rubrik-status.ts"
+);
 
 const bunFetch = globalThis.fetch;
 const realConfirm = globalThis.confirm;
@@ -547,5 +549,70 @@ test("a saved URL equal to the Helm value is not labelled as from Helm", async (
   await settle();
   expect(tenantInput()?.value).toBe("https://acme.my.rubrik.com");
   expect(tenantNote()).toBeNull();
+  unmount();
+});
+
+test("a Helm suggestion that arrives on a later status read is filled in", async () => {
+  // The first read hits a store error: no suggestion, no revision.
+  defaults(unsaved({ health: "unavailable", suggestedTenantUrl: undefined }));
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  expect(tenantInput()?.value).toBe("");
+  routes["GET /api/v1/rubrik/status"] = () => ok(status(unsaved()));
+  await act(async () => {
+    await reloadRubrikStatus();
+  });
+  await settle();
+  expect(tenantInput()?.value).toBe(HELM_TENANT);
+  expect(tenantNote()).not.toBeNull();
+  unmount();
+});
+
+test("a late Helm suggestion never replaces what the admin typed", async () => {
+  defaults(unsaved({ health: "unavailable", suggestedTenantUrl: undefined }));
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  fireEvent.change(tenantInput() as HTMLInputElement, {
+    target: { value: "https://typed.my.rubrik.com" },
+  });
+  routes["GET /api/v1/rubrik/status"] = () => ok(status(unsaved()));
+  await act(async () => {
+    await reloadRubrikStatus();
+  });
+  await settle();
+  expect(tenantInput()?.value).toBe("https://typed.my.rubrik.com");
+  expect(tenantNote()).toBeNull();
+  unmount();
+});
+
+test("saving the pre-filled form shows the saved URL without the Helm note", async () => {
+  defaults(unsaved(), []);
+  const saved = connection({
+    tenantUrl: HELM_TENANT,
+    clientId: "client-9",
+    revision: 1,
+    health: "unknown",
+    lastSuccessAt: undefined,
+  });
+  routes["PUT /api/v1/rubrik/connection"] = () =>
+    ok({ ...saved, mappingsCleared: false });
+  const { unmount } = render(<RubrikSettings />);
+  await settle();
+  expect(tenantNote()).not.toBeNull();
+  fireEvent.change(document.getElementById("rubrik-client-id") as HTMLElement, {
+    target: { value: "client-9" },
+  });
+  fireEvent.change(secretInput(), { target: { value: SECRET } });
+  // The status read after the save answers with the saved connection.
+  routes["GET /api/v1/rubrik/status"] = () => ok(status(saved));
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Save connection" }));
+  });
+  await settle();
+  expect(toasts.map((t) => t.message)).toEqual(["Rubrik connection saved"]);
+  expect(tenantInput()?.value).toBe(HELM_TENANT);
+  expect(tenantNote()).toBeNull();
+  expect(secretInput().value).toBe("");
+  body().getByText("Secret set.");
   unmount();
 });
