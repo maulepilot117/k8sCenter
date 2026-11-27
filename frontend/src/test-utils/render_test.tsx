@@ -114,6 +114,57 @@ test("c", () => {
 });
 
 /**
+ * The access token lives in lib/api.ts's module state, shared by every file
+ * in the process. A file that signs in and never signs out must not hand its
+ * token to the next file: setupDom clears it when the file ends.
+ */
+test("an access token set in one test file does not reach the next", () => {
+  const frontend = join(import.meta.dir, "..", "..");
+  const dir = join(import.meta.dir, `.token-leak-${process.pid}`);
+  const harness = "@/src/test-utils/render.tsx";
+  const files: Record<string, string> = {
+    "a_test.tsx": `import { expect, test } from "bun:test";
+import { setupDom } from "${harness}";
+import { getAccessToken, setAccessToken } from "@/lib/api.ts";
+setupDom({ browser: true });
+test("a", () => {
+  console.log("ran:a");
+  setAccessToken("leaky-token");
+  expect(getAccessToken()).toBe("leaky-token");
+});
+`,
+    "b_test.tsx": `import { expect, test } from "bun:test";
+import { setupDom } from "${harness}";
+import { getAccessToken } from "@/lib/api.ts";
+setupDom({ browser: true });
+test("b", () => {
+  console.log("ran:b");
+  expect(getAccessToken()).toBeNull();
+});
+`,
+  };
+  mkdirSync(dir, { recursive: true });
+  try {
+    for (const [name, code] of Object.entries(files)) {
+      writeFileSync(join(dir, name), code);
+    }
+    const run = Bun.spawnSync(
+      [
+        process.execPath,
+        "test",
+        ...Object.keys(files).map((name) => join(dir, name)),
+      ],
+      { cwd: frontend, stdout: "pipe", stderr: "pipe" },
+    );
+    const output = `${run.stdout.toString()}${run.stderr.toString()}`;
+    expect({ exit: run.exitCode, output }).toMatchObject({ exit: 0 });
+    expect(output.match(/ran:[ab]/g)).toEqual(["ran:a", "ran:b"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
  * An `act(async ...)` that is never awaited, or whose callback never settles,
  * leaves React's act scope open, and from then on React parks every update
  * in it instead of rendering, in this file and in every file after it. The
