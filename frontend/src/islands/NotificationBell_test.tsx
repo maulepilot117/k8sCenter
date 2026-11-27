@@ -199,3 +199,64 @@ test("a notification event inside the suppression window after Mark all read lea
   expect(server.unreadFetches).toBe(fetchesBefore + 1);
   expect(body().getByText("1")).toBeTruthy();
 });
+
+// ---------------------------------------------------------------------------
+// Rubrik rows (R24, R26)
+
+const rubrik = (id: string, over: Record<string, unknown>) => ({
+  ...notification(id, false),
+  source: "rubrik",
+  title: "Rubrik snapshot failed",
+  message: "A Rubrik snapshot job failed.",
+  ...over,
+});
+
+/** Each panel row's context line, or null when it has none. */
+const contextLines = () =>
+  [...document.querySelectorAll('[data-testid="notif-context"]')].map(
+    (el) => el.textContent,
+  );
+
+test("Rubrik rows in the panel say which namespace, cluster and gap they are about", async () => {
+  stubApi([
+    rubrik("r1", { resourceNamespace: "team-a" }),
+    rubrik("r2", { resourceNamespace: "team-b", clusterId: "c-remote" }),
+    rubrik("r3", {
+      title: "Rubrik monitoring gap",
+      message: "Rubrik monitoring was down for about 48 hours.",
+      clusterId: "local",
+    }),
+    notification("a", false),
+  ]);
+  setAccessToken("t");
+  render(<NotificationBell />);
+  await settle();
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Notifications" }));
+  });
+  await settle();
+  // Two rows share the fixed title; only the line under it tells them apart.
+  expect(body().getAllByText("Rubrik snapshot failed")).toHaveLength(2);
+  expect(contextLines()).toEqual([
+    "Namespace team-a. A Rubrik snapshot job failed.",
+    "Namespace team-b, cluster c-remote. A Rubrik snapshot job failed.",
+    "Rubrik monitoring was down for about 48 hours.",
+  ]);
+});
+
+test("a Rubrik row's id-only frame re-fetches the count and renders nothing from the frame", async () => {
+  // KTD11: the live frame for a Rubrik row is its id alone, no source or
+  // title. The bell never reads the frame; it asks the server.
+  const server = stubApi([rubrik("r1", { resourceNamespace: "team-a" })], 0);
+  setAccessToken("t");
+  const { container } = render(<NotificationBell />);
+  await settle();
+  expect(body().queryByText("1")).toBeNull();
+  server.unread = 1;
+  const before = server.unreadFetches;
+  await act(async () => pushNotificationEvent());
+  await settle();
+  expect(server.unreadFetches).toBe(before + 1);
+  expect(body().getByText("1")).toBeTruthy();
+  expect(container.textContent).not.toContain("n1");
+});

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  NotifContext,
   SeverityDot,
   SourceBadge,
 } from "@/components/ui/NotifCenterBadges.tsx";
@@ -321,6 +322,9 @@ export default function NotificationBell() {
                     >
                       {n.title}
                     </div>
+                    {/* Rubrik titles are fixed (R26): this line says which
+                        namespace, cluster or gap the row is about. */}
+                    <NotifContext n={n} />
                   </div>
                 </button>
               ))}
