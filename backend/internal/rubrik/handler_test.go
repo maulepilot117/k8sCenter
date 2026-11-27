@@ -1161,11 +1161,31 @@ func TestStatusSuggestsHelmTenantURLOnlyWhileNothingIsSaved(t *testing.T) {
 		t.Errorf("the suggestion is reported as a saved tenantUrl: %+v", st.Connection)
 	}
 
-	// A non-admin never sees it.
+	// A non-admin never sees it: the answer succeeds, with no connection.
 	rec = fx.do(t, owner, "local", http.MethodGet, "/rubrik/status", nil)
+	wantStatus(t, rec, http.StatusOK)
 	if strings.Contains(rec.Body.String(), "helm.my.rubrik") || strings.Contains(rec.Body.String(), "suggestedTenantUrl") {
 		t.Errorf("non-admin status carries the Helm URL: %s", rec.Body.String())
 	}
+	if got := responseData[StatusView](t, rec); got.Connection != nil {
+		t.Errorf("non-admin status has a connection: %+v", got.Connection)
+	}
+
+	// A connection that cannot be read is not "nothing saved": one may
+	// exist, and saving Helm's URL over it could move the tenant and clear
+	// every mapping. So it is not offered.
+	fx.st.mu.Lock()
+	fx.st.getErr = errors.New("pool closed")
+	fx.st.mu.Unlock()
+	rec = fx.do(t, admin, "local", http.MethodGet, "/rubrik/status", nil)
+	wantStatus(t, rec, http.StatusOK)
+	st = responseData[StatusView](t, rec)
+	if st.Connection == nil || st.Connection.Health != HealthUnavailable || st.Connection.SuggestedTenantURL != "" {
+		t.Errorf("unreadable connection = %+v, want unavailable with no suggestion", st.Connection)
+	}
+	fx.st.mu.Lock()
+	fx.st.getErr = nil
+	fx.st.mu.Unlock()
 
 	// Nothing is written: the store still has no connection.
 	if _, _, err := fx.st.GetConnection(context.Background(), testConn); !errors.Is(err, store.ErrRubrikConnectionNotFound) {
