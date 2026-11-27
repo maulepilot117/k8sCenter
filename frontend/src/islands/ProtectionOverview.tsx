@@ -315,6 +315,12 @@ export default function ProtectionOverview() {
             The namespace list was cut short, so some namespaces may be missing.
           </Alert>
         )}
+        {base.velero.kind === "denied" && (
+          <Alert variant="info">
+            You may not list Velero backups on this cluster, so the overview
+            cannot show any.
+          </Alert>
+        )}
         {fresh?.stale && (
           <div role="alert">
             <Alert variant="warning">
