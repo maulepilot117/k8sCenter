@@ -17,6 +17,11 @@ type Metadata struct {
 	// at a cap, so Total counts only what was read and items past the cap
 	// cannot be fetched with Continue. Omitted (false) for a complete list.
 	Truncated bool `json:"truncated,omitempty"`
+	// AccessDenied reports that the list is empty because the user may not
+	// list the resource, not because there is none. Data is still the empty
+	// list, so a client that ignores this field sees what it always did.
+	// Omitted (false) when the list was read.
+	AccessDenied bool `json:"accessDenied,omitempty"`
 }
 
 // APIError is the standard error response.

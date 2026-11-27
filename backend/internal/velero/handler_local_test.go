@@ -1,6 +1,7 @@
 package velero
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -190,5 +191,61 @@ func TestLocal_FailedAccessCheckStaysADenial(t *testing.T) {
 	}
 	if rr := do(t, localCluster, http.MethodDelete, hs.h.HandleDeleteBackup, backupParams, ""); rr.Code != http.StatusForbidden {
 		t.Errorf("delete: status %d, want 403", rr.Code)
+	}
+}
+
+// A list the user may not read answers the empty list it always did, plus
+// metadata.accessDenied, so a page can tell "you may not see backups" from
+// "there are none". A permitted empty list carries no such flag.
+func TestLocal_DeniedListsSayAccessDenied(t *testing.T) {
+	lists := []struct {
+		resource string
+		handler  func(*Handler) http.HandlerFunc
+	}{
+		{"backups", func(h *Handler) http.HandlerFunc { return h.HandleListBackups }},
+		{"restores", func(h *Handler) http.HandlerFunc { return h.HandleListRestores }},
+		{"schedules", func(h *Handler) http.HandlerFunc { return h.HandleListSchedules }},
+	}
+	type wire struct {
+		Data     json.RawMessage `json:"data"`
+		Metadata *struct {
+			AccessDenied bool `json:"accessDenied"`
+		} `json:"metadata"`
+	}
+	read := func(t *testing.T, hs *harness, h http.HandlerFunc) wire {
+		t.Helper()
+		rr := do(t, localCluster, http.MethodGet, h, nil, "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body.String())
+		}
+		var got wire
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode %q: %v", rr.Body.String(), err)
+		}
+		return got
+	}
+	for _, l := range lists {
+		t.Run(l.resource, func(t *testing.T) {
+			denied := newLocalHarness(t)
+			denied.h.AccessChecker = resources.NewPredicateAccessChecker(func(_, _, resource, _ string) bool {
+				return resource != l.resource
+			})
+			got := read(t, denied, l.handler(denied.h))
+			if string(got.Data) != "[]" {
+				t.Errorf("denied data = %s, want []", got.Data)
+			}
+			if got.Metadata == nil || !got.Metadata.AccessDenied {
+				t.Errorf("denied metadata = %+v, want accessDenied", got.Metadata)
+			}
+
+			allowed := newLocalHarness(t)
+			allowed.h.cachedData = &cachedVeleroData{locations: &LocationsResponse{}, fetchedAt: time.Now()}
+			// Data is [] or null here (the list handlers clone an empty
+			// cache to nil); clients treat both as empty.
+			got = read(t, allowed, l.handler(allowed.h))
+			if got.Metadata != nil && got.Metadata.AccessDenied {
+				t.Error("a permitted empty list says accessDenied")
+			}
+		})
 	}
 }

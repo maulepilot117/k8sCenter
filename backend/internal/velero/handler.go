@@ -31,6 +31,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
+	"github.com/kubecenter/kubecenter/pkg/api"
 )
 
 // dnsLabelRegex validates DNS label names (RFC 1123).
@@ -186,6 +187,16 @@ func (h *Handler) canAccess(r *http.Request, user *auth.User, verb, resource, na
 	)
 }
 
+// writeDeniedList answers a list the user may not read: the empty list it
+// always was (clients reading data see no change), with
+// metadata.accessDenied so a page can say so instead of "no backups".
+func writeDeniedList(w http.ResponseWriter, empty any) {
+	httputil.WriteJSON(w, http.StatusOK, api.Response{
+		Data:     empty,
+		Metadata: &api.Metadata{AccessDenied: true},
+	})
+}
+
 // allowed is checkAccess for an endpoint that answers a denial with 403. It
 // reports whether the request may proceed.
 func (h *Handler) allowed(w http.ResponseWriter, r *http.Request, user *auth.User, verb, resource, namespace string) bool {
@@ -242,7 +253,7 @@ func (h *Handler) HandleListBackups(w http.ResponseWriter, r *http.Request) {
 	case accessFailed:
 		return
 	case accessDenied:
-		httputil.WriteData(w, []Backup{})
+		writeDeniedList(w, []Backup{})
 		return
 	}
 
@@ -505,7 +516,7 @@ func (h *Handler) HandleListRestores(w http.ResponseWriter, r *http.Request) {
 	case accessFailed:
 		return
 	case accessDenied:
-		httputil.WriteData(w, []Restore{})
+		writeDeniedList(w, []Restore{})
 		return
 	}
 
@@ -695,7 +706,7 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 	case accessFailed:
 		return
 	case accessDenied:
-		httputil.WriteData(w, []Schedule{})
+		writeDeniedList(w, []Schedule{})
 		return
 	}
 
