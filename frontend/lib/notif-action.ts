@@ -63,6 +63,13 @@ export function notifActionUrl(
         )}/${encodeURIComponent(n.resourceName)}`;
       }
       return "/external-secrets/dashboard";
+    case "rubrik":
+      // Every Rubrik event (a failed snapshot, SLA compliance, the RSC
+      // connection, a monitoring gap) opens the Rubrik page, which lists the
+      // namespaces the reader may see, and says when RSC could not be read.
+      // The row itself names the namespace (NotifContext), since the page
+      // cannot yet be opened on one.
+      return "/backup/rubrik";
     default: {
       const _exhaustive: never = n.source;
       return null;

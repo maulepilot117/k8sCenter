@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { fetchCurrentUser, logout } from "@/lib/auth.ts";
+import type { AppNotification } from "@/lib/notif-center-types.ts";
 import { disconnectWS } from "@/src/lib/ws.ts";
 import {
   act,
@@ -368,4 +369,162 @@ test("a live notifications event refetches after the debounce with the current f
   expect(lastList().searchParams.get("severity")).toBe("warning");
   expect(lastList().searchParams.get("offset")).toBe("25");
   expect(titles(root)[0]).toBe("Notification 25");
+});
+
+// ---------------------------------------------------------------------------
+// Rubrik (U16)
+
+const asNote = (o: Record<string, unknown>) => o as unknown as AppNotification;
+
+const GAP_MESSAGE =
+  "Rubrik monitoring was down from 2026-11-01T00:00:00Z until 2026-11-03T00:00:00Z (about 48 hours); failures before 2026-11-02T00:00:00Z were not raised individually.";
+
+/** The Rubrik rows the stub returns; replaced by a test to change the feed. */
+let rubrikRows: Array<Record<string, unknown>> = [];
+
+const rubrikDefaults = () => [
+  note(1, {
+    source: "rubrik",
+    severity: "warning",
+    title: "Rubrik snapshot failed",
+    message: "A Rubrik snapshot job failed.",
+    resourceKind: "RubrikProtection",
+    resourceNamespace: "team-a",
+    resourceUid: "ev-1",
+  }),
+  note(2, {
+    source: "rubrik",
+    severity: "warning",
+    title: "Rubrik snapshot failed",
+    message: "A Rubrik snapshot job failed.",
+    resourceNamespace: "team-b",
+    clusterId: "c-remote",
+    resourceUid: "ev-2",
+  }),
+  note(3, {
+    source: "rubrik",
+    severity: "warning",
+    title: "Rubrik monitoring gap",
+    message: GAP_MESSAGE,
+    clusterId: "local",
+  }),
+  note(4, { title: "Other", resourceNamespace: "team-a", message: "alert m" }),
+];
+
+/** A feed that returns rubrikRows for every list. */
+function stubRubrikFeed() {
+  rubrikRows = rubrikDefaults();
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const url = new URL(String(input), "http://localhost/");
+    calls.push({
+      method: init?.method ?? "GET",
+      url: `${url.pathname}${url.search}`,
+      keepalive: init?.keepalive,
+    });
+    if (url.pathname === "/api/v1/notifications") {
+      return new Response(
+        JSON.stringify({
+          data: rubrikRows,
+          metadata: { total: rubrikRows.length },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return json({});
+  }) as unknown as typeof globalThis.fetch;
+}
+
+/** Each row's title-cell context line, or null when it has none. */
+const contexts = (root: HTMLElement) =>
+  [...root.querySelectorAll("tbody tr")].map(
+    (r) =>
+      r.querySelectorAll("td")[2].querySelector('[data-testid="notif-context"]')
+        ?.textContent ?? null,
+  );
+
+test("a Rubrik row shows the Rubrik badge and links to the Rubrik page", async () => {
+  stubRubrikFeed();
+  const root = await mount();
+  const row = root.querySelectorAll("tbody tr")[0] as HTMLElement;
+  const cells = row.querySelectorAll("td");
+  expect(cells[1].textContent).toBe("Rubrik");
+  // The title is drawn as a link: the row has a destination for any reader.
+  expect(cells[2].querySelector("span")?.textContent).toBe(
+    "Rubrik snapshot failed",
+  );
+  expect(row.style.cursor).toBe("pointer");
+  const { notifActionUrl } = await import("@/lib/notif-action.ts");
+  for (const isAdmin of [false, true]) {
+    for (const n of rubrikDefaults()) {
+      if (n.source !== "rubrik") continue;
+      expect(notifActionUrl(asNote(n), { isAdmin })).toBe("/backup/rubrik");
+    }
+  }
+});
+
+test("Rubrik rows with the same fixed title say which namespace, cluster and gap they are about", async () => {
+  stubRubrikFeed();
+  const root = await mount();
+  expect(contexts(root)).toEqual([
+    "Namespace team-a. A Rubrik snapshot job failed.",
+    "Namespace team-b, cluster c-remote. A Rubrik snapshot job failed.",
+    // R24: the gap's length and cutoff are in the message; the local
+    // cluster is not named.
+    GAP_MESSAGE,
+    // Other sources are unchanged.
+    null,
+  ]);
+});
+
+test("the Source filter offers Rubrik and sends source=rubrik", async () => {
+  stubRubrikFeed();
+  await mount();
+  const options = [...document.querySelectorAll("label")]
+    .find((l) => l.firstChild?.textContent === "Source")
+    ?.querySelectorAll("option");
+  expect([...(options ?? [])].map((o) => o.textContent)).toContain("Rubrik");
+  await choose("Source", "rubrik");
+  expect(lastList().searchParams.get("source")).toBe("rubrik");
+});
+
+test("an id-only Rubrik frame refetches, and the new row comes from the feed", async () => {
+  stubRubrikFeed();
+  const root = await mount();
+  const before = lists().length;
+  // The server's answer changes; the frame itself carries none of it.
+  rubrikRows = [
+    note(9, {
+      source: "rubrik",
+      severity: "critical",
+      title: "Rubrik connection failing",
+      message: "k8sCenter could not read from Rubrik Security Cloud.",
+    }),
+  ];
+  const sock = FakeSocket.instances.at(-1) as FakeSocket;
+  // KTD11: a Rubrik row's live frame is its id alone, no source or title.
+  await act(async () => {
+    sock.onmessage?.({
+      data: JSON.stringify({
+        type: "event",
+        id: "notif-feed",
+        eventType: "ADDED",
+        object: { id: "n-9" },
+      }),
+    });
+  });
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 2100));
+  });
+  expect(lists()).toHaveLength(before + 1);
+  const row = root.querySelectorAll("tbody tr");
+  expect(row).toHaveLength(1);
+  expect(
+    row[0].querySelectorAll("td")[2].querySelector("span")?.textContent,
+  ).toBe("Rubrik connection failing");
+  expect(contexts(root)).toEqual([
+    "k8sCenter could not read from Rubrik Security Cloud.",
+  ]);
 });
