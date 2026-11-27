@@ -734,6 +734,14 @@ func TestMigration000032_LocalMappingKey(t *testing.T) {
 	}
 	insertRubrikPollerRows(ctx, t, pool, RubrikLocalClusterID)
 
+	// The local row named by its configured id is refused, so the local
+	// cluster cannot get a second mapping beside "local".
+	byConfiguredID := local
+	byConfiguredID.ClusterID, byConfiguredID.RSCClusterID = "home", "rsc-home"
+	if _, err := s.SetMapping(ctx, byConfiguredID); !errors.Is(err, ErrRubrikClusterUnknown) {
+		t.Errorf("local row by its configured id = %v; want ErrRubrikClusterUnknown", err)
+	}
+
 	// A remote cluster that is not registered is still refused.
 	unknown := local
 	unknown.ClusterID, unknown.RSCClusterID = "not-registered", "rsc-unknown"
@@ -796,5 +804,53 @@ func TestMigration000032_UpIsIdempotent(t *testing.T) {
 	}
 	if _, err := pool.Exec(t.Context(), string(up)); err != nil {
 		t.Errorf("re-running 000032 up on a database at 32: %v", err)
+	}
+}
+
+// Local mapping saves have no clusters row to lock on, so they serialize on
+// a transaction advisory lock: a save waits while another transaction holds
+// it. Without the lock two first saves could interleave and keep one
+// save's RSC id with the other's name.
+func TestRubrikStore_LocalMappingSavesSerialize(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+	if err := m.Migrate(32); err != nil {
+		t.Fatalf("migrating to 000032: %v", err)
+	}
+	s := NewRubrikStore(pool, rubrikTestKey)
+	connID, conn := newRubrikTestConnection(t, s, "https://tenant.my.rubrik.com")
+
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('rubrik_local_mapping'))`); err != nil {
+		t.Fatalf("taking the lock: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.SetMapping(ctx, RubrikMappingWrite{
+			ClusterID: RubrikLocalClusterID, ConnectionID: connID, ConnectionRevision: conn.Revision,
+			RSCClusterID: "rsc-local", RSCClusterName: "prod-east", ClusterGeneration: "local", UpdatedBy: "admin",
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("local save finished while the lock was held (err %v); want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("local save after the lock was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("local save still waiting 10s after the lock was released")
 	}
 }

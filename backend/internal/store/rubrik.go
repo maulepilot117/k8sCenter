@@ -404,7 +404,9 @@ func scanRubrikMapping(row pgx.Row) (RubrikClusterMapping, error) {
 //
 // Errors: ErrRubrikMappingConflict when the RSC cluster is mapped to another
 // k8sCenter cluster, ErrRubrikClusterUnknown when the cluster is not
-// registered, ErrRubrikConnectionNotFound when the connection does not
+// registered or is the local cluster's row named by its configured id (the
+// local cluster maps as RubrikLocalClusterID), ErrRubrikConnectionNotFound
+// when the connection does not
 // exist, ErrRubrikConnectionChanged when the connection was saved after the
 // caller read ConnectionRevision.
 func (s *RubrikStore) SetMapping(ctx context.Context, w RubrikMappingWrite) (RubrikClusterMapping, error) {
@@ -469,7 +471,9 @@ const RubrikLocalClusterID = "local"
 // remote cluster is locked on its clusters row, which also refuses one that
 // is not registered or is being deleted. The local cluster takes a
 // transaction advisory lock: its mapping key is not its clusters row's id
-// when KUBECENTER_CLUSTERID is set, and that row is never deleted.
+// when KUBECENTER_CLUSTERID is set, and that row is never deleted. The
+// local row is refused on the remote path, so its configured id cannot
+// give the local cluster a second mapping beside "local".
 func lockRubrikMappingCluster(ctx context.Context, tx pgx.Tx, clusterID string) error {
 	if clusterID == RubrikLocalClusterID {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('rubrik_local_mapping'))`); err != nil {
@@ -478,7 +482,7 @@ func lockRubrikMappingCluster(ctx context.Context, tx pgx.Tx, clusterID string) 
 		return nil
 	}
 	var one int
-	err := tx.QueryRow(ctx, `SELECT 1 FROM clusters WHERE id = $1 FOR NO KEY UPDATE`, clusterID).Scan(&one)
+	err := tx.QueryRow(ctx, `SELECT 1 FROM clusters WHERE id = $1 AND is_local IS NOT TRUE FOR NO KEY UPDATE`, clusterID).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrRubrikClusterUnknown
 	}
