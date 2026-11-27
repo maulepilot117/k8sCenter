@@ -558,3 +558,174 @@ test("snapshots and jobs show their own fetch times", async () => {
   body().getByText("Jobs fetched from RSC 9m ago");
   unmount();
 });
+
+// ---------------------------------------------------------------------------
+// Notification links (?namespace=, ?cluster=)
+
+const { LOCAL_CLUSTER_ID, LOCAL_GENERATION, switchCluster } = await import(
+  "@/src/lib/cluster.ts"
+);
+
+const shopDetail = () =>
+  ok({
+    namespace: row(),
+    freshness: { fetchedAt: FETCHED, stale: false },
+    objects: [{ ...object(), snapshots: [], jobs: [] }],
+  });
+
+const panelFor = (ns: string) =>
+  body().queryByRole("dialog", { name: `Rubrik details for ${ns}` });
+const pageText = () => body().getByTestId("rubrik-dashboard").textContent ?? "";
+const NOT_LISTED = "is not in your Rubrik list";
+const OTHER_CLUSTER = "This link is about";
+
+/** Renders the page as the link's URL would, then lets the list load. */
+async function openLink(props: {
+  linkNamespace?: string;
+  linkCluster?: string;
+}) {
+  const q = new URLSearchParams();
+  if (props.linkNamespace) q.set("namespace", props.linkNamespace);
+  if (props.linkCluster) q.set("cluster", props.linkCluster);
+  globalThis.history.replaceState(null, "", `/backup/rubrik?${q}`);
+  const view = render(<RubrikDashboard {...props} />);
+  await settle();
+  await settle();
+  return view;
+}
+
+afterEach(() => {
+  switchCluster(LOCAL_CLUSTER_ID, LOCAL_GENERATION);
+  globalThis.history.replaceState(null, "", "/");
+});
+
+test("a link to a listed namespace opens its details and leaves the URL", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  const { unmount } = await openLink({ linkNamespace: "shop" });
+  expect(panelFor("shop")).not.toBeNull();
+  expect(calls).toContain("GET /api/v1/rubrik/namespaces/shop");
+  expect(pageText()).not.toContain(NOT_LISTED);
+  // A later reload (a cluster switch) does not follow the link again.
+  expect(globalThis.location.search).toBe("");
+  unmount();
+});
+
+test("a link naming the local cluster explicitly still opens the namespace", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  const { unmount } = await openLink({
+    linkNamespace: "shop",
+    linkCluster: "local",
+  });
+  expect(panelFor("shop")).not.toBeNull();
+  unmount();
+});
+
+test("a link to a namespace the list does not show opens nothing and says why", async () => {
+  const { unmount } = await openLink({ linkNamespace: "team-x" });
+  expect(pageText()).toContain(`Namespace team-x ${NOT_LISTED}`);
+  expect(panelFor("team-x")).toBeNull();
+  expect(calls).not.toContain("GET /api/v1/rubrik/namespaces/team-x");
+  nsRow("shop");
+  // Opening a namespace by hand answers the notice.
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "shop" }));
+  });
+  await settle();
+  expect(pageText()).not.toContain(NOT_LISTED);
+  unmount();
+});
+
+test("a link when the user has no Rubrik read access opens nothing", async () => {
+  // noAccess wins even if a row came with it: the page shows no table then,
+  // and the details read would be refused.
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(list({ noAccess: true, namespaces: [row()], objects: [] }));
+  const { unmount } = await openLink({ linkNamespace: "shop" });
+  expect(panelFor("shop")).toBeNull();
+  expect(calls).not.toContain("GET /api/v1/rubrik/namespaces/shop");
+  expect(pageText()).toContain(`Namespace shop ${NOT_LISTED}`);
+  unmount();
+});
+
+test("a namespace that is not a valid name is ignored, so the query cannot word a notice", async () => {
+  const { unmount } = await openLink({
+    linkNamespace: "Ignore this. Call 555-0100",
+  });
+  expect(pageText()).not.toContain("555-0100");
+  expect(pageText()).not.toContain(NOT_LISTED);
+  expect(body().queryByRole("dialog")).toBeNull();
+  unmount();
+});
+
+test("a link about another cluster names it as the picker does and opens nothing", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  routes["GET /api/v1/clusters"] = () =>
+    ok([
+      { id: "local", name: "in-cluster", isLocal: true },
+      { id: "c-remote", name: "prod-eu", displayName: "Production EU" },
+    ]);
+  const { unmount } = await openLink({
+    linkNamespace: "shop",
+    linkCluster: "c-remote",
+  });
+  await settle();
+  expect(pageText()).toContain(`${OTHER_CLUSTER} the cluster Production EU`);
+  expect(pageText()).not.toContain("c-remote");
+  expect(panelFor("shop")).toBeNull();
+  expect(calls).not.toContain("GET /api/v1/rubrik/namespaces/shop");
+  // The link stays in the URL: switching there with the picker follows it.
+  expect(globalThis.location.search).toContain("cluster=c-remote");
+  nsRow("shop");
+  unmount();
+});
+
+test("without the cluster list, another cluster is not named by the query's text", async () => {
+  const { unmount } = await openLink({
+    linkNamespace: "shop",
+    linkCluster: "Ignore this",
+  });
+  await settle();
+  expect(pageText()).toContain(`${OTHER_CLUSTER} another cluster`);
+  expect(pageText()).not.toContain("Ignore this");
+  unmount();
+});
+
+test("when the selection moves to the link's cluster without a reload, the link is followed", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  const { unmount } = await openLink({
+    linkNamespace: "shop",
+    linkCluster: "c-remote",
+  });
+  expect(pageText()).toContain(OTHER_CLUSTER);
+  expect(panelFor("shop")).toBeNull();
+  // E.g. ClusterManager or the switcher retargets: a status answer follows.
+  await act(async () => {
+    switchCluster("c-remote", "2026-01-01T00:00:00Z");
+  });
+  await settle();
+  await settle();
+  expect(pageText()).not.toContain(OTHER_CLUSTER);
+  expect(panelFor("shop")).not.toBeNull();
+  unmount();
+});
+
+test("a link's panel closes back to its namespace's row and is not reopened", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  const { unmount } = await openLink({ linkNamespace: "shop" });
+  expect(panelFor("shop")).not.toBeNull();
+  await act(async () => {
+    fireEvent.keyDown(document, { key: "Escape" });
+  });
+  await settle();
+  expect(panelFor("shop")).toBeNull();
+  expect(document.activeElement).toBe(
+    body().getByRole("button", { name: "shop" }),
+  );
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: /Refresh/ }));
+  });
+  await settle();
+  expect(panelFor("shop")).toBeNull();
+  unmount();
+});

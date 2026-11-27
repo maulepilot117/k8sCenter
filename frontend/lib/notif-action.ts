@@ -1,3 +1,4 @@
+import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
 import type { AppNotification } from "./notif-center-types.ts";
 
 interface NotifActionOpts {
@@ -63,13 +64,20 @@ export function notifActionUrl(
         )}/${encodeURIComponent(n.resourceName)}`;
       }
       return "/external-secrets/dashboard";
-    case "rubrik":
+    case "rubrik": {
       // Every Rubrik event (a failed snapshot, SLA compliance, the RSC
-      // connection, a monitoring gap) opens the Rubrik page, which lists the
-      // namespaces the reader may see, and says when RSC could not be read.
-      // The row itself names the namespace (NotifContext), since the page
-      // cannot yet be opened on one.
-      return "/backup/rubrik";
+      // connection, a monitoring gap) opens the Rubrik page. A row about a
+      // namespace opens that namespace's details; a row about a remote
+      // cluster names it, so the page can say to switch rather than show
+      // the selected cluster's data as if it were the row's.
+      const params = new URLSearchParams();
+      if (n.resourceNamespace) params.set("namespace", n.resourceNamespace);
+      if (n.clusterId && n.clusterId !== LOCAL_CLUSTER_ID) {
+        params.set("cluster", n.clusterId);
+      }
+      const query = params.toString();
+      return query ? `/backup/rubrik?${query}` : "/backup/rubrik";
+    }
     default: {
       const _exhaustive: never = n.source;
       return null;
