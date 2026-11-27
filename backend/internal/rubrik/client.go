@@ -174,6 +174,9 @@ type Client struct {
 	// bodyLimit caps a GraphQL answer (graphqlBodyLimit unless a test
 	// lowers it).
 	bodyLimit int64
+	// health records each Query's outcome when the source is a
+	// ContactRecorder; nil otherwise.
+	health *healthTracker
 
 	exchanges singleflight.Group
 
@@ -211,13 +214,17 @@ func newClient(source ConnectionSource, logger *slog.Logger, base http.RoundTrip
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &Client{
+	c := &Client{
 		source:    source,
 		logger:    logger.With("component", "rubrik-client"),
 		http:      newHTTPClient(base),
 		validate:  validate,
 		bodyLimit: graphqlBodyLimit,
 	}
+	if rec, ok := source.(ContactRecorder); ok {
+		c.health = newHealthTracker(rec, c.logger, c.clock)
+	}
+	return c
 }
 
 // newHTTPClient never follows a redirect: a 3xx is returned as the answer,
@@ -287,37 +294,47 @@ func (c *Client) Flush() {
 
 // Query sends req to the tenant and decodes the answer's data into out
 // (which may be nil). A 401 is answered by one re-authentication and one
-// retry; a second 401 returns ErrAuthFailed.
+// retry; a second 401 returns ErrAuthFailed. The outcome is recorded as the
+// connection's health when the source is a ContactRecorder.
 func (c *Client) Query(ctx context.Context, req Request, out any) error {
+	rev, err := c.query(ctx, req, out)
+	c.health.observe(ctx, rev, err)
+	return err
+}
+
+// query is Query without the health record. It returns the connection
+// revision the contact was made under: the token's once one was issued,
+// else the revision read first (0 when that read failed).
+func (c *Client) query(ctx context.Context, req Request, out any) (int64, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+		return 0, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
 	rev, err := c.source.ConnectionRevision(ctx)
 	if err != nil {
-		return sourceError(err)
+		return 0, sourceError(err)
 	}
 	tok, err := c.currentToken(ctx, rev)
 	if err != nil {
-		return err
+		return rev, err
 	}
 	err = c.post(ctx, tok, body, out)
 	if !errors.Is(err, errUnauthorized) {
-		return err
+		return tok.revision, err
 	}
 
 	c.logger.Info("rubrik token refused; authenticating again")
 	c.dropToken(tok)
 	tok, err = c.currentToken(ctx, rev)
 	if err != nil {
-		return err
+		return rev, err
 	}
 	err = c.post(ctx, tok, body, out)
 	if errors.Is(err, errUnauthorized) {
 		c.dropToken(tok)
-		return fmt.Errorf("%w: token refused after re-authentication", ErrAuthFailed)
+		return tok.revision, fmt.Errorf("%w: token refused after re-authentication", ErrAuthFailed)
 	}
-	return err
+	return tok.revision, err
 }
 
 // errUnauthorized marks a 401 answer to a GraphQL request. It never leaves

@@ -186,6 +186,63 @@ func (s *RubrikStore) ConnectionRevision(ctx context.Context, id string) (int64,
 	return rev, nil
 }
 
+// Contact failure kinds RecordConnectionFailure accepts. They are the
+// classes of the RSC client's errors, never RSC's text, and exactly the
+// values the 000031 CHECK on last_failure_kind allows besides the empty
+// string.
+const (
+	RubrikFailureAuth        = "auth_failed"
+	RubrikFailureUnreachable = "unreachable"
+	RubrikFailureRateLimited = "rate_limited"
+	RubrikFailureGraphQL     = "graphql_error"
+	RubrikFailureUnreadable  = "unreadable"
+)
+
+// ErrRubrikFailureKind is returned by RecordConnectionFailure for a kind
+// that is not one of the RubrikFailure constants. Nothing is written.
+var ErrRubrikFailureKind = errors.New("rubrik contact failure kind not recognized")
+
+func validRubrikFailureKind(kind string) bool {
+	switch kind {
+	case RubrikFailureAuth, RubrikFailureUnreachable, RubrikFailureRateLimited,
+		RubrikFailureGraphQL, RubrikFailureUnreadable:
+		return true
+	}
+	return false
+}
+
+// RecordConnectionSuccess stamps the connection's last successful RSC
+// contact with the database's clock. It writes only while the connection is
+// still at revision, the revision the contact was made under, and reports
+// whether it wrote: a save in between advances the revision and clears the
+// recorded health, so an outcome of the previous settings never lands on
+// the new ones. A missing connection is not an error; nothing is written.
+func (s *RubrikStore) RecordConnectionSuccess(ctx context.Context, id string, revision int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE rubrik_connection SET last_success_at = now()
+		WHERE id = $1 AND revision = $2`, id, revision)
+	if err != nil {
+		return false, fmt.Errorf("recording rubrik contact success: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// RecordConnectionFailure stamps the connection's last failed RSC contact
+// and its kind, one of the RubrikFailure constants, with the database's
+// clock. The last success is kept: health is whichever of the two is later.
+// Like RecordConnectionSuccess it writes only at revision and reports
+// whether it wrote.
+func (s *RubrikStore) RecordConnectionFailure(ctx context.Context, id string, revision int64, kind string) (bool, error) {
+	if !validRubrikFailureKind(kind) {
+		return false, ErrRubrikFailureKind
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE rubrik_connection SET last_failure_at = now(), last_failure_kind = $3
+		WHERE id = $1 AND revision = $2`, id, revision, kind)
+	if err != nil {
+		return false, fmt.Errorf("recording rubrik contact failure: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // UpsertConnection creates or replaces the connection and returns it.
 //
 // A kept secret (ClientSecret nil) survives only when a connection exists,
