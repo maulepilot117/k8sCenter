@@ -1,7 +1,16 @@
 ---
 import RubrikDashboard from "../../islands/RubrikDashboard.tsx";
 import ChromeLayout from "../../layouts/ChromeLayout.astro";
+
+// A notification link names the namespace (and a remote cluster) it is
+// about; the island opens that namespace once its list shows it.
+const namespace = Astro.url.searchParams.get("namespace") ?? undefined;
+const cluster = Astro.url.searchParams.get("cluster") ?? undefined;
 ---
 <ChromeLayout>
-  <RubrikDashboard client:load />
+  <RubrikDashboard
+    client:load
+    linkNamespace={namespace}
+    linkCluster={cluster}
+  />
 </ChromeLayout>

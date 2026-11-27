@@ -42,6 +42,7 @@ import type {
   RubrikSnapshot as Snapshot,
 } from "@/lib/rubrik-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import {
   ensureRubrikStatus,
   reloadRubrikStatus,
@@ -163,7 +164,20 @@ type ListState =
     }
   | { kind: "failed"; message: string; setup?: string };
 
-export default function RubrikDashboard() {
+interface RubrikDashboardProps {
+  /**
+   * The page's `?namespace=`, set by a notification link: its details open
+   * once the first list shows it.
+   */
+  linkNamespace?: string;
+  /** The page's `?cluster=`: the cluster the link is about (absent: local). */
+  linkCluster?: string;
+}
+
+export default function RubrikDashboard({
+  linkNamespace,
+  linkCluster,
+}: RubrikDashboardProps = {}) {
   const isClient = useIsClient();
   const status = useSignalValue(rubrikStatus);
   const [list, setList] = useState<ListState>({ kind: "idle" });
@@ -171,10 +185,26 @@ export default function RubrikDashboard() {
   const gen = useRef(0);
   /** The namespace button that opened the panel, focused again on close. */
   const opener = useRef<HTMLElement | null>(null);
+  /** The link's namespace, until a loaded list answers it. */
+  const pendingLink = useRef(linkNamespace || null);
+  /** Why a link could not be followed. */
+  const [linkNotice, setLinkNotice] = useState<string | null>(null);
 
   useEffect(() => {
     ensureRubrikStatus();
   }, []);
+
+  // A link about another cluster is not followed here: the namespace it names
+  // belongs to that cluster. Switching needs the picker (a switch reloads).
+  useEffect(() => {
+    if (!linkNamespace && !linkCluster) return;
+    const target = linkCluster || LOCAL_CLUSTER_ID;
+    if (target === selectedCluster.value) return;
+    pendingLink.current = null;
+    setLinkNotice(
+      `This link is about cluster ${target}, not the cluster selected now. Choose that cluster in the cluster picker to see its Rubrik data.`,
+    );
+  }, [linkNamespace, linkCluster]);
 
   const mapped =
     status.kind === "enabled" && status.status.cluster.state === "mapped";
@@ -232,6 +262,25 @@ export default function RubrikDashboard() {
     setList({ kind: "idle" });
     if (mapped) void load();
   }, [status, mapped, load]);
+
+  // The first loaded list answers a pending link: open the namespace when
+  // the list shows it, else say why not. The server decides visibility, so a
+  // namespace missing from the list is never opened.
+  useEffect(() => {
+    const ns = pendingLink.current;
+    if (!ns || list.kind !== "loaded") return;
+    pendingLink.current = null;
+    if (
+      !list.data.noAccess &&
+      list.data.namespaces.some((r) => r.namespace === ns)
+    ) {
+      setSelected(ns);
+    } else {
+      setLinkNotice(
+        `Namespace ${ns} is not in your Rubrik list for this cluster. It may no longer be mapped to Rubrik, or you may not have Rubrik read access there.`,
+      );
+    }
+  }, [list]);
 
   let body: ReactNode;
   if (!isClient || status.kind === "loading") {
@@ -329,6 +378,7 @@ export default function RubrikDashboard() {
           Preview
         </span>
       </div>
+      {linkNotice && <Alert variant="info">{linkNotice}</Alert>}
       {body}
       {selected && list.kind === "loaded" && (
         <DetailPanel

@@ -457,12 +457,26 @@ test("a Rubrik row shows the Rubrik badge and links to the Rubrik page", async (
   );
   expect(row.style.cursor).toBe("pointer");
   const { notifActionUrl } = await import("@/lib/notif-action.ts");
+  // A row about a namespace opens it; a remote cluster is named so the page
+  // does not show the selected cluster's data as the row's; a local row with
+  // no namespace (a monitoring gap) opens the page itself.
+  const expected = [
+    "/backup/rubrik?namespace=team-a",
+    "/backup/rubrik?namespace=team-b&cluster=c-remote",
+    "/backup/rubrik",
+  ];
   for (const isAdmin of [false, true]) {
-    for (const n of rubrikDefaults()) {
-      if (n.source !== "rubrik") continue;
-      expect(notifActionUrl(asNote(n), { isAdmin })).toBe("/backup/rubrik");
-    }
+    const urls = rubrikDefaults()
+      .filter((n) => n.source === "rubrik")
+      .map((n) => notifActionUrl(asNote(n), { isAdmin }));
+    expect(urls).toEqual(expected);
   }
+  // Namespace names are query-encoded.
+  expect(
+    notifActionUrl(
+      asNote(note(5, { source: "rubrik", resourceNamespace: "a&b" })),
+    ),
+  ).toBe("/backup/rubrik?namespace=a%26b");
 });
 
 test("Rubrik rows with the same fixed title say which namespace, cluster and gap they are about", async () => {

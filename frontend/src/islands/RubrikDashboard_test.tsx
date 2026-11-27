@@ -558,3 +558,97 @@ test("snapshots and jobs show their own fetch times", async () => {
   body().getByText("Jobs fetched from RSC 9m ago");
   unmount();
 });
+
+// ---------------------------------------------------------------------------
+// Notification links (?namespace=, ?cluster=)
+
+const shopDetail = () =>
+  ok({
+    namespace: row(),
+    freshness: { fetchedAt: FETCHED, stale: false },
+    objects: [{ ...object(), snapshots: [], jobs: [] }],
+  });
+
+const panelFor = (ns: string) =>
+  body().queryByRole("dialog", { name: `Rubrik details for ${ns}` });
+
+test("a link to a listed namespace opens its details once the list loads", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  const { unmount } = render(<RubrikDashboard linkNamespace="shop" />);
+  await settle();
+  await settle();
+  expect(panelFor("shop")).not.toBeNull();
+  expect(calls).toContain("GET /api/v1/rubrik/namespaces/shop");
+  expect(body().queryByText(/is not in your Rubrik list/)).toBeNull();
+  unmount();
+});
+
+test("a link naming the local cluster explicitly still opens the namespace", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  const { unmount } = render(
+    <RubrikDashboard linkNamespace="shop" linkCluster="local" />,
+  );
+  await settle();
+  await settle();
+  expect(panelFor("shop")).not.toBeNull();
+  unmount();
+});
+
+test("a link to a namespace the list does not show opens nothing and says why", async () => {
+  const { unmount } = render(<RubrikDashboard linkNamespace="team-x" />);
+  await settle();
+  await settle();
+  body().getByText(/Namespace team-x is not in your Rubrik list/);
+  expect(panelFor("team-x")).toBeNull();
+  expect(calls).not.toContain("GET /api/v1/rubrik/namespaces/team-x");
+  // The list itself still shows.
+  nsRow("shop");
+  unmount();
+});
+
+test("a link when the user has no Rubrik read access opens nothing", async () => {
+  // noAccess wins even if a row came with it: the page shows no table then,
+  // and the details read would be refused.
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(list({ noAccess: true, namespaces: [row()], objects: [] }));
+  const { unmount } = render(<RubrikDashboard linkNamespace="shop" />);
+  await settle();
+  await settle();
+  expect(panelFor("shop")).toBeNull();
+  expect(calls).not.toContain("GET /api/v1/rubrik/namespaces/shop");
+  body().getByText(/Namespace shop is not in your Rubrik list/);
+  unmount();
+});
+
+test("a link about another cluster says to switch and does not open this cluster's namespace", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  const { unmount } = render(
+    <RubrikDashboard linkNamespace="shop" linkCluster="c-remote" />,
+  );
+  await settle();
+  await settle();
+  body().getByText(/This link is about cluster c-remote/);
+  expect(panelFor("shop")).toBeNull();
+  expect(calls).not.toContain("GET /api/v1/rubrik/namespaces/shop");
+  // The selected cluster's list is still shown.
+  nsRow("shop");
+  unmount();
+});
+
+test("the link is followed once: closing the panel does not reopen it", async () => {
+  routes["GET /api/v1/rubrik/namespaces/shop"] = shopDetail;
+  const { unmount } = render(<RubrikDashboard linkNamespace="shop" />);
+  await settle();
+  await settle();
+  expect(panelFor("shop")).not.toBeNull();
+  await act(async () => {
+    fireEvent.keyDown(document, { key: "Escape" });
+  });
+  await settle();
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: /Refresh/ }));
+  });
+  await settle();
+  expect(panelFor("shop")).toBeNull();
+  unmount();
+});
