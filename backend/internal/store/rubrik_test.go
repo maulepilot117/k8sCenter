@@ -854,3 +854,32 @@ func TestRubrikStore_LocalMappingSavesSerialize(t *testing.T) {
 		t.Fatal("local save still waiting 10s after the lock was released")
 	}
 }
+
+// 000031's down file run by hand on a database at 32 (skipping 000032's
+// down file) drops 000032's trigger too. Left behind, the trigger would
+// name the dropped mappings table and fail every cluster delete.
+func TestMigration000031_DownByHandAt32KeepsClusterDeletesWorking(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+	if err := m.Migrate(32); err != nil {
+		t.Fatalf("migrating to 000032: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM nc_notifications WHERE source = 'rubrik'`); err != nil {
+		t.Fatal(err)
+	}
+	down, err := os.ReadFile("migrations/000031_create_rubrik.down.sql")
+	if err != nil {
+		t.Fatalf("reading the down file: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(down)); err != nil {
+		t.Fatalf("running 000031 down by hand at 32: %v", err)
+	}
+	if tableExists(t, pool, "rubrik_cluster_mappings") {
+		t.Fatal("rubrik_cluster_mappings survived the down file")
+	}
+	clusterID := testOwnerID(t)
+	insertMetricsTestCluster(ctx, t, pool, clusterID)
+	if _, err := pool.Exec(ctx, `DELETE FROM clusters WHERE id = $1`, clusterID); err != nil {
+		t.Errorf("cluster delete after the by-hand rollback: %v", err)
+	}
+}
