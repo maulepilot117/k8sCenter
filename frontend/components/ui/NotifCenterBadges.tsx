@@ -91,7 +91,10 @@ export function NotifContext({ n }: { n: AppNotification }) {
   return (
     <div
       data-testid="notif-context"
-      className="mt-0.5 text-xs font-normal text-text-muted"
+      // break-words: a namespace is up to 63 characters with no hyphen to
+      // break at, wider than the bell's text column; it must wrap, not
+      // scroll the dropdown sideways.
+      className="mt-0.5 break-words text-xs font-normal text-text-muted"
     >
       {where.length > 0 && <span>{where.join(", ")}. </span>}
       {n.message}

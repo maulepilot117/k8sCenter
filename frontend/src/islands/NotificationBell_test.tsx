@@ -199,3 +199,103 @@ test("a notification event inside the suppression window after Mark all read lea
   expect(server.unreadFetches).toBe(fetchesBefore + 1);
   expect(body().getByText("1")).toBeTruthy();
 });
+
+// ---------------------------------------------------------------------------
+// Rubrik rows (R24, R26)
+
+const rubrik = (id: string, over: Record<string, unknown>) => ({
+  ...notification(id, false),
+  source: "rubrik",
+  title: "Rubrik snapshot failed",
+  message: "A Rubrik snapshot job failed.",
+  ...over,
+});
+
+/** Each panel row's context line, or null when it has none. */
+const contextLines = () =>
+  [...document.querySelectorAll('[data-testid="notif-context"]')].map(
+    (el) => el.textContent,
+  );
+
+test("Rubrik rows in the panel say which namespace, cluster and gap they are about", async () => {
+  stubApi([
+    rubrik("r1", { resourceNamespace: "team-a" }),
+    rubrik("r2", { resourceNamespace: "team-b", clusterId: "c-remote" }),
+    rubrik("r3", {
+      title: "Rubrik monitoring gap",
+      message: "Rubrik monitoring was down for about 48 hours.",
+      clusterId: "local",
+    }),
+    notification("a", false),
+  ]);
+  setAccessToken("t");
+  render(<NotificationBell />);
+  await settle();
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Notifications" }));
+  });
+  await settle();
+  // Two rows share the fixed title; only the line under it tells them apart.
+  expect(body().getAllByText("Rubrik snapshot failed")).toHaveLength(2);
+  expect(contextLines()).toEqual([
+    "Namespace team-a. A Rubrik snapshot job failed.",
+    "Namespace team-b, cluster c-remote. A Rubrik snapshot job failed.",
+    "Rubrik monitoring was down for about 48 hours.",
+  ]);
+});
+
+test("the context line wraps rather than widening the panel", async () => {
+  stubApi([rubrik("r1", { resourceNamespace: "a".repeat(63) })]);
+  setAccessToken("t");
+  render(<NotificationBell />);
+  await settle();
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Notifications" }));
+  });
+  await settle();
+  const line = document.querySelector('[data-testid="notif-context"]');
+  expect(line?.classList.contains("break-words")).toBe(true);
+});
+
+test("with the panel open, a Rubrik row's id-only frame re-fetches the count and adds nothing from the frame", async () => {
+  // KTD11: the live frame for a Rubrik row is its id alone, no source or
+  // title. The bell never reads the frame; it asks the server.
+  const server = stubApi([rubrik("r1", { resourceNamespace: "team-a" })], 0);
+  setAccessToken("t");
+  const { container } = render(<NotificationBell />);
+  await settle();
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Notifications" }));
+  });
+  await settle();
+  const rows = () => contextLines();
+  expect(rows()).toEqual(["Namespace team-a. A Rubrik snapshot job failed."]);
+  server.unread = 1;
+  const before = server.unreadFetches;
+  const socket = FakeWebSocket.instances.at(-1);
+  if (!socket?.onmessage) throw new Error("the bell opened no socket");
+  const onmessage = socket.onmessage;
+  await act(async () =>
+    onmessage({
+      data: JSON.stringify({
+        type: "event",
+        id: "notif-bell",
+        eventType: "ADDED",
+        object: { id: "frame-only-9" },
+      }),
+    }),
+  );
+  await settle();
+  expect(server.unreadFetches).toBe(before + 1);
+  expect(body().getByText("1")).toBeTruthy();
+  // The open panel still shows exactly what the server listed: one row (one
+  // severity dot, read or not), whose line is the server's.
+  const allDots = [...container.querySelectorAll("span")].filter((s) => {
+    const style = (s as HTMLElement).style;
+    return style.borderRadius === "50%" && style.width === "8px";
+  });
+  expect(allDots).toHaveLength(1);
+  expect(rows()).toEqual(["Namespace team-a. A Rubrik snapshot job failed."]);
+  expect(body().getAllByText("Rubrik snapshot failed")).toHaveLength(1);
+  expect(container.textContent).not.toContain("frame-only-9");
+});
