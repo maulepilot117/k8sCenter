@@ -393,6 +393,10 @@ func scanRubrikMapping(row pgx.Row) (RubrikClusterMapping, error) {
 //
 // Saves for one cluster are serialized on its clusters row, so two
 // overlapping saves cannot both report success for different targets. The
+// local cluster is keyed RubrikLocalClusterID, which is not its clusters
+// row's id when KUBECENTER_CLUSTERID is set (000032), so its saves are
+// serialized on a transaction advisory lock instead; that row is never
+// deleted, so it needs no registration check. The
 // connection row is read FOR SHARE and its revision compared with
 // ConnectionRevision, which orders the save against UpsertConnection's
 // FOR UPDATE: a mapping chosen for the old tenant cannot outlive an origin
@@ -406,16 +410,11 @@ func scanRubrikMapping(row pgx.Row) (RubrikClusterMapping, error) {
 func (s *RubrikStore) SetMapping(ctx context.Context, w RubrikMappingWrite) (RubrikClusterMapping, error) {
 	var out RubrikClusterMapping
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		var one int
-		err := tx.QueryRow(ctx, `SELECT 1 FROM clusters WHERE id = $1 FOR NO KEY UPDATE`, w.ClusterID).Scan(&one)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrRubrikClusterUnknown
-		}
-		if err != nil {
-			return fmt.Errorf("locking cluster: %w", err)
+		if err := lockRubrikMappingCluster(ctx, tx, w.ClusterID); err != nil {
+			return err
 		}
 		var rev int64
-		err = tx.QueryRow(ctx, `SELECT revision FROM rubrik_connection WHERE id = $1 FOR SHARE`, w.ConnectionID).Scan(&rev)
+		err := tx.QueryRow(ctx, `SELECT revision FROM rubrik_connection WHERE id = $1 FOR SHARE`, w.ConnectionID).Scan(&rev)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrRubrikConnectionNotFound
 		}
@@ -458,6 +457,35 @@ func (s *RubrikStore) SetMapping(ctx context.Context, w RubrikMappingWrite) (Rub
 		return RubrikClusterMapping{}, err
 	}
 	return out, nil
+}
+
+// RubrikLocalClusterID is the key of the local cluster's Rubrik mapping:
+// the API's name for the local cluster, which k8s.LocalClusterID defines.
+// The store cannot import k8s (k8s imports store), so the rubrik package
+// pins the two together in a test.
+const RubrikLocalClusterID = "local"
+
+// lockRubrikMappingCluster serializes mapping saves for one cluster. A
+// remote cluster is locked on its clusters row, which also refuses one that
+// is not registered or is being deleted. The local cluster takes a
+// transaction advisory lock: its mapping key is not its clusters row's id
+// when KUBECENTER_CLUSTERID is set, and that row is never deleted.
+func lockRubrikMappingCluster(ctx context.Context, tx pgx.Tx, clusterID string) error {
+	if clusterID == RubrikLocalClusterID {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('rubrik_local_mapping'))`); err != nil {
+			return fmt.Errorf("locking local cluster mapping: %w", err)
+		}
+		return nil
+	}
+	var one int
+	err := tx.QueryRow(ctx, `SELECT 1 FROM clusters WHERE id = $1 FOR NO KEY UPDATE`, clusterID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrRubrikClusterUnknown
+	}
+	if err != nil {
+		return fmt.Errorf("locking cluster: %w", err)
+	}
+	return nil
 }
 
 // classifyRubrikMappingError maps constraint violations on a mapping write to

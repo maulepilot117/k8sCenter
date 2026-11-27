@@ -21,6 +21,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/internal/urlorigin"
@@ -1215,5 +1216,19 @@ func TestSuggestedTenantURLKeepsOnlyAValidTenantAddress(t *testing.T) {
 		if got := suggestedTenantURL(c.in, slog.New(slog.DiscardHandler)); got != c.want {
 			t.Errorf("suggestedTenantURL(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// The store keys the local cluster's mapping by its own constant (it cannot
+// import k8s), and the handler passes k8s.NormalizedClusterID's "local". The
+// two must stay one value, or every local mapping save would take the remote
+// path and be refused as an unregistered cluster.
+func TestLocalMappingKeyMatchesLocalClusterID(t *testing.T) {
+	if store.RubrikLocalClusterID != k8s.LocalClusterID {
+		t.Fatalf("store.RubrikLocalClusterID = %q, k8s.LocalClusterID = %q; want one value",
+			store.RubrikLocalClusterID, k8s.LocalClusterID)
+	}
+	if got := k8s.NormalizedClusterID(""); got != store.RubrikLocalClusterID {
+		t.Fatalf("NormalizedClusterID(\"\") = %q; want %q", got, store.RubrikLocalClusterID)
 	}
 }
