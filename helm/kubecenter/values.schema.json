@@ -122,8 +122,8 @@
         "tenantUrl": {
           "type": "string",
           "maxLength": 2048,
-          "pattern": "^$|^https://[^/?#@\\s]+/?$",
-          "description": "RSC tenant URL pre-filled on Settings → Rubrik while no connection is saved. Empty, or https:// and a host with no path, query, fragment or credentials. Never stored."
+          "pattern": "^$|^https://[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.?(:[0-9]{1,5})?/?$",
+          "description": "RSC tenant URL pre-filled on Settings → Rubrik while no connection is saved. Empty, or https:// and a host name, an optional port and an optional trailing slash: no path, query, fragment or credentials. Never stored."
         }
       },
       "additionalProperties": false
