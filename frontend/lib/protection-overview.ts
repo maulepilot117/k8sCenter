@@ -23,6 +23,8 @@ export type VeleroInput =
   | { kind: "loading" }
   | { kind: "error" }
   | { kind: "not_installed" }
+  /** The user may not list Velero backups (the list's metadata.accessDenied). */
+  | { kind: "denied" }
   | { kind: "loaded"; backups: Backup[] };
 
 export type RubrikInput =
@@ -57,12 +59,14 @@ export type VeleroCell =
   | { kind: "loading" }
   | { kind: "error" }
   | { kind: "not_installed" }
+  /** The user may not list Velero backups. */
+  | { kind: "denied" }
   /** Backups were listed, and none covers the namespace. */
   | { kind: "none" }
   /**
-   * The backup list came back empty. The API answers an empty list both
-   * when there are no backups and when the user may not list them, so the
-   * cell does not claim the namespace has none.
+   * The backup list came back empty. A denial says so (`denied`), but a
+   * backend older than that flag answers a denial with the same empty list,
+   * so the cell still does not claim the namespace has none.
    */
   | { kind: "none_visible" }
   | { kind: "protected"; last: BackupPoint }

@@ -492,6 +492,22 @@ test("an empty backup list does not claim a namespace has no backup", async () =
   view.unmount();
 });
 
+test("a backup list the user may not read says so, not that there are none", async () => {
+  routes["GET /api/v1/velero/backups"] = () =>
+    reply(200, { data: [], metadata: { total: 0, accessDenied: true } });
+  const view = await open();
+  expect(cell("team-a", "velero-cell")?.textContent).toBe(
+    "You may not list Velero backups",
+  );
+  expect(body().queryByText("No backups visible to you")).toBeNull();
+  expect(body().queryByText("No backup")).toBeNull();
+  view.unmount();
+});
+
+test("a denied Velero input gives every namespace a denied cell", () => {
+  expect(veleroCell("team-a", { kind: "denied" })).toEqual({ kind: "denied" });
+});
+
 test("a backup still finishing in a PartiallyFailed sub-phase is not a failure yet", async () => {
   const cellNow = veleroCell("shop", {
     kind: "loaded",

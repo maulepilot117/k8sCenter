@@ -8,6 +8,11 @@ export interface APIResponse<T> {
     continue?: string;
     /** Set when a remote read hit the paging cap: totals are lower bounds. */
     truncated?: boolean;
+    /**
+     * Set when the list is empty because the user may not list the
+     * resource, not because there is none (the Velero lists).
+     */
+    accessDenied?: boolean;
   };
 }
 
