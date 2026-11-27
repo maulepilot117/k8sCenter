@@ -300,7 +300,20 @@ function ConnectionForm({
   /** The save was refused because the connection changed meanwhile. */
   onConflict: () => void;
 }) {
-  const [tenantUrl, setTenantUrl] = useState(connection.tenantUrl ?? "");
+  // Helm's rubrik.tenantUrl pre-fills an unsaved connection; a saved one wins.
+  const suggested = connection.configured
+    ? ""
+    : (connection.suggestedTenantUrl ?? "");
+  const [tenantUrl, setTenantUrl] = useState(connection.tenantUrl ?? suggested);
+  const showSuggested = suggested !== "" && tenantUrl.trim() === suggested;
+  // The suggestion can arrive on a later status read (the first one failed)
+  // without a remount: the key is still revision 0. Take it while the admin
+  // has not typed in the field.
+  const tenantTouched = useRef(false);
+  useEffect(() => {
+    if (suggested === "" || tenantTouched.current) return;
+    setTenantUrl(suggested);
+  }, [suggested]);
   const [clientId, setClientId] = useState(connection.clientId ?? "");
   const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
@@ -389,8 +402,24 @@ function ConnectionForm({
             value={tenantUrl}
             autoComplete="off"
             placeholder="https://<tenant>.my.rubrik.com"
-            onChange={(e) => setTenantUrl(e.currentTarget.value)}
+            aria-describedby={
+              showSuggested ? "rubrik-tenant-url-note" : undefined
+            }
+            onChange={(e) => {
+              tenantTouched.current = true;
+              setTenantUrl(e.currentTarget.value);
+            }}
           />
+          {showSuggested && (
+            <p
+              id="rubrik-tenant-url-note"
+              className="mt-1.5 text-xs text-text-muted"
+            >
+              Filled in from the Helm value <code>rubrik.tenantUrl</code>.
+              Nothing is saved until you enter the client ID and secret and
+              save.
+            </p>
+          )}
         </div>
         <div>
           <label className={LABEL_CLASS} htmlFor="rubrik-client-id">

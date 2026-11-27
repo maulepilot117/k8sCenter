@@ -63,6 +63,11 @@ export interface RubrikConnection {
   lastSuccessAt?: string;
   lastFailureAt?: string;
   lastFailureKind?: string;
+  /**
+   * Helm's rubrik.tenantUrl, sent only while no connection is saved. A
+   * pre-fill for the form: never stored until an admin saves.
+   */
+  suggestedTenantUrl?: string;
 }
 
 /** GET /v1/rubrik/status. `connection` is set for admins only. */
