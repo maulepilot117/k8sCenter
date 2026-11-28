@@ -2,7 +2,7 @@
 
 k8sCenter can show Rubrik Security Cloud (RSC) protection for the namespaces of each cluster it manages. With writes turned on, it can also take on-demand snapshots, change SLA domains and restore snapshots. Velero stays as it is; Rubrik is a second backup provider beside it.
 
-The provider is a **preview**. It is on whenever k8sCenter has PostgreSQL, and the Backup → Rubrik and Settings → Rubrik pages always appear. It does nothing until an admin saves the RSC connection and maps a cluster (steps 4 and 5): until then no call reaches RSC. Writes stay off until you turn them on (step 7).
+The provider is a **preview**. It is on whenever k8sCenter has PostgreSQL, and the Backup → Rubrik page and the Rubrik section of Settings → General always appear. It does nothing until an admin saves the RSC connection and maps a cluster (steps 4 and 5): until then no call reaches RSC. Writes stay off until you turn them on (step 7).
 
 ## What you need
 
@@ -58,7 +58,7 @@ The tenant URL must be `https`, must resolve to a public address, and is checked
 
 ## 4. Connect k8sCenter to RSC
 
-An admin saves the connection on **Settings → Rubrik** (`/settings/rubrik`), or through the API below. Every API request needs an admin's access token and the CSRF header.
+An admin saves the connection in the **Rubrik** section of **Settings → General** (`/settings/general#rubrik`; the old `/settings/rubrik` link redirects there), or through the API below. Every API request needs an admin's access token and the CSRF header.
 
 ### Pre-filling the tenant URL from Helm
 
@@ -71,8 +71,8 @@ rubrik:
 
 This is only a suggestion. The saved connection is still the one source of truth.
 
-- While no connection is saved, `GET /api/v1/rubrik/status` gives admins the value as `connection.suggestedTenantUrl`, and **Settings → Rubrik** fills it into the Tenant URL field with a note saying it came from Helm. Nothing is stored and nothing is audited until an admin enters the client ID and secret and saves. The save is checked, probed and audited like any other.
-- Once a connection is saved, the saved URL wins. Changing or removing `tenantUrl` afterwards has no effect; change the URL on the settings page (or with `PUT /rubrik/connection`) instead. Moving to another tenant then needs the client secret again and clears the cluster mappings, as below.
+- While no connection is saved, `GET /api/v1/rubrik/status` gives admins the value as `connection.suggestedTenantUrl`, and the Rubrik section of **Settings → General** fills it into the Tenant URL field with a note saying it came from Helm. Nothing is stored and nothing is audited until an admin enters the client ID and secret and saves. The save is checked, probed and audited like any other.
+- Once a connection is saved, the saved URL wins. Changing or removing `tenantUrl` afterwards has no effect; change the URL in that section (or with `PUT /rubrik/connection`) instead. Moving to another tenant then needs the client secret again and clears the cluster mappings, as below.
 - Helm supplies the URL only. The client ID and secret are always entered by an admin.
 - The value must be `https://` and a host name, with an optional port and nothing after it: no path, query, fragment or credentials. The chart's schema refuses anything else, so a mistake fails `helm install` or `helm upgrade`. The backend checks the value again at startup; a value it rejects (for example one set without the chart) is dropped with a warning that does not include it, and nothing is pre-filled.
 - To leave it unset, use `tenantUrl: ""` or leave the key out.

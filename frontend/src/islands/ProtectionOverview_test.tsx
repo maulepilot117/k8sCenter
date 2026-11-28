@@ -335,7 +335,7 @@ test("an invalid mapping shows not set up, with a setup link for admins only", a
   const admin = await open();
   expect(cell("team-a", "rubrik-cell")?.textContent).toContain("Not set up");
   const link = body().getAllByRole("link", { name: "Set up Rubrik" })[0];
-  expect(link?.getAttribute("href")).toBe("/settings/rubrik");
+  expect(link?.getAttribute("href")).toBe("/settings/general#rubrik");
   expect(calls).not.toContain("GET /api/v1/rubrik/namespaces");
   admin.unmount();
 
