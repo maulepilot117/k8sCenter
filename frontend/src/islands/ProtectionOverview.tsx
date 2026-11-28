@@ -1,5 +1,6 @@
 /** Protection overview — one row per namespace with each backup provider's
- * last good recovery point (U15, R20–R22, KTD14).
+ * last good recovery point (U15, R20–R22, KTD14), and for Rubrik the SLA
+ * domain, compliance and, with writes on, Take snapshot and Change SLA.
  *
  * The rows are the namespaces the user can list, so a namespace no provider
  * protects still shows. Velero data come from the Velero backups endpoint
@@ -15,6 +16,13 @@ import {
   useRef,
   useState,
 } from "react";
+import { RubrikJobStatus } from "@/components/rubrik/RubrikJobStatus.tsx";
+import {
+  type OperationIds,
+  type RubrikNamespaceActions,
+  RubrikWriteControls,
+  useOperationIds,
+} from "@/components/rubrik/RubrikWriteDialogs.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
@@ -25,10 +33,15 @@ import {
   providerNamespaces,
   type RubrikCell,
   type RubrikInput,
+  rubrikActions,
   type VeleroCell,
   type VeleroInput,
 } from "@/lib/protection-overview.ts";
-import type { RubrikNamespaceList } from "@/lib/rubrik-types.ts";
+import type {
+  RubrikCompliance,
+  RubrikNamespaceList,
+  RubrikOperation,
+} from "@/lib/rubrik-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import type { Backup, VeleroStatus } from "@/lib/velero-types.ts";
 import { clusterEpoch, selectedCluster } from "@/src/lib/cluster.ts";
@@ -152,6 +165,24 @@ export default function ProtectionOverview() {
   });
   const baseGen = useRef(0);
   const rubrikGen = useRef(0);
+  /** The next Rubrik read keeps what is shown (after a write settles). */
+  const quietRubrik = useRef(false);
+  /** Writes started from this page, newest first, per namespace. */
+  const [ops, setOps] = useState<Record<string, RubrikOperation[]>>({});
+  // Held here, so a write re-sent from a dialog opened again keeps its id.
+  const operationIds = useOperationIds();
+  const started = useCallback((ns: string, op: RubrikOperation) => {
+    setOps((prev) => ({
+      ...prev,
+      [ns]: [op, ...(prev[ns] ?? []).filter((o) => o.id !== op.id)],
+    }));
+  }, []);
+  // A settled write changes the namespace's snapshot, SLA or flags: read
+  // Rubrik again without blanking the column.
+  const settled = useCallback(() => {
+    quietRubrik.current = true;
+    setRubrikTick((t) => t + 1);
+  }, []);
 
   useEffect(() => {
     ensureRubrikStatus();
@@ -191,6 +222,8 @@ export default function ProtectionOverview() {
   useEffect(() => {
     void cluster;
     void epoch;
+    // Writes belong to the cluster they were sent to.
+    setOps({});
     void loadBase();
     return () => {
       baseGen.current++;
@@ -222,7 +255,9 @@ export default function ProtectionOverview() {
       return;
     }
     void rubrikTick;
-    setRubrikList({ kind: "loading" });
+    const quiet = quietRubrik.current;
+    quietRubrik.current = false;
+    if (!quiet) setRubrikList({ kind: "loading" });
     const forCluster = selectedCluster.peek();
     apiGet<RubrikNamespaceList>(RUBRIK_NAMESPACES_URL)
       .then((res) => {
@@ -289,6 +324,8 @@ export default function ProtectionOverview() {
         rubrikKnownOn);
     const fresh =
       rubrikList.kind === "loaded" ? rubrikList.list.freshness : undefined;
+    const writesEnabled =
+      status.kind === "enabled" && status.status.writesEnabled;
     body = (
       <div className="flex flex-col gap-3">
         <div className="flex justify-end">
@@ -377,6 +414,15 @@ export default function ProtectionOverview() {
                     {showRubrik && row.rubrik && (
                       <td className={TD} data-testid="rubrik-cell">
                         <RubrikCellView cell={row.rubrik} />
+                        <RubrikRowActions
+                          namespace={row.namespace}
+                          actions={rubrikActions(row.namespace, rubrikList)}
+                          writesEnabled={writesEnabled}
+                          operationIds={operationIds}
+                          ops={ops[row.namespace] ?? []}
+                          onStarted={started}
+                          onSettled={settled}
+                        />
                       </td>
                     )}
                   </tr>
@@ -397,7 +443,7 @@ export default function ProtectionOverview() {
         </h1>
         <p className="m-0 mt-1 text-[13px] text-text-muted">
           Every namespace you can see, with each backup provider's last good
-          recovery point.
+          recovery point and the SLA domain Rubrik protects it with.
         </p>
       </div>
       {body}
@@ -493,10 +539,12 @@ function RubrikCellView({ cell }: { cell: RubrikCell }) {
           </Detail>
         </>
       );
-    case "protected":
+    case "protected": {
+      const badge = COMPLIANCE[cell.compliance] ?? COMPLIANCE.unknown;
       return (
         <>
-          <StatusBadge label="Protected" tone="ok" />
+          <StatusBadge label={badge.label} tone={badge.tone} />
+          {cell.slas.length > 0 && <Detail>SLA {cell.slas.join(", ")}</Detail>}
           <Detail>
             {cell.lastSnapshot
               ? `Last snapshot ${timeAgo(cell.lastSnapshot)}`
@@ -505,7 +553,67 @@ function RubrikCellView({ cell }: { cell: RubrikCell }) {
           </Detail>
         </>
       );
+    }
     case "unprotected":
       return <Muted>Not protected</Muted>;
   }
+}
+
+/** The cell badge by SLA compliance. Unknown compliance still reads protected. */
+const COMPLIANCE: Record<
+  RubrikCompliance,
+  { label: string; tone: "ok" | "crit" }
+> = {
+  in_compliance: { label: "In compliance", tone: "ok" },
+  out_of_compliance: { label: "Out of compliance", tone: "crit" },
+  unknown: { label: "Protected", tone: "ok" },
+};
+
+/**
+ * Take snapshot and Change SLA for one namespace, and the status of each
+ * write started here. The controls show only with writes on and only for
+ * the objects the row allows the action on; the server checks again.
+ */
+function RubrikRowActions({
+  namespace,
+  actions,
+  writesEnabled,
+  operationIds,
+  ops,
+  onStarted,
+  onSettled,
+}: {
+  namespace: string;
+  actions: RubrikNamespaceActions | undefined;
+  writesEnabled: boolean;
+  operationIds: OperationIds;
+  ops: RubrikOperation[];
+  onStarted: (ns: string, op: RubrikOperation) => void;
+  onSettled: () => void;
+}) {
+  return (
+    <>
+      {actions && writesEnabled && (
+        <div className="mt-2">
+          <RubrikWriteControls
+            namespace={namespace}
+            detail={actions}
+            writesEnabled={writesEnabled}
+            operationIds={operationIds}
+            onStarted={(op) => onStarted(namespace, op)}
+          />
+        </div>
+      )}
+      {ops.length > 0 && (
+        <div
+          className="mt-2 flex flex-col gap-2"
+          aria-label={`Rubrik operations for ${namespace}`}
+        >
+          {ops.map((op) => (
+            <RubrikJobStatus key={op.id} operation={op} onSettled={onSettled} />
+          ))}
+        </div>
+      )}
+    </>
+  );
 }

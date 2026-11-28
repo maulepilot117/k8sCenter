@@ -10,6 +10,7 @@ import { setAccessToken } from "@/lib/api.ts";
 import {
   backupCovers,
   type RubrikInput,
+  rubrikActions,
   rubrikCell,
   veleroCell,
 } from "@/lib/protection-overview.ts";
@@ -17,10 +18,19 @@ import type {
   RubrikClusterState,
   RubrikNamespaceList,
   RubrikNamespaceRow,
+  RubrikObject,
+  RubrikOperation,
   RubrikStatus,
 } from "@/lib/rubrik-types.ts";
 import type { Backup } from "@/lib/velero-types.ts";
-import { body, render, settle, setupDom } from "@/src/test-utils/render.tsx";
+import {
+  act,
+  body,
+  fireEvent,
+  render,
+  settle,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
 /**
  * Protection overview (U15): the pure merge in lib/protection-overview.ts
@@ -68,6 +78,23 @@ function nsRow(over: Partial<RubrikNamespaceRow> = {}): RubrikNamespaceRow {
     lastSnapshot: hoursAgo(1),
     objectIds: ["obj-a"],
     actionTargets: ["obj-a"],
+    canSnapshot: false,
+    canChangeSla: false,
+    canRestore: false,
+    ...over,
+  };
+}
+
+function rubrikObject(over: Partial<RubrikObject> = {}): RubrikObject {
+  return {
+    family: "namespace",
+    id: "obj-a",
+    name: "team-a",
+    coverage: { namespaces: ["team-a"] },
+    configuredSla: { id: "sla-gold", name: "Gold" },
+    effectiveSla: { id: "sla-gold", name: "Gold" },
+    compliance: "in_compliance",
+    mayHoldClusterScoped: false,
     canSnapshot: false,
     canChangeSla: false,
     canRestore: false,
@@ -185,6 +212,35 @@ describe("rubrikCell", () => {
     expect(rubrikCell("team-b", loaded)).toEqual({ kind: "not_applicable" });
     expect(rubrikCell("team-a", loaded)).toMatchObject({ kind: "protected" });
   });
+  test("a protected namespace carries its compliance and each SLA domain once", () => {
+    const cell = rubrikCell("team-a", {
+      kind: "loaded",
+      list: rubrikList({
+        namespaces: [
+          nsRow({
+            compliance: "out_of_compliance",
+            objectIds: ["obj-a", "obj-b", "obj-c"],
+          }),
+        ],
+        objects: [
+          rubrikObject(),
+          rubrikObject({ id: "obj-b", effectiveSla: { id: "", name: "" } }),
+          rubrikObject({ id: "obj-c" }),
+          // Not one of the namespace's objects.
+          rubrikObject({
+            id: "obj-z",
+            effectiveSla: { id: "sla-bronze", name: "Bronze" },
+          }),
+        ],
+      }),
+    });
+    expect(cell).toMatchObject({
+      kind: "protected",
+      compliance: "out_of_compliance",
+      slas: ["Gold", "No SLA"],
+    });
+  });
+
   test("AE6: stale data never shows a namespace as unprotected", () => {
     const fetchedAt = hoursAgo(2);
     const cell = rubrikCell("team-a", {
@@ -199,6 +255,38 @@ describe("rubrikCell", () => {
       reason: "auth_failed",
       fetchedAt,
     });
+  });
+});
+
+describe("rubrikActions", () => {
+  test("only a loaded answer with a row for the namespace offers actions", () => {
+    expect(rubrikActions("team-a", { kind: "loading" })).toBeUndefined();
+    expect(
+      rubrikActions("team-a", {
+        kind: "loaded",
+        list: rubrikList({ noAccess: true }),
+      }),
+    ).toBeUndefined();
+    expect(
+      rubrikActions("team-b", { kind: "loaded", list: rubrikList() }),
+    ).toBeUndefined();
+  });
+
+  test("the objects are the row's own and its action targets, nothing else", () => {
+    const row = nsRow({ objectIds: ["obj-a"], actionTargets: ["obj-t"] });
+    const actions = rubrikActions("team-a", {
+      kind: "loaded",
+      list: rubrikList({
+        namespaces: [row],
+        objects: [
+          rubrikObject(),
+          rubrikObject({ id: "obj-t" }),
+          rubrikObject({ id: "obj-z" }),
+        ],
+      }),
+    });
+    expect(actions?.namespace).toEqual(row);
+    expect(actions?.objects.map((o) => o.id)).toEqual(["obj-a", "obj-t"]);
   });
 });
 
@@ -399,7 +487,7 @@ test("AE6: an RSC failure reports the last fetch this page saw, never unprotecte
   routes["GET /api/v1/rubrik/namespaces"] = () =>
     ok(rubrikList({ freshness: { fetchedAt, stale: false } }));
   const view = await open();
-  expect(cell("team-a", "rubrik-cell")?.textContent).toContain("Protected");
+  expect(cell("team-a", "rubrik-cell")?.textContent).toContain("In compliance");
   routes["GET /api/v1/rubrik/namespaces"] = () =>
     fail(400, "auth_failed", "RSC refused the client ID or secret");
   await click("Refresh");
@@ -569,7 +657,168 @@ test("a user who may not list namespaces sees the namespaces the providers show"
   const view = await open();
   body().getByText(/You may not list this cluster's namespaces/);
   // team-a comes from the Rubrik answer.
-  expect(cell("team-a", "rubrik-cell")?.textContent).toContain("Protected");
+  expect(cell("team-a", "rubrik-cell")?.textContent).toContain("In compliance");
   expect(body().queryByText("The namespaces could not be loaded.")).toBeNull();
   view.unmount();
+});
+
+// ---------------------------------------------------------------------------
+// SLA, compliance and writes in the Rubrik column
+
+/** A list where team-a may be snapshotted and have its SLA changed. */
+function writableList(): RubrikNamespaceList {
+  return rubrikList({
+    namespaces: [
+      nsRow({
+        canSnapshot: true,
+        canChangeSla: true,
+        actionTargets: ["obj-a"],
+      }),
+    ],
+    objects: [rubrikObject({ canSnapshot: true, canChangeSla: true })],
+  });
+}
+
+test("the Rubrik cell shows the SLA domain and an out-of-compliance badge", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(
+      rubrikList({
+        namespaces: [nsRow({ compliance: "out_of_compliance" })],
+        objects: [rubrikObject()],
+      }),
+    );
+  const view = await open();
+  const text = cell("team-a", "rubrik-cell")?.textContent ?? "";
+  expect(text).toContain("Out of compliance");
+  expect(text).toContain("SLA Gold");
+  expect(text).toContain("Last snapshot");
+  view.unmount();
+});
+
+test("unknown compliance still reads protected", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(rubrikList({ namespaces: [nsRow({ compliance: "unknown" })] }));
+  const view = await open();
+  expect(cell("team-a", "rubrik-cell")?.textContent).toContain("Protected");
+  view.unmount();
+});
+
+test("with writes off no write control shows, whatever the row allows", async () => {
+  routes["GET /api/v1/rubrik/namespaces"] = () => ok(writableList());
+  const view = await open();
+  expect(body().queryByRole("button", { name: "Take snapshot" })).toBeNull();
+  expect(body().queryByRole("button", { name: "Change SLA" })).toBeNull();
+  view.unmount();
+});
+
+test("with writes on the row offers what its flags allow", async () => {
+  routes["GET /api/v1/rubrik/status"] = () =>
+    ok(status("mapped", { writesEnabled: true }));
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(
+      rubrikList({
+        namespaces: [nsRow({ canSnapshot: true, actionTargets: ["obj-a"] })],
+        objects: [rubrikObject({ canSnapshot: true })],
+      }),
+    );
+  const view = await open();
+  const row = body().getByTestId("overview-team-a");
+  expect(row.textContent).toContain("Take snapshot");
+  expect(row.textContent).not.toContain("Change SLA");
+  view.unmount();
+});
+
+test("a snapshot taken from the overview shows its status and re-reads Rubrik in place", async () => {
+  routes["GET /api/v1/rubrik/status"] = () =>
+    ok(status("mapped", { writesEnabled: true }));
+  routes["GET /api/v1/rubrik/namespaces"] = () => ok(writableList());
+  const op: RubrikOperation = {
+    id: "op-1",
+    kind: "snapshot",
+    clusterId: "local",
+    namespace: "team-a",
+    objectId: "obj-a",
+    state: "succeeded",
+    createdAt: hoursAgo(0),
+    updatedAt: hoursAgo(0),
+    finishedAt: hoursAgo(0),
+  };
+  routes["POST /api/v1/rubrik/namespaces/team-a/snapshots"] = () =>
+    reply(201, { data: op });
+  const view = await open();
+  const reads = () =>
+    calls.filter((c) => c === "GET /api/v1/rubrik/namespaces").length;
+  expect(reads()).toBe(1);
+  // Hold the re-read open, so the column is seen while it is in flight.
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    new Promise<Response>(() => {}) as unknown as Response;
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Take snapshot" }));
+  });
+  await settle();
+  await act(async () => {
+    fireEvent.click(
+      body()
+        .getAllByRole("button", { name: "Take snapshot" })
+        .at(-1) as HTMLElement,
+    );
+  });
+  await settle();
+  expect(calls).toContain("POST /api/v1/rubrik/namespaces/team-a/snapshots");
+  const ops = body().getByLabelText("Rubrik operations for team-a");
+  expect(ops.textContent).toContain("Succeeded");
+  // The settled write reads Rubrik again, and the column keeps what it
+  // showed meanwhile instead of going back to loading.
+  expect(reads()).toBe(2);
+  const text = cell("team-a", "rubrik-cell")?.textContent ?? "";
+  expect(text).toContain("SLA Gold");
+  expect(text).not.toContain("Loading");
+  view.unmount();
+});
+
+test("a write's status does not follow the page to another cluster", async () => {
+  const { selectedCluster } = await import("@/src/lib/cluster.ts");
+  routes["GET /api/v1/rubrik/status"] = () =>
+    ok(status("mapped", { writesEnabled: true }));
+  routes["GET /api/v1/rubrik/namespaces"] = () => ok(writableList());
+  routes["POST /api/v1/rubrik/namespaces/team-a/snapshots"] = () =>
+    reply(201, {
+      data: {
+        id: "op-1",
+        kind: "snapshot",
+        clusterId: "local",
+        namespace: "team-a",
+        objectId: "obj-a",
+        state: "succeeded",
+        createdAt: hoursAgo(0),
+        updatedAt: hoursAgo(0),
+      },
+    });
+  const before = selectedCluster.value;
+  const view = await open();
+  try {
+    await act(async () => {
+      fireEvent.click(body().getByRole("button", { name: "Take snapshot" }));
+    });
+    await settle();
+    await act(async () => {
+      fireEvent.click(
+        body()
+          .getAllByRole("button", { name: "Take snapshot" })
+          .at(-1) as HTMLElement,
+      );
+    });
+    await settle();
+    body().getByLabelText("Rubrik operations for team-a");
+    await act(async () => {
+      selectedCluster.value = "other-cluster";
+    });
+    await settle();
+    expect(body().queryByLabelText("Rubrik operations for team-a")).toBeNull();
+  } finally {
+    await act(async () => {
+      selectedCluster.value = before;
+    });
+    view.unmount();
+  }
 });
