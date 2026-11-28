@@ -887,11 +887,6 @@ export function createSourceCache(
 }
 
 /**
- * GET an endpoint and hand back the `data` envelope every handler writes.
- * `clusterId` pins the request's X-Cluster-ID; omitted, `api()` reads the
- * selected cluster itself.
- */
-/**
  * What a source answers in place of its list when the route said the user
  * may not list it (`metadata.accessDenied`). The list itself is empty then,
  * which a card would otherwise show as "none".
@@ -912,6 +907,11 @@ export function isDeniedList(value: unknown): value is DeniedList {
   );
 }
 
+/**
+ * GET an endpoint and hand back the `data` envelope every handler writes.
+ * `clusterId` pins the request's X-Cluster-ID; omitted, `api()` reads the
+ * selected cluster itself.
+ */
 async function read(
   path: string,
   signal: AbortSignal,

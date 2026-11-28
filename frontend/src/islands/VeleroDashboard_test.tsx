@@ -450,11 +450,40 @@ test("a tab whose list is denied says so instead of showing an empty table", asy
 test("the overview names every denied list, so a zero count is not read as none", async () => {
   api.denied = ["backups", "schedules"];
   api.restores = [restore("r1", "b1")];
-  render(<VeleroDashboard initialTab="overview" />);
+  const view = render(<VeleroDashboard initialTab="overview" />);
   await settle();
   expect(body().getByTestId("velero-denied-note").textContent).toBe(
     "You may not list Velero backups and schedules on this cluster, so the counts below leave them out.",
   );
+  // No tile, bar or donut claims a zero for a denied list.
+  const tiles = (href: string) =>
+    view.container.querySelectorAll(`a[href="${href}"]`).length;
+  expect(tiles("/backup/backups")).toBe(0);
+  expect(tiles("/backup/schedules")).toBe(0);
+  expect(tiles("/backup/restores")).toBe(1);
+  expect(body().getByTestId("velero-health-denied").textContent).toContain(
+    "Not visible to you",
+  );
+  expect(view.container.querySelector('[aria-label="No backups"]')).toBeNull();
+  const resources = view.container.textContent ?? "";
+  expect(resources).toContain("Restores");
+  expect(resources).not.toContain("Schedules");
+});
+
+test("a list that becomes readable on Refresh drops its denial note", async () => {
+  api.denied = ["backups"];
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  body().getByTestId("velero-denied-note");
+  api.denied = [];
+  api.backups = [backup("now-visible")];
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Refresh" }));
+  });
+  await settle();
+  expect(body().queryByTestId("velero-denied-note")).toBeNull();
+  expect(view.container.textContent).toContain("now-visible");
+  expect(view.container.textContent).toContain("1 backup");
 });
 
 test("a permitted empty list shows no denial note", async () => {
