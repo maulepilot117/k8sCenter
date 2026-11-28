@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
+import type {
+  RubrikNamespaceDetail,
+  RubrikNamespaceList,
+  RubrikObject,
+  RubrikStatus,
+} from "@/lib/rubrik-types.ts";
 import { disconnectWS } from "@/src/lib/ws.ts";
 import {
   act,
@@ -25,6 +31,7 @@ const bunAlert = globalThis.alert;
 setupDom({ browser: true });
 
 const { default: VeleroDashboard } = await import("./VeleroDashboard.tsx");
+const { resetRubrikStatusForTest } = await import("@/src/lib/rubrik-status.ts");
 
 class QuietWebSocket {
   static readonly OPEN = 1;
@@ -84,12 +91,20 @@ interface Api {
   denied?: Array<"backups" | "restores" | "schedules">;
   deleteStatus?: number;
   assurance?: { status: number; body?: unknown };
+  /** Rubrik's answers; absent means the provider is off (every path 404). */
+  rubrik?: {
+    status: unknown;
+    list?: RubrikNamespaceList;
+    /** The list read fails with this status and reason. */
+    listFail?: { status: number; reason: string };
+    detail?: RubrikNamespaceDetail;
+  };
 }
 let api: Api = {};
 
-function fail(status: number) {
+function fail(status: number, reason?: string) {
   return new Response(
-    JSON.stringify({ error: { code: status, message: "x" } }),
+    JSON.stringify({ error: { code: status, message: "x", reason } }),
     { status, headers: { "Content-Type": "application/json" } },
   );
 }
@@ -100,6 +115,7 @@ beforeEach(() => {
   confirmMessages = [];
   confirmAnswer = true;
   api = { detected: true };
+  resetRubrikStatusForTest();
   globalThis.WebSocket = QuietWebSocket as unknown as typeof WebSocket;
   globalThis.confirm = ((m: string) => {
     confirmMessages.push(m);
@@ -123,6 +139,20 @@ beforeEach(() => {
     if (url.includes("/velero/assurance/status")) {
       const a = api.assurance ?? { status: 500 };
       return a.status === 200 ? json(a.body) : fail(a.status);
+    }
+    if (url.includes("/v1/rubrik/")) {
+      const r = api.rubrik;
+      if (!r) return fail(404);
+      if (url.endsWith("/rubrik/status")) return json(r.status);
+      if (url.endsWith("/rubrik/namespaces")) {
+        return r.listFail
+          ? fail(r.listFail.status, r.listFail.reason)
+          : json(r.list);
+      }
+      if (/\/rubrik\/namespaces\/[^/]+$/.test(url) && r.detail) {
+        return json(r.detail);
+      }
+      return fail(404);
     }
     if (api.failList) return fail(500);
     if (url.endsWith("/velero/status")) {
@@ -175,9 +205,11 @@ afterEach(() => {
   globalThis.alert = bunAlert;
   setAccessToken(null);
   window.history.replaceState(null, "", "/");
+  resetRubrikStatusForTest();
 });
 
-const listCalls = () => calls.filter((c) => c.method === "GET");
+const listCalls = () =>
+  calls.filter((c) => c.method === "GET" && c.url.includes("/v1/velero/"));
 
 test("loads all five resources and lists backups with a count", async () => {
   api.backups = [backup("nightly-1"), backup("nightly-2", { errors: 2 })];
@@ -490,4 +522,223 @@ test("a permitted empty list shows no denial note", async () => {
   render(<VeleroDashboard initialTab="backups" />);
   await settle();
   expect(body().queryByTestId("velero-denied-note")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Rubrik objects on the Backups page
+
+function rubrikStatusOf(
+  state = "mapped",
+  over: Partial<RubrikStatus> = {},
+): RubrikStatus {
+  return {
+    enabled: true,
+    preview: true,
+    writesEnabled: false,
+    cluster: { id: "local", state: state as RubrikStatus["cluster"]["state"] },
+    ...over,
+  };
+}
+
+function rubrikObject(over: Partial<RubrikObject> = {}): RubrikObject {
+  return {
+    family: "namespace",
+    id: "obj-shop",
+    name: "shop",
+    coverage: { namespaces: ["shop"] },
+    configuredSla: { id: "sla-gold", name: "Gold" },
+    effectiveSla: { id: "sla-gold", name: "Gold" },
+    compliance: "in_compliance",
+    newestSnapshot: "2026-01-01T00:00:00Z",
+    mayHoldClusterScoped: false,
+    canSnapshot: false,
+    canChangeSla: false,
+    canRestore: false,
+    ...over,
+  };
+}
+
+function rubrikListOf(objects: RubrikObject[] = [rubrikObject()]) {
+  return {
+    noAccess: false,
+    namespaces: objects.map((o) => ({
+      namespace: o.name,
+      protected: true,
+      compliance: o.compliance,
+      objectIds: [o.id],
+      actionTargets: [o.id],
+      canSnapshot: false,
+      canChangeSla: false,
+      canRestore: false,
+    })),
+    objects,
+    freshness: { fetchedAt: new Date().toISOString(), stale: false },
+  } satisfies RubrikNamespaceList;
+}
+
+const rubrikReads = () =>
+  calls.filter(
+    (c) => c.method === "GET" && c.url.endsWith("/rubrik/namespaces"),
+  ).length;
+
+test("Rubrik objects are listed with the Velero backups, a provider each", async () => {
+  api.backups = [backup("nightly-1")];
+  api.rubrik = { status: rubrikStatusOf(), list: rubrikListOf() };
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  const text = view.container.textContent ?? "";
+  expect(text).toContain("1 backup · 1 Rubrik object");
+  expect(text).toContain("nightly-1");
+  expect(text).toContain("SLA Gold");
+  expect(text).toContain("In compliance");
+  const providers = body()
+    .getAllByRole("row")
+    .slice(1)
+    .map(
+      (r: HTMLElement) => r.querySelectorAll('[role="cell"]')[1]?.textContent,
+    );
+  expect(providers).toEqual(["Velero", "Rubrik"]);
+});
+
+test("Rubrik rows show on a cluster without Velero", async () => {
+  api.detected = false;
+  // Whatever the backups endpoint says, Velero is not there to list.
+  api.backups = [backup("ghost")];
+  api.rubrik = { status: rubrikStatusOf(), list: rubrikListOf() };
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  expect(view.container.textContent).toContain("Velero Not Detected");
+  expect(view.container.textContent).toContain("SLA Gold");
+  expect(view.container.textContent).not.toContain("ghost");
+  expect(view.container.querySelector("input")).not.toBeNull();
+});
+
+test("Rubrik rows show when Velero's backups are denied, and no Velero row does", async () => {
+  api.backups = [backup("hidden")];
+  api.denied = ["backups"];
+  api.rubrik = { status: rubrikStatusOf(), list: rubrikListOf() };
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  body().getByTestId("velero-denied-note");
+  expect(view.container.textContent).toContain("SLA Gold");
+  expect(view.container.textContent).not.toContain("hidden");
+});
+
+test("the search box narrows Rubrik rows by name or SLA", async () => {
+  api.rubrik = {
+    status: rubrikStatusOf(),
+    list: rubrikListOf([
+      rubrikObject(),
+      rubrikObject({
+        id: "obj-cart",
+        name: "cart",
+        effectiveSla: { id: "sla-silver", name: "Silver" },
+      }),
+    ]),
+  };
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  const input = view.container.querySelector("input") as HTMLInputElement;
+  await act(async () => {
+    fireEvent.change(input, { target: { value: "SILVER" } });
+  });
+  const text = view.container.textContent ?? "";
+  expect(text).toContain("cart");
+  expect(text).not.toContain("SLA Gold");
+});
+
+test("Snapshots opens the Rubrik detail; closing it re-reads the rows in place", async () => {
+  const object = rubrikObject();
+  const list = rubrikListOf([object]);
+  api.rubrik = {
+    status: rubrikStatusOf(),
+    list,
+    detail: {
+      namespace: list.namespaces[0],
+      objects: [
+        {
+          ...object,
+          snapshots: [{ id: "s-1", time: "2026-01-01T00:00:00Z" }],
+          jobs: [],
+        },
+      ],
+      freshness: { fetchedAt: new Date().toISOString(), stale: false },
+    },
+  };
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  expect(rubrikReads()).toBe(1);
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Snapshots of shop" }));
+  });
+  await settle();
+  expect(calls.some((c) => c.url.endsWith("/v1/rubrik/namespaces/shop"))).toBe(
+    true,
+  );
+  const panel = body().getByRole("dialog", { name: "Rubrik details for shop" });
+  expect(panel.textContent).toContain("Available");
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Close" }));
+  });
+  await settle();
+  expect(body().queryByRole("dialog")).toBeNull();
+  expect(rubrikReads()).toBe(2);
+  expect(view.container.textContent).toContain("SLA Gold");
+});
+
+test("an RSC failure says so above the backups", async () => {
+  api.backups = [backup("nightly-1")];
+  api.rubrik = {
+    status: rubrikStatusOf(),
+    listFail: { status: 503, reason: "unreachable" },
+  };
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  expect(view.container.textContent).toContain(
+    "Rubrik: RSC could not be reached",
+  );
+  expect(view.container.textContent).toContain("nightly-1");
+});
+
+test("an unset-up cluster says so, with the setup link for admins", async () => {
+  api.rubrik = { status: rubrikStatusOf("not_configured") };
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  expect(view.container.textContent).toContain(
+    "Rubrik is not set up for this cluster.",
+  );
+  expect(
+    body().getByRole("link", { name: "Set up Rubrik" }).getAttribute("href"),
+  ).toBe("/settings/general#rubrik");
+});
+
+test("a status without the cluster's state reads as Rubrik not loaded", async () => {
+  api.rubrik = {
+    status: { enabled: true, preview: true, writesEnabled: false },
+  };
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  expect(view.container.textContent).toContain(
+    "The Rubrik data could not be loaded.",
+  );
+});
+
+test("with Rubrik off the Backups page shows no Rubrik row or note", async () => {
+  api.backups = [backup("nightly-1")];
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  expect(view.container.textContent).not.toContain("Rubrik");
+  expect(view.container.textContent).toContain("1 backup");
+});
+
+test("Refresh reads Rubrik again too", async () => {
+  api.rubrik = { status: rubrikStatusOf(), list: rubrikListOf() };
+  render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  expect(rubrikReads()).toBe(1);
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Refresh" }));
+  });
+  await settle();
+  expect(rubrikReads()).toBe(2);
 });

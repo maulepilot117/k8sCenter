@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import BarRow from "@/components/charts/BarRow.tsx";
 import Donut from "@/components/charts/Donut.tsx";
+import { RubrikNamespacePanel } from "@/components/rubrik/RubrikNamespacePanel.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
@@ -10,7 +11,10 @@ import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { BackupsResourceTable } from "@/components/velero/BackupsResourceTable.tsx";
+import {
+  BackupsResourceTable,
+  rubrikBackupRows,
+} from "@/components/velero/BackupsResourceTable.tsx";
 import { RestoresResourceTable } from "@/components/velero/RestoresResourceTable.tsx";
 import { SchedulesResourceTable } from "@/components/velero/SchedulesResourceTable.tsx";
 import { phaseTone } from "@/components/velero/velero-utils.ts";
@@ -23,6 +27,8 @@ import {
   surfaceStateFor,
 } from "@/lib/backup-assurance-types.ts";
 import { age } from "@/lib/format.ts";
+import type { RubrikInput } from "@/lib/protection-overview.ts";
+import { timeAgo } from "@/lib/timeAgo.ts";
 import type {
   Backup,
   LocationsResponse,
@@ -35,7 +41,10 @@ import VeleroBackupWizard from "@/src/islands/VeleroBackupWizard.tsx";
 import VeleroRestoreWizard from "@/src/islands/VeleroRestoreWizard.tsx";
 import VeleroScheduleWizard from "@/src/islands/VeleroScheduleWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { rubrikStatus } from "@/src/lib/rubrik-status.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { RSC_FAILURE, useRubrikList } from "@/src/lib/use-rubrik-list.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 type Tab = "overview" | "backups" | "restores" | "schedules";
 
@@ -87,6 +96,18 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
   const [restoreWizardOpen, setRestoreWizardOpen] = useState(false);
   const [scheduleWizardOpen, setScheduleWizardOpen] = useState(false);
 
+  // Rubrik objects are listed with the Velero backups (provider column).
+  const { list: rubrik, reload: reloadRubrik } = useRubrikList();
+  const rubrikState = useSignalValue(rubrikStatus);
+  /** The namespace whose Rubrik detail (snapshots) is open. */
+  const [rubrikPanel, setRubrikPanel] = useState<string | null>(null);
+  // A write from the panel can change an object's snapshot or SLA: read the
+  // rows again when it closes, keeping them on screen meanwhile.
+  const closeRubrikPanel = useCallback(() => {
+    setRubrikPanel(null);
+    reloadRubrik({ quiet: true });
+  }, [reloadRubrik]);
+
   async function fetchData() {
     try {
       const [statusRes, backupsRes, restoresRes, schedulesRes, locationsRes] =
@@ -134,6 +155,7 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
 
   async function handleRefresh() {
     setRefreshing(true);
+    reloadRubrik();
     await fetchData();
     setRefreshing(false);
   }
@@ -186,6 +208,15 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
   const filteredSchedules = schedules.filter(
     (s) => !search || s.name.toLowerCase().includes(search.toLowerCase()),
   );
+  const rubrikRows = rubrikBackupRows(rubrik);
+  const filteredRubrik = rubrikRows.filter(
+    (r) =>
+      !search ||
+      r.name.toLowerCase().includes(search.toLowerCase()) ||
+      r.sla.toLowerCase().includes(search.toLowerCase()),
+  );
+  /** Velero's backups can be listed: installed, read, and not denied. */
+  const veleroListed = !error && !!status?.detected && !denied.backups;
 
   // ---------------------------------------------------------------------------
   // Page header labels
@@ -205,7 +236,11 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
         : `${n} ${noun}${n !== 1 ? "s" : ""}`;
   const subtitles: Record<Tab, string> = {
     overview: "Velero backup and restore management",
-    backups: countOf("backups", backups.length, "backup"),
+    backups:
+      countOf("backups", backups.length, "backup") +
+      (!loading && rubrikRows.length > 0
+        ? ` · ${rubrikRows.length} Rubrik object${rubrikRows.length !== 1 ? "s" : ""}`
+        : ""),
     restores: countOf("restores", restores.length, "restore"),
     schedules: countOf("schedules", schedules.length, "schedule"),
   };
@@ -394,9 +429,41 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
             <DeniedListsNote names={[initialTab]} />
           )}
 
-          {initialTab !== "overview" && !denied[initialTab] && (
+          {initialTab !== "overview" &&
+            initialTab !== "backups" &&
+            !denied[initialTab] && (
+              <>
+                {/* Search bar */}
+                <div style={{ maxWidth: "320px" }}>
+                  <SearchBar
+                    value={search}
+                    onInput={setSearch}
+                    placeholder="Search…"
+                  />
+                </div>
+
+                {initialTab === "restores" && (
+                  <RestoresResourceTable restores={filteredRestores} />
+                )}
+                {initialTab === "schedules" && (
+                  <SchedulesResourceTable
+                    schedules={filteredSchedules}
+                    deleting={deleting}
+                    onDelete={handleDeleteSchedule}
+                  />
+                )}
+              </>
+            )}
+        </>
+      )}
+
+      {/* ── Backups: Velero and Rubrik, one row each ───────────────── */}
+      {/* Rubrik rows show whether or not Velero is installed or readable. */}
+      {!loading && initialTab === "backups" && (
+        <>
+          <RubrikNote list={rubrik} />
+          {(veleroListed || rubrikRows.length > 0) && (
             <>
-              {/* Search bar */}
               <div style={{ maxWidth: "320px" }}>
                 <SearchBar
                   value={search}
@@ -404,27 +471,26 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
                   placeholder="Search…"
                 />
               </div>
-
-              {initialTab === "backups" && (
-                <BackupsResourceTable
-                  backups={filteredBackups}
-                  deleting={deleting}
-                  onDelete={handleDeleteBackup}
-                />
-              )}
-              {initialTab === "restores" && (
-                <RestoresResourceTable restores={filteredRestores} />
-              )}
-              {initialTab === "schedules" && (
-                <SchedulesResourceTable
-                  schedules={filteredSchedules}
-                  deleting={deleting}
-                  onDelete={handleDeleteSchedule}
-                />
-              )}
+              <BackupsResourceTable
+                backups={veleroListed ? filteredBackups : []}
+                deleting={deleting}
+                onDelete={handleDeleteBackup}
+                rubrik={filteredRubrik}
+                onOpenRubrik={setRubrikPanel}
+              />
             </>
           )}
         </>
+      )}
+      {rubrikPanel && (
+        <RubrikNamespacePanel
+          key={rubrikPanel}
+          namespace={rubrikPanel}
+          writesEnabled={
+            rubrikState.kind === "enabled" && rubrikState.status.writesEnabled
+          }
+          onClose={closeRubrikPanel}
+        />
       )}
 
       {/* ── Wizard modals ─────────────────────────────────────────── */}
@@ -439,6 +505,60 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
       )}
     </div>
   );
+}
+
+/**
+ * Why the Backups page has no Rubrik rows, or why they may be out of date.
+ * Says nothing when Rubrik is off, still loading, or not for this user, so a
+ * Velero-only cluster looks as it did.
+ */
+function RubrikNote({ list }: { list: RubrikInput }) {
+  switch (list.kind) {
+    case "loaded": {
+      const fresh = list.list.freshness;
+      if (!fresh?.stale) return null;
+      return (
+        <Alert variant="warning">
+          Rubrik: {RSC_FAILURE[fresh.error ?? ""] ?? "RSC could not be asked"}.
+          The Rubrik rows show what RSC last returned, fetched{" "}
+          {timeAgo(fresh.fetchedAt)}.
+        </Alert>
+      );
+    }
+    case "rsc_failing":
+      return (
+        <Alert variant="warning">
+          Rubrik: {RSC_FAILURE[list.reason ?? ""] ?? "RSC could not be asked"}
+          {list.lastFetchedAt
+            ? `; last fetched ${timeAgo(list.lastFetchedAt)}`
+            : ""}
+          .
+        </Alert>
+      );
+    case "error":
+      return (
+        <Alert variant="warning">The Rubrik data could not be loaded.</Alert>
+      );
+    case "not_set_up":
+      return (
+        <Alert variant="info">
+          Rubrik is not set up for this cluster.
+          {list.setupLink && (
+            <>
+              {" "}
+              <a
+                className="text-accent underline"
+                href="/settings/general#rubrik"
+              >
+                Set up Rubrik
+              </a>
+            </>
+          )}
+        </Alert>
+      );
+    default:
+      return null;
+  }
 }
 
 /**

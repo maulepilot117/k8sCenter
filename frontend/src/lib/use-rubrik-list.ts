@@ -73,7 +73,13 @@ export function useRubrikList(): {
       );
       return;
     }
-    const state = status.status.cluster.state;
+    // A status without the cluster's state (an older or broken answer) is
+    // one the page cannot act on: say Rubrik could not be loaded.
+    const state = status.status.cluster?.state;
+    if (!state) {
+      setList({ kind: "error" });
+      return;
+    }
     if (state !== "mapped") {
       setList(
         state === "admin_only"
