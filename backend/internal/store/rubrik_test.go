@@ -696,3 +696,161 @@ func TestRubrikStore_RecordsContactHealth(t *testing.T) {
 		t.Errorf("failure for a missing connection = (%v, %v); want no write and no error", ok, err)
 	}
 }
+
+// 000032 lets the local cluster's mapping be keyed "local" when the local
+// clusters row has another id (KUBECENTER_CLUSTERID), and keeps the cluster
+// delete cascade through a trigger. The down file drops a mapping with no
+// clusters row so the foreign key can come back.
+func TestMigration000032_LocalMappingKey(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+	if err := m.Migrate(31); err != nil {
+		t.Fatalf("migrating to 000031: %v", err)
+	}
+	s := NewRubrikStore(pool, rubrikTestKey)
+	connID, conn := newRubrikTestConnection(t, s, "https://tenant.my.rubrik.com")
+	// The local row as EnsureLocal writes it for KUBECENTER_CLUSTERID=home.
+	if _, err := pool.Exec(ctx, `INSERT INTO clusters (id, name, display_name, api_server_url, auth_type, auth_data, is_local, status)
+		VALUES ('home', 'home', 'Local Cluster', 'https://kubernetes.default.svc', 'in-cluster', '{}', true, 'connected')`); err != nil {
+		t.Fatalf("writing local cluster row: %v", err)
+	}
+	local := RubrikMappingWrite{
+		ClusterID: RubrikLocalClusterID, ConnectionID: connID, ConnectionRevision: conn.Revision,
+		RSCClusterID: "rsc-local", RSCClusterName: "prod-east", ClusterGeneration: "local", UpdatedBy: "admin",
+	}
+	if _, err := s.SetMapping(ctx, local); err == nil {
+		t.Fatal("local mapping at 31 succeeded; the 000031 foreign key should refuse it")
+	}
+
+	if err := m.Migrate(32); err != nil {
+		t.Fatalf("migrating to 000032: %v", err)
+	}
+	if _, err := s.SetMapping(ctx, local); err != nil {
+		t.Fatalf("local mapping at 32: %v", err)
+	}
+	got, err := s.GetMapping(ctx, RubrikLocalClusterID)
+	if err != nil || got.RSCClusterID != "rsc-local" {
+		t.Fatalf("local mapping at 32 = %+v, %v; want rsc-local", got, err)
+	}
+	insertRubrikPollerRows(ctx, t, pool, RubrikLocalClusterID)
+
+	// The local row named by its configured id is refused, so the local
+	// cluster cannot get a second mapping beside "local".
+	byConfiguredID := local
+	byConfiguredID.ClusterID, byConfiguredID.RSCClusterID = "home", "rsc-home"
+	if _, err := s.SetMapping(ctx, byConfiguredID); !errors.Is(err, ErrRubrikClusterUnknown) {
+		t.Errorf("local row by its configured id = %v; want ErrRubrikClusterUnknown", err)
+	}
+
+	// A remote cluster that is not registered is still refused.
+	unknown := local
+	unknown.ClusterID, unknown.RSCClusterID = "not-registered", "rsc-unknown"
+	if _, err := s.SetMapping(ctx, unknown); !errors.Is(err, ErrRubrikClusterUnknown) {
+		t.Errorf("unregistered cluster at 32 = %v; want ErrRubrikClusterUnknown", err)
+	}
+
+	// Deleting a remote cluster still deletes its mapping and poller rows.
+	remote := mapRubrikTestCluster(t, s, pool, connID, "rsc-remote")
+	insertRubrikPollerRows(ctx, t, pool, remote)
+	if _, err := pool.Exec(ctx, `DELETE FROM clusters WHERE id = $1`, remote); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetMapping(ctx, remote); !errors.Is(err, ErrRubrikMappingNotFound) {
+		t.Errorf("remote mapping after cluster delete = %v; want ErrRubrikMappingNotFound", err)
+	}
+	if n := countRubrikPollerRows(ctx, t, pool, remote); n != 0 {
+		t.Errorf("remote poller rows after cluster delete = %d; want 0", n)
+	}
+	if _, err := s.GetMapping(ctx, RubrikLocalClusterID); err != nil {
+		t.Errorf("local mapping after a remote cluster delete: %v", err)
+	}
+
+	// The down file drops the mapping with no clusters row, then restores
+	// the foreign key.
+	kept := mapRubrikTestCluster(t, s, pool, connID, "rsc-kept")
+	if err := m.Migrate(31); err != nil {
+		t.Fatalf("rolling back 000032: %v", err)
+	}
+	if _, err := s.GetMapping(ctx, RubrikLocalClusterID); !errors.Is(err, ErrRubrikMappingNotFound) {
+		t.Errorf("local mapping after rollback = %v; want ErrRubrikMappingNotFound", err)
+	}
+	if n := countRubrikPollerRows(ctx, t, pool, RubrikLocalClusterID); n != 0 {
+		t.Errorf("local poller rows after rollback = %d; want 0", n)
+	}
+	if _, err := s.GetMapping(ctx, kept); err != nil {
+		t.Errorf("registered cluster's mapping after rollback: %v", err)
+	}
+	if _, err := s.SetMapping(ctx, local); err == nil {
+		t.Error("local mapping after rollback succeeded; the restored foreign key should refuse it")
+	}
+
+	if err := m.Migrate(32); err != nil {
+		t.Fatalf("re-applying 000032: %v", err)
+	}
+	if _, err := s.SetMapping(ctx, local); err != nil {
+		t.Errorf("local mapping after re-apply: %v", err)
+	}
+}
+
+// Running the up file against a database already at 32 must not fail.
+func TestMigration000032_UpIsIdempotent(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	if err := m.Migrate(32); err != nil {
+		t.Fatalf("migrating to 000032: %v", err)
+	}
+	up, err := os.ReadFile("migrations/000032_rubrik_mapping_local_key.up.sql")
+	if err != nil {
+		t.Fatalf("reading the up file: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), string(up)); err != nil {
+		t.Errorf("re-running 000032 up on a database at 32: %v", err)
+	}
+}
+
+// Local mapping saves have no clusters row to lock on, so they serialize on
+// a transaction advisory lock: a save waits while another transaction holds
+// it. Without the lock two first saves could interleave and keep one
+// save's RSC id with the other's name.
+func TestRubrikStore_LocalMappingSavesSerialize(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+	if err := m.Migrate(32); err != nil {
+		t.Fatalf("migrating to 000032: %v", err)
+	}
+	s := NewRubrikStore(pool, rubrikTestKey)
+	connID, conn := newRubrikTestConnection(t, s, "https://tenant.my.rubrik.com")
+
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('rubrik_local_mapping'))`); err != nil {
+		t.Fatalf("taking the lock: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.SetMapping(ctx, RubrikMappingWrite{
+			ClusterID: RubrikLocalClusterID, ConnectionID: connID, ConnectionRevision: conn.Revision,
+			RSCClusterID: "rsc-local", RSCClusterName: "prod-east", ClusterGeneration: "local", UpdatedBy: "admin",
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("local save finished while the lock was held (err %v); want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("local save after the lock was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("local save still waiting 10s after the lock was released")
+	}
+}
