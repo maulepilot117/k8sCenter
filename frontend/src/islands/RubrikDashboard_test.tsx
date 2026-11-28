@@ -225,7 +225,10 @@ test("with the provider disabled the page says it is not enabled", async () => {
     fail(404, undefined, "404 page not found");
   const { unmount } = render(<RubrikDashboard />);
   await settle();
-  body().getByText(/The Rubrik provider is not enabled/);
+  const note = body().getByText(/The Rubrik provider is not enabled/);
+  // The provider is always on with PostgreSQL; no Helm value turns it on.
+  expect(note.textContent).toContain("PostgreSQL");
+  expect(note.textContent).not.toContain("rubrik.enabled");
   expect(calls).not.toContain("GET /api/v1/rubrik/namespaces");
   unmount();
 });

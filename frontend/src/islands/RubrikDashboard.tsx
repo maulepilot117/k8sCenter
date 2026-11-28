@@ -410,8 +410,8 @@ export default function RubrikDashboard({
   } else if (status.kind === "disabled") {
     body = (
       <Alert variant="info">
-        The Rubrik provider is not enabled. An operator turns it on with the
-        Helm value <code>rubrik.enabled</code>.
+        The Rubrik provider is not enabled. It needs the k8sCenter PostgreSQL
+        database, which this install does not have.
       </Alert>
     );
   } else if (status.kind === "error") {
