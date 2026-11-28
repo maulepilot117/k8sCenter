@@ -1,7 +1,6 @@
 import AuditLogViewer from "@/src/islands/AuditLogViewer.tsx";
 import AuthSettings from "@/src/islands/AuthSettings.tsx";
 import ClusterManager from "@/src/islands/ClusterManager.tsx";
-import RubrikSettings from "@/src/islands/RubrikSettings.tsx";
 import SettingsPage from "@/src/islands/SettingsPage.tsx";
 import UserManager from "@/src/islands/UserManager.tsx";
 
@@ -12,9 +11,8 @@ function resolveContent(currentPath: string) {
   if (path === "/settings/users") return <UserManager />;
   if (path === "/settings/auth") return <AuthSettings />;
   if (path === "/settings/audit") return <AuditLogViewer />;
-  if (path === "/settings/rubrik") return <RubrikSettings />;
 
-  // Default: general settings
+  // Default: general settings, which include the Rubrik section
   return <SettingsPage />;
 }
 

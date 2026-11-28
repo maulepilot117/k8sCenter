@@ -471,7 +471,10 @@ function RubrikCellView({ cell }: { cell: RubrikCell }) {
           <Muted>Not set up for this cluster</Muted>
           {cell.setupLink && (
             <Detail>
-              <a className="text-accent underline" href="/settings/rubrik">
+              <a
+                className="text-accent underline"
+                href="/settings/general#rubrik"
+              >
                 Set up Rubrik
               </a>
             </Detail>
