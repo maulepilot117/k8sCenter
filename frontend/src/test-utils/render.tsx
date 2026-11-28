@@ -91,6 +91,13 @@ export function setupDom({ browser = false }: DomOptions = {}): void {
     // while this file's document still exists.
     for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
     setBrowser(false);
+    // lib/api.ts keeps the access token in module state, which every file in
+    // this process shares: a token a file signed in with would otherwise
+    // reach the files after it. Cleared per file, not per test, because some
+    // files set it once in beforeAll. Imported here, at teardown, so the
+    // harness never loads the api module ahead of a file's mock.module calls.
+    const { setAccessToken } = await import("@/lib/api.ts");
+    setAccessToken(null);
     if (registeredHere) GlobalRegistrator.unregister();
   });
 }
