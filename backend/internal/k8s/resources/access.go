@@ -58,6 +58,9 @@ type AccessChecker struct {
 	alwaysAllow   bool            // for testing only
 	alwaysDeny    bool            // for testing only
 	predicate     AccessPredicate // for testing only
+	// checkFn answers CanAccessGroupResource with a decision or an error per
+	// call; for testing only (NewCheckFuncAccessChecker).
+	checkFn       func(verb, apiGroup, resource, namespace string) (bool, error)
 	denyResources map[string]bool // for testing only — denies CanAccess for named resources
 	forcedErr     error           // for testing only — every check fails with this
 	// observe sees every CanAccess call before it is answered; for testing
@@ -119,7 +122,7 @@ func (ac *AccessChecker) CanAccess(ctx context.Context, clusterID, username stri
 	// targeting CanAccessGroupResource (the CRD path) aren't forced to
 	// supply rules for every core resource the base graph touches. The
 	// predicate is consulted directly by CanAccessGroupResource.
-	if ac.predicate != nil {
+	if ac.predicate != nil || ac.checkFn != nil {
 		return true, nil
 	}
 	key := accessCacheKey{
@@ -206,6 +209,9 @@ func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, clusterID, 
 	}
 	if ac.predicate != nil {
 		return ac.predicate(verb, apiGroup, resource, namespace), nil
+	}
+	if ac.checkFn != nil {
+		return ac.checkFn(verb, apiGroup, resource, namespace)
 	}
 
 	key := accessCacheKey{
@@ -348,6 +354,19 @@ func NewRecordingAccessChecker(observe func(clusterID, username string, groups [
 		logger:        slog.Default(),
 		alwaysAllow:   true,
 		observe:       observe,
+	}
+}
+
+// NewCheckFuncAccessChecker returns an AccessChecker whose
+// CanAccessGroupResource answers come from fn, an error included, so a test
+// can fail some checks and answer others (a cluster-wide denial with
+// per-namespace checks that cannot be made). CanAccess allows, as with the
+// predicate fake. For testing only.
+func NewCheckFuncAccessChecker(fn func(verb, apiGroup, resource, namespace string) (bool, error)) *AccessChecker {
+	return &AccessChecker{
+		clientFactory: nil,
+		logger:        slog.Default(),
+		checkFn:       fn,
 	}
 }
 
