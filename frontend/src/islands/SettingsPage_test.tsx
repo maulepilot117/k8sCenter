@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
+import type { UserInfo } from "@/lib/k8s-types.ts";
 import { toasts } from "@/src/lib/toast-store.ts";
 import {
   act,
@@ -16,6 +17,17 @@ const bunFetch = globalThis.fetch;
 setupDom({ browser: true });
 
 const { default: SettingsPage } = await import("./SettingsPage.tsx");
+const { useAuth } = await import("@/lib/auth.ts");
+const { resetRubrikStatusForTest } = await import("@/src/lib/rubrik-status.ts");
+
+const admin: UserInfo = {
+  id: "u1",
+  username: "alice",
+  provider: "local",
+  kubernetesUsername: "alice",
+  kubernetesGroups: [],
+  roles: ["admin"],
+};
 
 interface Call {
   method: string;
@@ -62,12 +74,23 @@ beforeEach(() => {
         status: 500,
         headers: { "Content-Type": "application/json" },
       });
+    // The Rubrik section's own status read: the provider is off here
+    // (RubrikSettings_test covers it on).
+    if (url.includes("/v1/rubrik/")) {
+      return new Response(
+        JSON.stringify({ error: { code: 404, message: "404 page not found" } }),
+        { status: 404, headers: { "Content-Type": "application/json" } },
+      );
+    }
     if (method === "PUT") return failPut ? fail(failPut) : json({});
     return failGet ? fail(failGet) : json(settings);
   }) as unknown as typeof globalThis.fetch;
 });
 afterEach(() => {
   globalThis.fetch = bunFetch;
+  useAuth().user.value = null;
+  resetRubrikStatusForTest();
+  if (globalThis.location.hash) globalThis.location.hash = "";
 });
 afterAll(() => {
   globalThis.fetch = bunFetch;
@@ -114,7 +137,7 @@ test("shows a loading line, then the stored values", async () => {
   render(<SettingsPage />);
   body().getByText("Loading settings…");
   await settle();
-  expect(calls[0].url).toContain("/v1/settings");
+  expect(calls.some((c) => c.url.endsWith("/v1/settings"))).toBe(true);
   expect(inputFor("Prometheus URL").value).toBe("http://p");
   expect(inputFor("Grafana URL").value).toBe("http://g");
   expect(inputFor("Monitoring Namespace").value).toBe("monitoring");
@@ -243,4 +266,55 @@ test("Send Test Email puts to the alerts test endpoint and toasts", async () => 
   toasts.value = [];
   await click(button("Send Test Email"));
   expect(messages()).toEqual(["error:API error 500: smtp down"]);
+});
+
+test("Rubrik is a section of the general settings page", async () => {
+  useAuth().user.value = admin;
+  await renderLoaded();
+  const section = body().getByTestId("rubrik-settings");
+  expect(section.closest("#rubrik")).not.toBeNull();
+  body().getByText("Preview");
+  // The provider is off in this harness, so the section says why.
+  body().getByText(/The Rubrik provider is not enabled/);
+  // It sits below the general sections, not instead of them.
+  expect(button("Save Monitoring")).toBeDefined();
+  expect(calls.some((c) => c.url.endsWith("/v1/rubrik/status"))).toBe(true);
+});
+
+test("the Rubrik section still shows when the general settings fail", async () => {
+  failGet = "boom";
+  await renderLoaded();
+  body().getByText(/boom/);
+  body().getByTestId("rubrik-settings");
+});
+
+test("#rubrik scrolls to the Rubrik section once the settings load", async () => {
+  globalThis.location.hash = "#rubrik";
+  const scrolled: string[] = [];
+  const real = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function (this: Element) {
+    scrolled.push(this.id);
+  };
+  try {
+    render(<SettingsPage />);
+    expect(scrolled).toEqual([]);
+    await settle();
+    expect(scrolled).toEqual(["rubrik"]);
+  } finally {
+    Element.prototype.scrollIntoView = real;
+  }
+});
+
+test("without #rubrik nothing scrolls", async () => {
+  const scrolled: string[] = [];
+  const real = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function (this: Element) {
+    scrolled.push(this.id);
+  };
+  try {
+    await renderLoaded();
+    expect(scrolled).toEqual([]);
+  } finally {
+    Element.prototype.scrollIntoView = real;
+  }
 });

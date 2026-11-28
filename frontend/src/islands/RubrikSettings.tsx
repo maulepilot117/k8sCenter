@@ -25,6 +25,7 @@ import {
 } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { ApiError, apiDelete, apiGet, apiPut } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { sameOrigin } from "@/lib/origin.ts";
@@ -275,15 +276,22 @@ export default function RubrikSettings() {
     );
   }
 
+  // A section of Settings -> General, like Monitoring and Alerting. The id is
+  // the #rubrik anchor that /settings/rubrik redirects to.
   return (
-    <div data-testid="rubrik-settings" className="flex flex-col gap-4 p-1">
-      <div className="flex items-center gap-2">
-        <h2 className="m-0 text-[18px] font-bold text-text-primary">Rubrik</h2>
-        <span className="rounded-md border border-border-subtle px-1.5 py-px text-[11px] font-semibold text-text-muted">
-          Preview
-        </span>
-      </div>
-      {body}
+    <div id="rubrik">
+      <WidgetShell
+        title="Rubrik"
+        action={
+          <span className="rounded-md border border-border-subtle px-1.5 py-px text-[11px] font-semibold text-text-muted">
+            Preview
+          </span>
+        }
+      >
+        <div data-testid="rubrik-settings" className="flex flex-col gap-4">
+          {body}
+        </div>
+      </WidgetShell>
     </div>
   );
 }

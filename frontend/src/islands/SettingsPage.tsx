@@ -6,6 +6,7 @@ import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { apiGet, apiPut } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
+import RubrikSettings from "@/src/islands/RubrikSettings.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
@@ -56,6 +57,15 @@ export default function SettingsPage() {
   }, []);
 
   useDirtyGuard(dirtyMonitoring || dirtyAlerting);
+
+  // /settings/rubrik redirects to #rubrik. The Rubrik section mounts after the
+  // first render and the sections above it load later, pushing it down, so
+  // scroll to it once they have settled rather than on the browser's load.
+  useEffect(() => {
+    if (loading && !error) return;
+    if (globalThis.location?.hash !== "#rubrik") return;
+    document.getElementById("rubrik")?.scrollIntoView();
+  }, [loading, error]);
 
   async function fetchSettings() {
     try {
@@ -136,88 +146,95 @@ export default function SettingsPage() {
 
   if (!isClient) return null;
 
-  if (loading) {
+  function generalSections() {
     return (
-      <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-        Loading settings…
-      </div>
-    );
-  }
-
-  if (error) {
-    return <ErrorBanner message={error} />;
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      {/* Monitoring Section */}
-      <WidgetShell
-        title="Monitoring"
-        action={
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={saveMonitoring}
-            disabled={!dirtyMonitoring || savingSection === "monitoring"}
-            loading={savingSection === "monitoring"}
-          >
-            Save Monitoring
-          </Button>
-        }
-      >
-        <MonitoringFields
-          promUrl={promUrl}
-          onPromUrlChange={setPromUrl}
-          grafUrl={grafUrl}
-          onGrafUrlChange={setGrafUrl}
-          grafToken={grafToken}
-          onGrafTokenChange={setGrafToken}
-          monNs={monNs}
-          onMonNsChange={setMonNs}
-          onDirty={() => setDirtyMonitoring(true)}
-        />
-      </WidgetShell>
-
-      {/* Alerting Section */}
-      <WidgetShell
-        title="Alerting"
-        action={
-          <div style={{ display: "flex", gap: "8px" }}>
-            <Button variant="ghost" size="sm" onClick={testEmail}>
-              Send Test Email
-            </Button>
+      <>
+        {/* Monitoring Section */}
+        <WidgetShell
+          title="Monitoring"
+          action={
             <Button
               variant="primary"
               size="sm"
-              onClick={saveAlerting}
-              disabled={!dirtyAlerting || savingSection === "alerting"}
-              loading={savingSection === "alerting"}
+              onClick={saveMonitoring}
+              disabled={!dirtyMonitoring || savingSection === "monitoring"}
+              loading={savingSection === "monitoring"}
             >
-              Save Alerting
+              Save Monitoring
             </Button>
-          </div>
-        }
-      >
-        <AlertingFields
-          alertEnabled={alertEnabled}
-          onAlertEnabledChange={setAlertEnabled}
-          smtpHost={smtpHost}
-          onSmtpHostChange={setSmtpHost}
-          smtpPort={smtpPort}
-          onSmtpPortChange={setSmtpPort}
-          smtpUser={smtpUser}
-          onSmtpUserChange={setSmtpUser}
-          smtpPass={smtpPass}
-          onSmtpPassChange={setSmtpPass}
-          smtpFrom={smtpFrom}
-          onSmtpFromChange={setSmtpFrom}
-          alertRate={alertRate}
-          onAlertRateChange={setAlertRate}
-          alertRecipients={alertRecipients}
-          onAlertRecipientsChange={setAlertRecipients}
-          onDirty={() => setDirtyAlerting(true)}
-        />
-      </WidgetShell>
+          }
+        >
+          <MonitoringFields
+            promUrl={promUrl}
+            onPromUrlChange={setPromUrl}
+            grafUrl={grafUrl}
+            onGrafUrlChange={setGrafUrl}
+            grafToken={grafToken}
+            onGrafTokenChange={setGrafToken}
+            monNs={monNs}
+            onMonNsChange={setMonNs}
+            onDirty={() => setDirtyMonitoring(true)}
+          />
+        </WidgetShell>
+
+        {/* Alerting Section */}
+        <WidgetShell
+          title="Alerting"
+          action={
+            <div style={{ display: "flex", gap: "8px" }}>
+              <Button variant="ghost" size="sm" onClick={testEmail}>
+                Send Test Email
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={saveAlerting}
+                disabled={!dirtyAlerting || savingSection === "alerting"}
+                loading={savingSection === "alerting"}
+              >
+                Save Alerting
+              </Button>
+            </div>
+          }
+        >
+          <AlertingFields
+            alertEnabled={alertEnabled}
+            onAlertEnabledChange={setAlertEnabled}
+            smtpHost={smtpHost}
+            onSmtpHostChange={setSmtpHost}
+            smtpPort={smtpPort}
+            onSmtpPortChange={setSmtpPort}
+            smtpUser={smtpUser}
+            onSmtpUserChange={setSmtpUser}
+            smtpPass={smtpPass}
+            onSmtpPassChange={setSmtpPass}
+            smtpFrom={smtpFrom}
+            onSmtpFromChange={setSmtpFrom}
+            alertRate={alertRate}
+            onAlertRateChange={setAlertRate}
+            alertRecipients={alertRecipients}
+            onAlertRecipientsChange={setAlertRecipients}
+            onDirty={() => setDirtyAlerting(true)}
+          />
+        </WidgetShell>
+      </>
+    );
+  }
+
+  // The Rubrik section loads on its own, so it shows while the general
+  // settings load or after they fail.
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {loading ? (
+        <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+          Loading settings…
+        </div>
+      ) : error ? (
+        <ErrorBanner message={error} />
+      ) : (
+        generalSections()
+      )}
+      <RubrikSettings />
     </div>
   );
 }
