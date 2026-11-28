@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import BarRow from "@/components/charts/BarRow.tsx";
 import Donut from "@/components/charts/Donut.tsx";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { KpiTile } from "@/components/ui/KpiTile.tsx";
@@ -38,6 +39,28 @@ import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 type Tab = "overview" | "backups" | "restores" | "schedules";
 
+/** The three lists the page reads that can come back denied. */
+type ListName = "backups" | "restores" | "schedules";
+
+/**
+ * Which lists the user may not read. The API answers a denied list with the
+ * empty list plus `metadata.accessDenied`, so without this the page would
+ * say "no backups" to someone who simply may not see them.
+ */
+type Denied = Record<ListName, boolean>;
+
+const NOT_DENIED: Denied = {
+  backups: false,
+  restores: false,
+  schedules: false,
+};
+
+/** "backups", "backups and schedules", "backups, restores and schedules". */
+function joinLists(names: ListName[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 interface Props {
   initialTab?: Tab;
 }
@@ -53,6 +76,7 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
   const [restores, setRestores] = useState<Restore[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [locations, setLocations] = useState<LocationsResponse | null>(null);
+  const [denied, setDenied] = useState<Denied>(NOT_DENIED);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -78,6 +102,11 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
       setRestores(Array.isArray(restoresRes.data) ? restoresRes.data : []);
       setSchedules(Array.isArray(schedulesRes.data) ? schedulesRes.data : []);
       setLocations(locationsRes.data);
+      setDenied({
+        backups: backupsRes.metadata?.accessDenied === true,
+        restores: restoresRes.metadata?.accessDenied === true,
+        schedules: schedulesRes.metadata?.accessDenied === true,
+      });
       setError(null);
     } catch {
       setError("Failed to load Velero data");
@@ -167,17 +196,18 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
     restores: "Restores",
     schedules: "Schedules",
   };
+  // A denied list's empty array is not a count of zero.
+  const countOf = (list: ListName, n: number, noun: string) =>
+    loading
+      ? "Loading…"
+      : denied[list]
+        ? "Not visible to you"
+        : `${n} ${noun}${n !== 1 ? "s" : ""}`;
   const subtitles: Record<Tab, string> = {
     overview: "Velero backup and restore management",
-    backups: loading
-      ? "Loading…"
-      : `${backups.length} backup${backups.length !== 1 ? "s" : ""}`,
-    restores: loading
-      ? "Loading…"
-      : `${restores.length} restore${restores.length !== 1 ? "s" : ""}`,
-    schedules: loading
-      ? "Loading…"
-      : `${schedules.length} schedule${schedules.length !== 1 ? "s" : ""}`,
+    backups: countOf("backups", backups.length, "backup"),
+    restores: countOf("restores", restores.length, "restore"),
+    schedules: countOf("schedules", schedules.length, "schedule"),
   };
   const createLabels: Partial<Record<Tab, string>> = {
     backups: "New Backup",
@@ -341,7 +371,17 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
           {initialTab === "overview" && <AssuranceStrip />}
 
           {initialTab === "overview" && (
+            <DeniedListsNote
+              counts
+              names={(Object.keys(denied) as ListName[]).filter(
+                (k) => denied[k],
+              )}
+            />
+          )}
+
+          {initialTab === "overview" && (
             <VeleroOverview
+              denied={denied}
               backups={backups}
               restores={restores}
               schedules={schedules}
@@ -350,7 +390,11 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
             />
           )}
 
-          {initialTab !== "overview" && (
+          {initialTab !== "overview" && denied[initialTab] && (
+            <DeniedListsNote names={[initialTab]} />
+          )}
+
+          {initialTab !== "overview" && !denied[initialTab] && (
             <>
               {/* Search bar */}
               <div style={{ maxWidth: "320px" }}>
@@ -393,6 +437,30 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
       {scheduleWizardOpen && (
         <VeleroScheduleWizard onClose={() => setScheduleWizardOpen(false)} />
       )}
+    </div>
+  );
+}
+
+/**
+ * Says which Velero lists the user may not read on this cluster, so an empty
+ * table or a zero count is not taken for "none". Renders nothing when every
+ * list was read.
+ */
+function DeniedListsNote({
+  names,
+  counts = false,
+}: {
+  names: ListName[];
+  /** On the overview, whose counts the denied lists are missing from. */
+  counts?: boolean;
+}) {
+  if (names.length === 0) return null;
+  return (
+    <div data-testid="velero-denied-note">
+      <Alert variant="info">
+        You may not list Velero {joinLists(names)} on this cluster
+        {counts ? ", so the counts below leave them out" : ""}.
+      </Alert>
     </div>
   );
 }
@@ -480,12 +548,15 @@ function AssuranceStrip() {
 // ---------------------------------------------------------------------------
 
 function VeleroOverview({
+  denied,
   backups,
   restores,
   schedules,
   locations,
   status,
 }: {
+  /** Lists the user may not read: no tile, bar or donut claims a zero. */
+  denied: Denied;
   backups: Backup[];
   restores: Restore[];
   schedules: Schedule[];
@@ -549,6 +620,13 @@ function VeleroOverview({
 
   const bslCount = locations?.backupStorageLocations.length ?? status.bslCount;
   const vslCount = locations?.volumeSnapshotLocations.length ?? status.vslCount;
+  // The bars share one scale, taken from the lists the user may read.
+  const barMax = Math.max(
+    denied.backups ? 0 : backups.length,
+    denied.restores ? 0 : restores.length,
+    denied.schedules ? 0 : schedules.length,
+    1,
+  );
 
   return (
     <div
@@ -566,24 +644,30 @@ function VeleroOverview({
           gap: "12px",
         }}
       >
-        <KpiTile
-          label="Backups"
-          value={backups.length}
-          color="var(--accent)"
-          href="/backup/backups"
-        />
-        <KpiTile
-          label="Restores"
-          value={restores.length}
-          color="var(--success)"
-          href="/backup/restores"
-        />
-        <KpiTile
-          label="Schedules"
-          value={schedules.length}
-          color="var(--warning)"
-          href="/backup/schedules"
-        />
+        {!denied.backups && (
+          <KpiTile
+            label="Backups"
+            value={backups.length}
+            color="var(--accent)"
+            href="/backup/backups"
+          />
+        )}
+        {!denied.restores && (
+          <KpiTile
+            label="Restores"
+            value={restores.length}
+            color="var(--success)"
+            href="/backup/restores"
+          />
+        )}
+        {!denied.schedules && (
+          <KpiTile
+            label="Schedules"
+            value={schedules.length}
+            color="var(--warning)"
+            href="/backup/schedules"
+          />
+        )}
         <KpiTile
           label="Storage Locations"
           value={bslCount}
@@ -604,62 +688,76 @@ function VeleroOverview({
           title="Backup Health"
           style={{ flex: "1 1 260px", minWidth: "220px" }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "24px" }}>
-            <Donut
-              segments={backupDonutSegments}
-              size={96}
-              thickness={14}
-              center={
-                <div style={{ textAlign: "center" }}>
-                  <div
-                    style={{
-                      fontSize: "20px",
-                      fontWeight: 700,
-                      fontVariantNumeric: "tabular-nums",
-                      color: "var(--text-primary)",
-                    }}
-                  >
-                    {backups.length}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "10px",
-                      fontWeight: 600,
-                      letterSpacing: "0.05em",
-                      textTransform: "uppercase",
-                      color: "var(--text-muted)",
-                    }}
-                  >
-                    total
-                  </div>
-                </div>
-              }
-            />
-            <div
-              style={{ display: "flex", flexDirection: "column", gap: "6px" }}
+          {denied.backups ? (
+            <p
+              data-testid="velero-health-denied"
+              style={{
+                margin: 0,
+                fontSize: "13px",
+                color: "var(--text-muted)",
+              }}
             >
-              <LegendRow
-                color="var(--success)"
-                label="Completed"
-                count={successBackups}
+              Not visible to you: you may not list Velero backups on this
+              cluster.
+            </p>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: "24px" }}>
+              <Donut
+                segments={backupDonutSegments}
+                size={96}
+                thickness={14}
+                center={
+                  <div style={{ textAlign: "center" }}>
+                    <div
+                      style={{
+                        fontSize: "20px",
+                        fontWeight: 700,
+                        fontVariantNumeric: "tabular-nums",
+                        color: "var(--text-primary)",
+                      }}
+                    >
+                      {backups.length}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "10px",
+                        fontWeight: 600,
+                        letterSpacing: "0.05em",
+                        textTransform: "uppercase",
+                        color: "var(--text-muted)",
+                      }}
+                    >
+                      total
+                    </div>
+                  </div>
+                }
               />
-              <LegendRow
-                color="var(--error)"
-                label="Failed"
-                count={failedBackups}
-              />
-              <LegendRow
-                color="var(--warning)"
-                label="Partial"
-                count={warnBackups}
-              />
-              <LegendRow
-                color="var(--info)"
-                label="In Progress"
-                count={inProgressBackups}
-              />
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: "6px" }}
+              >
+                <LegendRow
+                  color="var(--success)"
+                  label="Completed"
+                  count={successBackups}
+                />
+                <LegendRow
+                  color="var(--error)"
+                  label="Failed"
+                  count={failedBackups}
+                />
+                <LegendRow
+                  color="var(--warning)"
+                  label="Partial"
+                  count={warnBackups}
+                />
+                <LegendRow
+                  color="var(--info)"
+                  label="In Progress"
+                  count={inProgressBackups}
+                />
+              </div>
             </div>
-          </div>
+          )}
         </WidgetShell>
 
         {/* Resource counts bar chart */}
@@ -668,42 +766,33 @@ function VeleroOverview({
           style={{ flex: "2 1 300px", minWidth: "260px" }}
         >
           <div style={{ paddingTop: "4px" }}>
-            <BarRow
-              label="Backups"
-              value={backups.length}
-              max={Math.max(
-                backups.length,
-                restores.length,
-                schedules.length,
-                1,
-              )}
-              suffix={String(backups.length)}
-              color="var(--accent)"
-            />
-            <BarRow
-              label="Restores"
-              value={restores.length}
-              max={Math.max(
-                backups.length,
-                restores.length,
-                schedules.length,
-                1,
-              )}
-              suffix={String(restores.length)}
-              color="var(--success)"
-            />
-            <BarRow
-              label="Schedules"
-              value={schedules.length}
-              max={Math.max(
-                backups.length,
-                restores.length,
-                schedules.length,
-                1,
-              )}
-              suffix={String(schedules.length)}
-              color="var(--warning)"
-            />
+            {!denied.backups && (
+              <BarRow
+                label="Backups"
+                value={backups.length}
+                max={barMax}
+                suffix={String(backups.length)}
+                color="var(--accent)"
+              />
+            )}
+            {!denied.restores && (
+              <BarRow
+                label="Restores"
+                value={restores.length}
+                max={barMax}
+                suffix={String(restores.length)}
+                color="var(--success)"
+              />
+            )}
+            {!denied.schedules && (
+              <BarRow
+                label="Schedules"
+                value={schedules.length}
+                max={barMax}
+                suffix={String(schedules.length)}
+                color="var(--warning)"
+              />
+            )}
             <BarRow
               label="BSLs"
               value={bslCount}

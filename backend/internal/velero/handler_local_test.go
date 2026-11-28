@@ -344,3 +344,60 @@ func TestLocal_FailedAccessCheckIsNotADenial(t *testing.T) {
 		}
 	}
 }
+
+// A narrowed list whose per-namespace checks could not be made is not
+// known to be a denial: it answers the empty list without the flag, so a
+// user with grants is not told they may not list backups during an
+// apiserver blip.
+func TestLocal_ErroredNamespaceCheckIsNotADenial(t *testing.T) {
+	hs := newLocalHarness(t)
+	hs.h.cachedData = &cachedVeleroData{
+		backups:   []Backup{{Name: "in-team", Namespace: "team-a"}},
+		restores:  []Restore{{Name: "r-team", Namespace: "team-a"}},
+		schedules: []Schedule{{Name: "s-team", Namespace: "team-a"}},
+		locations: &LocationsResponse{},
+		fetchedAt: time.Now(),
+	}
+	// Cluster-wide: a plain no. Per namespace: the check cannot be made.
+	hs.h.AccessChecker = resources.NewCheckFuncAccessChecker(func(_, _, _, ns string) (bool, error) {
+		if ns == "" {
+			return false, nil
+		}
+		return false, errors.New("apiserver timeout")
+	})
+	for name, h := range map[string]http.HandlerFunc{
+		"backups": hs.h.HandleListBackups, "restores": hs.h.HandleListRestores, "schedules": hs.h.HandleListSchedules,
+	} {
+		if got := readList(t, h); got.denied() || string(got.Data) != "[]" {
+			t.Errorf("%s: data %s denied=%v, want [] and no denial", name, got.Data, got.denied())
+		}
+	}
+}
+
+// When some namespace checks fail but another allows, the allowed items are
+// served: the failure only hides what could not be checked.
+func TestLocal_ErroredNamespaceCheckKeepsAllowedItems(t *testing.T) {
+	hs := newLocalHarness(t)
+	hs.h.cachedData = &cachedVeleroData{
+		backups:   []Backup{{Name: "in-team", Namespace: "team-a"}, {Name: "in-other", Namespace: "team-b"}},
+		locations: &LocationsResponse{},
+		fetchedAt: time.Now(),
+	}
+	hs.h.AccessChecker = resources.NewCheckFuncAccessChecker(func(_, _, _, ns string) (bool, error) {
+		switch ns {
+		case "team-a":
+			return true, nil
+		case "team-b":
+			return false, errors.New("apiserver timeout")
+		}
+		return false, nil
+	})
+	got := readList(t, hs.h.HandleListBackups)
+	var backups []Backup
+	if err := json.Unmarshal(got.Data, &backups); err != nil {
+		t.Fatal(err)
+	}
+	if names := backupNames(backups); !slices.Equal(names, []string{"in-team"}) || got.denied() {
+		t.Errorf("backups = %v denied=%v, want [in-team] and no denial", names, got.denied())
+	}
+}
