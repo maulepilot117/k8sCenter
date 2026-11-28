@@ -256,15 +256,19 @@ func writeEarlyList(w http.ResponseWriter, scope listScope, empty any) bool {
 // permittedIn keeps the items in namespaces where the user may list
 // resource, one check per namespace, the way listableBackups narrows a
 // schedule's runs. anyAllowed reports whether the user may list it in the
-// Velero namespace or in any item's namespace: when false, the empty
-// result is a denial. items is not modified: it may be the shared cache.
-func permittedIn[T any](h *Handler, r *http.Request, user *auth.User, resource string, items []T, namespaceOf func(T) string) (out []T, anyAllowed bool) {
+// Velero namespace or in any item's namespace. errored reports that a check
+// could not be made; such a namespace is left out. items is not modified:
+// it may be the shared cache.
+func permittedIn[T any](h *Handler, r *http.Request, user *auth.User, resource string, items []T, namespaceOf func(T) string) (out []T, anyAllowed, errored bool) {
 	allowed := make(map[string]bool)
 	may := func(ns string) bool {
 		if v, seen := allowed[ns]; seen {
 			return v
 		}
 		can, err := h.canAccess(r, user, "list", resource, ns)
+		if err != nil {
+			errored = true
+		}
 		allowed[ns] = err == nil && can
 		return allowed[ns]
 	}
@@ -276,7 +280,18 @@ func permittedIn[T any](h *Handler, r *http.Request, user *auth.User, resource s
 			anyAllowed = true
 		}
 	}
-	return out, anyAllowed
+	return out, anyAllowed, errored
+}
+
+// writeNothingPermitted answers a narrowed list that kept nothing: a denial
+// when every check answered no, but the plain empty list when one could not
+// be made, since that is not known to be a denial.
+func writeNothingPermitted(w http.ResponseWriter, errored bool, empty any) {
+	if errored {
+		httputil.WriteData(w, empty)
+		return
+	}
+	writeDeniedList(w, empty)
 }
 
 // allowed is checkAccess for an endpoint that answers a denial with 403. It
@@ -345,10 +360,10 @@ func (h *Handler) HandleListBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	backups := slices.Clone(data.backups)
 	if scope == scopeNamespaces {
-		var anyAllowed bool
-		backups, anyAllowed = permittedIn(h, r, user, "backups", data.backups, func(x Backup) string { return x.Namespace })
+		var anyAllowed, errored bool
+		backups, anyAllowed, errored = permittedIn(h, r, user, "backups", data.backups, func(x Backup) string { return x.Namespace })
 		if !anyAllowed {
-			writeDeniedList(w, []Backup{})
+			writeNothingPermitted(w, errored, []Backup{})
 			return
 		}
 	}
@@ -612,10 +627,10 @@ func (h *Handler) HandleListRestores(w http.ResponseWriter, r *http.Request) {
 	}
 	restores := slices.Clone(data.restores)
 	if scope == scopeNamespaces {
-		var anyAllowed bool
-		restores, anyAllowed = permittedIn(h, r, user, "restores", data.restores, func(x Restore) string { return x.Namespace })
+		var anyAllowed, errored bool
+		restores, anyAllowed, errored = permittedIn(h, r, user, "restores", data.restores, func(x Restore) string { return x.Namespace })
 		if !anyAllowed {
-			writeDeniedList(w, []Restore{})
+			writeNothingPermitted(w, errored, []Restore{})
 			return
 		}
 	}
@@ -813,10 +828,10 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 	}
 	all := data.schedules
 	if scope == scopeNamespaces {
-		var anyAllowed bool
-		all, anyAllowed = permittedIn(h, r, user, "schedules", data.schedules, func(x Schedule) string { return x.Namespace })
+		var anyAllowed, errored bool
+		all, anyAllowed, errored = permittedIn(h, r, user, "schedules", data.schedules, func(x Schedule) string { return x.Namespace })
 		if !anyAllowed {
-			writeDeniedList(w, []Schedule{})
+			writeNothingPermitted(w, errored, []Schedule{})
 			return
 		}
 	}
