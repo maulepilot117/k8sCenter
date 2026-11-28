@@ -2,11 +2,11 @@
 
 k8sCenter can show Rubrik Security Cloud (RSC) protection for the namespaces of each cluster it manages. With writes turned on, it can also take on-demand snapshots, change SLA domains and restore snapshots. Velero stays as it is; Rubrik is a second backup provider beside it.
 
-The provider is a **preview**. It is off by default and every part of it stays off until you turn it on.
+The provider is a **preview**. It is on whenever k8sCenter has PostgreSQL, and the Backup → Rubrik and Settings → Rubrik pages always appear. It does nothing until an admin saves the RSC connection and maps a cluster (steps 4 and 5): until then no call reaches RSC. Writes stay off until you turn them on (step 7).
 
 ## What you need
 
-- k8sCenter with PostgreSQL. The connection, the cluster mappings, the write operations and the poller's history are stored there. Without PostgreSQL the backend logs an error at startup and the provider stays off.
+- k8sCenter with PostgreSQL. The connection, the cluster mappings, the write operations and the poller's history are stored there. Without PostgreSQL the backend logs a warning at startup and the provider stays off: every `/api/v1/rubrik` path is a 404 and the Rubrik pages say so.
 - An RSC tenant (`https://<tenant>.my.rubrik.com`) that already protects your Kubernetes clusters. k8sCenter reads RSC; it does not install or configure the Rubrik agent.
 - An RSC service account for k8sCenter (see below).
 - Network egress from the k8sCenter backend pod to the tenant on port 443.
@@ -23,19 +23,18 @@ Keep the client ID and client secret RSC shows you. The secret is shown once.
 
 k8sCenter exchanges the client ID and secret for a short-lived token at the tenant's `/api/client_token` endpoint, and sends GraphQL to `/api/graphql`.
 
-## 2. Turn the provider on
+## 2. Check the Helm values
 
-In your Helm values:
+No Helm value turns the provider on; it is on whenever k8sCenter has PostgreSQL. Only writes have a switch, and it stays off until step 7:
 
 ```yaml
 rubrik:
-  enabled: true        # routes and the poller
   writesEnabled: false # keep writes off until step 7
 ```
 
-The chart sets `KUBECENTER_RUBRIK_ENABLED` (and `KUBECENTER_RUBRIK_WRITESENABLED` when `writesEnabled` is also true) only when the value is true. Both values must be booleans; the chart's schema refuses a quoted `"false"`.
+The chart sets `KUBECENTER_RUBRIK_WRITESENABLED` only when `writesEnabled` is true. The value must be a boolean; the chart's schema refuses a quoted `"false"`. Older values files may still set `rubrik.enabled`: the schema accepts it and the chart ignores it, so it can be removed.
 
-**Restart the backend after changing either value.** The backend reads these settings once, at startup, and `helm upgrade` does not restart it when only the config changes. Until it restarts, the old setting stays in force, so turning writes off does not take effect:
+**Restart the backend after changing a Rubrik value.** The backend reads these settings once, at startup, and `helm upgrade` does not restart it when only the config changes. Until it restarts, the old setting stays in force, so turning writes off does not take effect:
 
 ```bash
 helm upgrade <release> ./helm/kubecenter -n <namespace> -f values.yaml
@@ -45,7 +44,7 @@ kubectl rollout status deployment/<fullname>-backend -n <namespace>
 
 `<fullname>` is the release name, or `<release>-kubecenter` when the release name does not contain `kubecenter` (`kubectl get deploy -n <namespace>` shows it). Then check `writesEnabled` in `GET /api/v1/rubrik/status` (step 4).
 
-While `rubrik.enabled` is false, no `/api/v1/rubrik` route exists (every path is a 404) and no call reaches RSC. With `writesEnabled` false, every snapshot, SLA change and restore is refused, for admins too. Saving the connection and the cluster mappings (steps 4 and 5) still works.
+Until an admin saves a connection, the Rubrik pages show that Rubrik is not set up and no call reaches RSC. With `writesEnabled` false, every snapshot, SLA change and restore is refused, for admins too. Saving the connection and the cluster mappings (steps 4 and 5) still works.
 
 ## 3. Allow egress to the tenant
 
@@ -67,7 +66,6 @@ The chart can supply the tenant URL, so an admin does not have to type it:
 
 ```yaml
 rubrik:
-  enabled: true
   tenantUrl: https://<tenant>.my.rubrik.com
 ```
 
@@ -219,7 +217,6 @@ Narrow or accept each grant, then turn writes on (and restart the backend, as in
 
 ```yaml
 rubrik:
-  enabled: true
   writesEnabled: true
 ```
 

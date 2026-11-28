@@ -2,8 +2,9 @@
  * Wire types for the Rubrik Security Cloud backup provider (preview).
  *
  * Mirrors the Go shapes in backend/internal/rubrik/handler.go. The endpoint
- * that serves them, GET /v1/rubrik/status, answers 404 while the provider is
- * switched off (rubrik.enabled), so a 404 is the only "disabled" signal.
+ * that serves them, GET /v1/rubrik/status, answers 404 only when the provider
+ * is off (the backend has no PostgreSQL), so a 404 is the only "disabled"
+ * signal.
  */
 
 /**
