@@ -891,6 +891,27 @@ export function createSourceCache(
  * `clusterId` pins the request's X-Cluster-ID; omitted, `api()` reads the
  * selected cluster itself.
  */
+/**
+ * What a source answers in place of its list when the route said the user
+ * may not list it (`metadata.accessDenied`). The list itself is empty then,
+ * which a card would otherwise show as "none".
+ */
+export interface DeniedList {
+  accessDenied: true;
+}
+
+const DENIED_LIST: DeniedList = { accessDenied: true };
+
+/** Whether a source's value is the denied marker rather than its data. */
+export function isDeniedList(value: unknown): value is DeniedList {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { accessDenied?: unknown }).accessDenied === true
+  );
+}
+
 async function read(
   path: string,
   signal: AbortSignal,
@@ -1149,8 +1170,16 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // router group, not a route, and would 404.
   "external-secrets-list": async (signal) =>
     (await read("/v1/externalsecrets/externalsecrets", signal)) ?? [],
-  "velero-backups-list": async (signal) =>
-    (await read("/v1/velero/backups", signal)) ?? [],
+  // A denied list answers [] plus metadata.accessDenied; the marker keeps
+  // the card from reading that as a cluster with no backups.
+  "velero-backups-list": async (signal) => {
+    const res = await api<unknown>("/v1/velero/backups", {
+      method: "GET",
+      signal,
+    });
+    if (res.metadata?.accessDenied === true) return DENIED_LIST;
+    return res.data ?? [];
+  },
   "snapshots-list": async (signal) =>
     (await read("/v1/storage/snapshots", signal)) ?? [],
 

@@ -2,6 +2,7 @@ import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { SeverityCount } from "@/components/ui/ScanBadges.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { phaseTone } from "@/components/velero/velero-utils.ts";
+import { isDeniedList } from "@/lib/dashboard/data.ts";
 // The outcome ranking, the worst-first roll-up and the unreadable-row
 // accounting live in lib/, under test, because none of them is a field read
 // (D-10, KTD8). Do not inline them.
@@ -39,15 +40,28 @@ const WORST_COLORS: Record<string, string> = {
  * response. Velero is CRD-discovered and `/v1/velero/backups` answers 200 with
  * an empty array whether Velero is absent, the account cannot list backups, or
  * nobody has taken one. The declared `velero-status` family separates the
- * first from the rest, resolved by the shell before `render` is called (R1,
- * KTD1) -- and the empty case then says "Velero is installed and has no
- * backups", which is a warning rather than good news.
+ * first, resolved by the shell before `render` is called (R1, KTD1). A denial
+ * carries `metadata.accessDenied`, which the source passes on as the denied
+ * marker and the card says so. The empty case left then says "Velero is
+ * installed and has no backups", which is a warning rather than good news.
  */
 function VeleroBackups() {
-  const view = backupsView(
-    useSourceState("velero-backups-list").data,
-    ROW_LIMIT,
-  );
+  const data = useSourceState("velero-backups-list").data;
+  const view = backupsView(data, ROW_LIMIT);
+  if (isDeniedList(data)) {
+    // The route said the account may not list backups: the empty list it
+    // sent is not "no backups", and is not something this card can judge.
+    return (
+      <WidgetShell title="Backups">
+        <p
+          data-testid="velero-backups-denied"
+          className="py-4 text-center text-xs text-text-muted"
+        >
+          You may not list Velero backups on this cluster.
+        </p>
+      </WidgetShell>
+    );
+  }
   const attention =
     view.counts.failed + view.counts.inProgress + view.counts.other;
 

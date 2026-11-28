@@ -80,6 +80,8 @@ interface Api {
   restores?: unknown[];
   schedules?: unknown[];
   failList?: boolean;
+  /** Lists answered as denied: an empty list with metadata.accessDenied. */
+  denied?: Array<"backups" | "restores" | "schedules">;
   deleteStatus?: number;
   assurance?: { status: number; body?: unknown };
 }
@@ -130,6 +132,17 @@ beforeEach(() => {
         vslCount: 0,
         lastChecked: "2026-01-01T00:00:00Z",
       });
+    }
+    for (const list of api.denied ?? []) {
+      if (url.endsWith(`/velero/${list}`)) {
+        return new Response(
+          JSON.stringify({
+            data: [],
+            metadata: { total: 0, accessDenied: true },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
     }
     if (url.endsWith("/velero/backups")) return json(api.backups ?? []);
     if (url.endsWith("/velero/restores")) return json(api.restores ?? []);
@@ -420,4 +433,32 @@ test("the assurance strip hides on 501 and shows a state word on 403", async () 
       '[data-testid="velero-assurance-honesty"]',
     ),
   ).not.toBeNull();
+});
+
+test("a tab whose list is denied says so instead of showing an empty table", async () => {
+  api.denied = ["backups"];
+  const view = render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  expect(body().getByTestId("velero-denied-note").textContent).toBe(
+    "You may not list Velero backups on this cluster.",
+  );
+  expect(view.container.textContent).not.toContain("0 backups");
+  expect(view.container.textContent).toContain("Not visible to you");
+  expect(view.container.querySelector("input[type=search], input")).toBeNull();
+});
+
+test("the overview names every denied list, so a zero count is not read as none", async () => {
+  api.denied = ["backups", "schedules"];
+  api.restores = [restore("r1", "b1")];
+  render(<VeleroDashboard initialTab="overview" />);
+  await settle();
+  expect(body().getByTestId("velero-denied-note").textContent).toBe(
+    "You may not list Velero backups and schedules on this cluster, so the counts below leave them out.",
+  );
+});
+
+test("a permitted empty list shows no denial note", async () => {
+  render(<VeleroDashboard initialTab="backups" />);
+  await settle();
+  expect(body().queryByTestId("velero-denied-note")).toBeNull();
 });

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import BarRow from "@/components/charts/BarRow.tsx";
 import Donut from "@/components/charts/Donut.tsx";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { KpiTile } from "@/components/ui/KpiTile.tsx";
@@ -38,6 +39,28 @@ import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 type Tab = "overview" | "backups" | "restores" | "schedules";
 
+/** The three lists the page reads that can come back denied. */
+type ListName = "backups" | "restores" | "schedules";
+
+/**
+ * Which lists the user may not read. The API answers a denied list with the
+ * empty list plus `metadata.accessDenied`, so without this the page would
+ * say "no backups" to someone who simply may not see them.
+ */
+type Denied = Record<ListName, boolean>;
+
+const NOT_DENIED: Denied = {
+  backups: false,
+  restores: false,
+  schedules: false,
+};
+
+/** "backups", "backups and schedules", "backups, restores and schedules". */
+function joinLists(names: ListName[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 interface Props {
   initialTab?: Tab;
 }
@@ -53,6 +76,7 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
   const [restores, setRestores] = useState<Restore[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [locations, setLocations] = useState<LocationsResponse | null>(null);
+  const [denied, setDenied] = useState<Denied>(NOT_DENIED);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -78,6 +102,11 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
       setRestores(Array.isArray(restoresRes.data) ? restoresRes.data : []);
       setSchedules(Array.isArray(schedulesRes.data) ? schedulesRes.data : []);
       setLocations(locationsRes.data);
+      setDenied({
+        backups: backupsRes.metadata?.accessDenied === true,
+        restores: restoresRes.metadata?.accessDenied === true,
+        schedules: schedulesRes.metadata?.accessDenied === true,
+      });
       setError(null);
     } catch {
       setError("Failed to load Velero data");
@@ -167,17 +196,18 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
     restores: "Restores",
     schedules: "Schedules",
   };
+  // A denied list's empty array is not a count of zero.
+  const countOf = (list: ListName, n: number, noun: string) =>
+    loading
+      ? "Loading…"
+      : denied[list]
+        ? "Not visible to you"
+        : `${n} ${noun}${n !== 1 ? "s" : ""}`;
   const subtitles: Record<Tab, string> = {
     overview: "Velero backup and restore management",
-    backups: loading
-      ? "Loading…"
-      : `${backups.length} backup${backups.length !== 1 ? "s" : ""}`,
-    restores: loading
-      ? "Loading…"
-      : `${restores.length} restore${restores.length !== 1 ? "s" : ""}`,
-    schedules: loading
-      ? "Loading…"
-      : `${schedules.length} schedule${schedules.length !== 1 ? "s" : ""}`,
+    backups: countOf("backups", backups.length, "backup"),
+    restores: countOf("restores", restores.length, "restore"),
+    schedules: countOf("schedules", schedules.length, "schedule"),
   };
   const createLabels: Partial<Record<Tab, string>> = {
     backups: "New Backup",
@@ -341,6 +371,15 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
           {initialTab === "overview" && <AssuranceStrip />}
 
           {initialTab === "overview" && (
+            <DeniedListsNote
+              counts
+              names={(Object.keys(denied) as ListName[]).filter(
+                (k) => denied[k],
+              )}
+            />
+          )}
+
+          {initialTab === "overview" && (
             <VeleroOverview
               backups={backups}
               restores={restores}
@@ -350,7 +389,11 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
             />
           )}
 
-          {initialTab !== "overview" && (
+          {initialTab !== "overview" && denied[initialTab] && (
+            <DeniedListsNote names={[initialTab]} />
+          )}
+
+          {initialTab !== "overview" && !denied[initialTab] && (
             <>
               {/* Search bar */}
               <div style={{ maxWidth: "320px" }}>
@@ -393,6 +436,30 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
       {scheduleWizardOpen && (
         <VeleroScheduleWizard onClose={() => setScheduleWizardOpen(false)} />
       )}
+    </div>
+  );
+}
+
+/**
+ * Says which Velero lists the user may not read on this cluster, so an empty
+ * table or a zero count is not taken for "none". Renders nothing when every
+ * list was read.
+ */
+function DeniedListsNote({
+  names,
+  counts = false,
+}: {
+  names: ListName[];
+  /** On the overview, whose counts the denied lists are missing from. */
+  counts?: boolean;
+}) {
+  if (names.length === 0) return null;
+  return (
+    <div data-testid="velero-denied-note">
+      <Alert variant="info">
+        You may not list Velero {joinLists(names)} on this cluster
+        {counts ? ", so the counts below leave them out" : ""}.
+      </Alert>
     </div>
   );
 }
