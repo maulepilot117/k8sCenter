@@ -1,7 +1,6 @@
 ---
-import SettingsDashboard from "../../islands/SettingsDashboard.tsx";
-import ChromeLayout from "../../layouts/ChromeLayout.astro";
+// The Rubrik connection and cluster mappings are a section of Settings ->
+// General. This path stays so older links (notifications, bookmarks, the
+// operator guide) still land there.
+return Astro.redirect("/settings/general#rubrik", 302);
 ---
-<ChromeLayout>
-  <SettingsDashboard client:load currentPath={Astro.url.pathname} />
-</ChromeLayout>
