@@ -117,7 +117,10 @@
       "type": "object",
       "description": "Rubrik Security Cloud backup provider (preview). Booleans only: a quoted \"false\" would render as on.",
       "properties": {
-        "enabled": { "type": "boolean" },
+        "enabled": {
+          "type": "boolean",
+          "description": "Deprecated and ignored: the provider is always on when PostgreSQL is configured. Kept so existing values files still pass the schema."
+        },
         "writesEnabled": { "type": "boolean" },
         "tenantUrl": {
           "type": "string",

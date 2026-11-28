@@ -793,48 +793,47 @@ func main() {
 	veleroHandler := velero.NewHandler(k8sClient, veleroDiscoverer, accessChecker, auditLogger, nil, clusterRouter, remotePresence, logger)
 	clusterRouter.RegisterEvictHook(veleroHandler.EvictRemoteCache)
 
-	// Rubrik Security Cloud backup provider (preview). Built only while
-	// rubrik.enabled is set, so with it off no /rubrik route exists and no
-	// RSC call is made (R28, KTD12). It needs PostgreSQL for the connection
-	// and mappings; without a database it stays off.
+	// Rubrik Security Cloud backup provider (preview). Always built when
+	// PostgreSQL is configured, which holds the connection and mappings, so
+	// an admin can set it up on Settings -> Rubrik with no Helm change. No RSC
+	// call is made until a connection is saved and a cluster mapped. Without
+	// a database there is nowhere to keep the connection, so it stays off.
 	var (
 		rubrikHandler *rubrik.Handler
 		rubrikStore   *appstore.RubrikStore
 		rubrikService *rubrik.Service
 		rubrikAccess  *rubrik.Access
 	)
-	if cfg.Rubrik.Enabled {
-		if dbPool == nil || clusterStore == nil {
-			logger.Error("rubrik.enabled is set but PostgreSQL is not configured; the Rubrik provider stays off")
+	if dbPool == nil || clusterStore == nil {
+		logger.Warn("PostgreSQL is not configured; the Rubrik provider is off")
+	} else {
+		// The client secret uses the same master secret as cluster
+		// credentials.
+		rubrikStore = appstore.NewRubrikStore(dbPool, dbEncKey)
+		rubrikClient := rubrik.NewClient(rubrik.StoreConnection{Store: rubrikStore, ID: appstore.RubrikDefaultConnectionID}, logger)
+		rubrikOps := rubrik.NewOperations(rubrikClient)
+		rubrikService = rubrik.NewService(rubrikOps, rubrikStore, clusterStore, appstore.RubrikDefaultConnectionID, logger, rubrikClient.Flush)
+		rubrikAccess = rubrik.NewAccess(accessChecker, informerMgr.Namespaces(), cfg.Rubrik.WritesEnabled)
+		h, err := rubrik.NewHandler(rubrik.HandlerDeps{
+			Store:        rubrikStore,
+			Clusters:     clusterStore,
+			Service:      rubrikService,
+			Access:       rubrikAccess,
+			RSC:          rubrikOps,
+			Client:       rubrikClient,
+			Audit:        auditLogger,
+			Logger:       logger,
+			ConnectionID: appstore.RubrikDefaultConnectionID,
+			// Helm's rubrik.tenantUrl: a pre-fill for the settings
+			// page while no connection is saved, never stored.
+			SuggestedTenantURL: cfg.Rubrik.TenantURL,
+		})
+		if err != nil {
+			logger.Error("building the Rubrik handler failed; the Rubrik provider stays off", "error", err)
 		} else {
-			// The client secret uses the same master secret as cluster
-			// credentials.
-			rubrikStore = appstore.NewRubrikStore(dbPool, dbEncKey)
-			rubrikClient := rubrik.NewClient(rubrik.StoreConnection{Store: rubrikStore, ID: appstore.RubrikDefaultConnectionID}, logger)
-			rubrikOps := rubrik.NewOperations(rubrikClient)
-			rubrikService = rubrik.NewService(rubrikOps, rubrikStore, clusterStore, appstore.RubrikDefaultConnectionID, logger, rubrikClient.Flush)
-			rubrikAccess = rubrik.NewAccess(accessChecker, informerMgr.Namespaces(), cfg.Rubrik.WritesEnabled)
-			h, err := rubrik.NewHandler(rubrik.HandlerDeps{
-				Store:        rubrikStore,
-				Clusters:     clusterStore,
-				Service:      rubrikService,
-				Access:       rubrikAccess,
-				RSC:          rubrikOps,
-				Client:       rubrikClient,
-				Audit:        auditLogger,
-				Logger:       logger,
-				ConnectionID: appstore.RubrikDefaultConnectionID,
-				// Helm's rubrik.tenantUrl: a pre-fill for the settings
-				// page while no connection is saved, never stored.
-				SuggestedTenantURL: cfg.Rubrik.TenantURL,
-			})
-			if err != nil {
-				logger.Error("building the Rubrik handler failed; the Rubrik provider stays off", "error", err)
-			} else {
-				rubrikHandler = h
-				clusterRouter.RegisterEvictHook(rubrikHandler.EvictCluster)
-				logger.Info("rubrik provider enabled (preview)", "writesEnabled", cfg.Rubrik.WritesEnabled)
-			}
+			rubrikHandler = h
+			clusterRouter.RegisterEvictHook(rubrikHandler.EvictCluster)
+			logger.Info("rubrik provider on (preview)", "writesEnabled", cfg.Rubrik.WritesEnabled)
 		}
 	}
 
@@ -927,8 +926,8 @@ func main() {
 
 	// Rubrik poller (U10): one leased collector per mapped cluster, raising
 	// Notification Center events and sweeping write operations. It runs only
-	// with the provider on (the handler built), so with rubrik.enabled off no
-	// RSC call is made. The feed's Rubrik filter (KTD11) gets the provider's
+	// with the provider on (the handler built, which needs PostgreSQL); it
+	// makes no RSC call until a cluster is mapped. The feed's Rubrik filter (KTD11) gets the provider's
 	// access rules here; it is assigned only from the non-nil *rubrik.Access
 	// the handler was built with, so the interface never holds a typed nil
 	// (docs/solutions/go-typed-nil-interface.md), and without it Rubrik rows
