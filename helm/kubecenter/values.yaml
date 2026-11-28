@@ -209,23 +209,20 @@ ciliumAgent:
   # max ~(maxConcurrent * 6) nodes can be collected per cycle.
   maxConcurrent: 10
 
-# -- Rubrik Security Cloud backup provider (preview).
-# See docs/rubrik-operator-guide.md before turning either switch on.
+# -- Rubrik Security Cloud backup provider (preview). Always on when
+# PostgreSQL is configured: an admin sets it up on Settings → Rubrik, and no
+# call reaches Rubrik until a connection is saved and a cluster mapped. See
+# docs/rubrik-operator-guide.md.
 rubrik:
-  # -- Turn on the Rubrik routes and the poller. Needs PostgreSQL; without
-  # it the backend logs an error and the provider stays off. While false, no
-  # /api/v1/rubrik route exists and no call reaches Rubrik.
-  enabled: false
   # -- Allow on-demand snapshots, SLA changes and restores through
-  # k8sCenter. Has no effect while rubrik.enabled is false. Audit wildcard
-  # RBAC bindings before turning it on (operator guide, "Before enabling
-  # writes").
+  # k8sCenter. Audit wildcard RBAC bindings before turning it on (operator
+  # guide, "Before enabling writes").
   writesEnabled: false
   # -- RSC tenant URL (https://<tenant>.my.rubrik.com) to pre-fill on
   # Settings → Rubrik while no connection is saved. Only a suggestion: it is
   # never stored, and the admin still enters the client ID and secret and
   # saves. Once a connection is saved, the saved URL wins and this value has
-  # no effect. Has no effect while rubrik.enabled is false.
+  # no effect.
   tenantUrl: ""
 
 # -- Alerting

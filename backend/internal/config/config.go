@@ -198,13 +198,12 @@ type CiliumAgentConfig struct {
 }
 
 // RubrikConfig controls the Rubrik Security Cloud backup provider (preview).
-// Both switches default to false. While Enabled is false the provider's
-// handler and poller are not built, so no Rubrik route exists and no RSC
-// call is made. WritesEnabled additionally allows on-demand snapshots, SLA
-// assignment and restores; write routes re-check it on every request, so it
-// has no effect while Enabled is false.
+// The provider is always on when PostgreSQL is configured: its routes exist,
+// and an admin sets it up on Settings -> Rubrik. Until a connection is saved
+// and a cluster mapped, no RSC call is made. WritesEnabled (default false)
+// additionally allows on-demand snapshots, SLA assignment and restores;
+// write routes re-check it on every request.
 type RubrikConfig struct {
-	Enabled       bool `koanf:"enabled"`       // KUBECENTER_RUBRIK_ENABLED
 	WritesEnabled bool `koanf:"writesenabled"` // KUBECENTER_RUBRIK_WRITESENABLED
 	// TenantURL pre-fills the RSC tenant URL on the settings page while no
 	// connection is saved (KUBECENTER_RUBRIK_TENANTURL). It is never stored:
