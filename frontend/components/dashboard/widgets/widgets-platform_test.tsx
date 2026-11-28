@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { dashboardData } from "@/lib/dashboard/data.ts";
+import {
+  DASHBOARD_FETCHERS,
+  dashboardData,
+  isDeniedList,
+} from "@/lib/dashboard/data.ts";
 import {
   PARAM_KEY_NAMESPACE,
   PARAM_KEY_SERVICE,
@@ -100,6 +104,49 @@ describe("velero-backups", () => {
     seed("velero-backups-list", []);
     show("velero-backups");
     expect(testId("velero-backups-none")).toContain("no backup you can see");
+  });
+
+  test("a denied backup list says so, not that Velero has no backups", () => {
+    seed("velero-backups-list", { accessDenied: true });
+    show("velero-backups");
+    expect(testId("velero-backups-denied")).toBe(
+      "You may not list Velero backups on this cluster.",
+    );
+    expect(text()).not.toContain("no backup you can see");
+    expect(text()).not.toContain("cannot read");
+  });
+
+  test("the backups source turns metadata.accessDenied into the denied marker", async () => {
+    const bunFetch = globalThis.fetch;
+    const answer = (body: unknown) =>
+      (async () =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })) as unknown as typeof globalThis.fetch;
+    const fetchList = () =>
+      DASHBOARD_FETCHERS["velero-backups-list"](
+        new AbortController().signal,
+        "1h",
+        {},
+      );
+    try {
+      globalThis.fetch = answer({
+        data: [],
+        metadata: { total: 0, accessDenied: true },
+      });
+      expect(isDeniedList(await fetchList())).toBe(true);
+
+      globalThis.fetch = answer({ data: backups });
+      const listed = await fetchList();
+      expect(isDeniedList(listed)).toBe(false);
+      expect(listed).toEqual(backups);
+
+      globalThis.fetch = answer({ data: null });
+      expect(await fetchList()).toEqual([]);
+    } finally {
+      globalThis.fetch = bunFetch;
+    }
   });
 
   test("re-renders when the source changes", () => {
