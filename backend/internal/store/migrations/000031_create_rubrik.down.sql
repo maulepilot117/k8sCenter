@@ -54,7 +54,16 @@ ALTER TABLE nc_notifications ADD CONSTRAINT nc_notifications_source_check
         'external_secrets'
     ));
 
--- Step 4: drop the tables, dependents first.
+-- Step 4: drop 000032's mapping-cleanup trigger, if present. It names
+-- rubrik_cluster_mappings, so left behind it would fail every cluster
+-- delete once that table is gone. Present only when this file is run by
+-- hand on a database at 32 (NOTES.txt, 000031 rollback); the migrator runs
+-- 000032's down file first, which already drops it.
+
+DROP TRIGGER IF EXISTS rubrik_cluster_mapping_cleanup ON clusters;
+DROP FUNCTION IF EXISTS rubrik_delete_cluster_mapping();
+
+-- Step 5: drop the tables, dependents first.
 
 DROP TABLE IF EXISTS rubrik_poller_deliveries;
 DROP TABLE IF EXISTS rubrik_poller_events;

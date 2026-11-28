@@ -932,6 +932,8 @@ Lock impact:
   notification reads and writes for the length of that scan.
 
 Rollback:
+  On a database at 32 or later, roll 000032 back first (see its section
+  below); this file also drops 000032's trigger if it is still there.
   Stop every pod of this release first, because the Rubrik store names
   these tables. Then either
     (a) leave everything in place (recommended): the previous release never
@@ -967,3 +969,49 @@ Inspect:
       FROM rubrik_operations
      WHERE state IN ('applying', 'running', 'unknown')
      ORDER BY created_at;
+
+------------------------------------------------------------------------
+000032_rubrik_mapping_local_key (Rubrik local mapping key, 2026-11-27)
+------------------------------------------------------------------------
+
+Replaces 000031's foreign key from rubrik_cluster_mappings.cluster_id to
+clusters(id) with an AFTER DELETE trigger on clusters
+(rubrik_cluster_mapping_cleanup, function rubrik_delete_cluster_mapping).
+The local cluster's mapping is keyed "local", the API's name for it, while
+its clusters row is keyed by KUBECENTER_CLUSTERID; the foreign key refused
+every local mapping when that setting was not "local". The trigger keeps
+the one thing the foreign key did that mattered: deleting a cluster
+deletes its mapping, and the mapping's dependants go by their cascades.
+
+Operator action: none. The up file is idempotent.
+
+Lock impact:
+  Dropping the foreign key takes an ACCESS EXCLUSIVE lock on
+  rubrik_cluster_mappings and a lock on clusters; creating the trigger
+  takes a SHARE ROW EXCLUSIVE lock on clusters. Neither scans a table, so
+  both are brief. The down file's foreign key validates every mapping row
+  once, which is a small table.
+
+Rollback:
+  Run the 000032 down file before 000031's (the migrator does this). It
+  drops the trigger and function, then deletes every mapping with no
+  clusters row: the local cluster's "local" mapping when
+  KUBECENTER_CLUSTERID is not "local", with its poller state, compliance
+  states, events and deliveries. It then restores the foreign key. Under
+  the old schema that cluster cannot be mapped, as before 000032.
+  Run by hand rather than through the migrator, then reset the recorded
+  version:
+    UPDATE schema_migrations SET version = 31, dirty = false;
+  If 000031's down file is run by hand on a database at 32 instead, it
+  drops the trigger itself, so cluster deletes keep working.
+  TestMigration000032_LocalMappingKey covers up, down and re-apply, and
+  TestMigration000032_UpIsIdempotent re-runs the up file at 32.
+
+Inspect:
+    SELECT tgname FROM pg_trigger
+     WHERE tgrelid = 'clusters'::regclass
+       AND tgname = 'rubrik_cluster_mapping_cleanup';
+    SELECT m.cluster_id, c.id IS NULL AS no_clusters_row
+      FROM rubrik_cluster_mappings m
+      LEFT JOIN clusters c ON c.id = m.cluster_id
+     ORDER BY m.cluster_id;
