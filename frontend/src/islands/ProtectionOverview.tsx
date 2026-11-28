@@ -32,25 +32,17 @@ import {
   overviewRows,
   providerNamespaces,
   type RubrikCell,
-  type RubrikInput,
   rubrikActions,
   type VeleroCell,
   type VeleroInput,
 } from "@/lib/protection-overview.ts";
-import type {
-  RubrikCompliance,
-  RubrikNamespaceList,
-  RubrikOperation,
-} from "@/lib/rubrik-types.ts";
+import type { RubrikCompliance, RubrikOperation } from "@/lib/rubrik-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import type { Backup, VeleroStatus } from "@/lib/velero-types.ts";
 import { clusterEpoch, selectedCluster } from "@/src/lib/cluster.ts";
-import {
-  ensureRubrikStatus,
-  rubrikNavVisible,
-  rubrikStatus,
-} from "@/src/lib/rubrik-status.ts";
+import { rubrikNavVisible, rubrikStatus } from "@/src/lib/rubrik-status.ts";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { RSC_FAILURE, useRubrikList } from "@/src/lib/use-rubrik-list.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 // Full literals: e2e/tests/api-routes.spec.ts checks every quoted "/v1/..."
@@ -58,23 +50,6 @@ import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 const NAMESPACES_URL = "/v1/resources/namespaces";
 const VELERO_STATUS_URL = "/v1/velero/status";
 const VELERO_BACKUPS_URL = "/v1/velero/backups";
-const RUBRIK_NAMESPACES_URL = "/v1/rubrik/namespaces";
-
-/** RSC's own failure classes: everything else is k8sCenter's. */
-const RSC_FAILURE: Record<string, string> = {
-  auth_failed: "RSC refused k8sCenter's credentials",
-  unreachable: "RSC could not be reached",
-  rate_limited: "RSC is rate limiting requests",
-  rsc_error: "RSC returned an answer k8sCenter could not use",
-};
-
-/** Setup reasons only admins are sent (non-admins get not_set_up). */
-const ADMIN_SETUP = new Set([
-  "not_configured",
-  "not_mapped",
-  "mapping_invalid",
-  "rsc_cluster_missing",
-]);
 
 /** /v1/velero/status also carries why Velero was not detected (remote). */
 type VeleroStatusWire = VeleroStatus & { reason?: string };
@@ -153,20 +128,8 @@ export default function ProtectionOverview() {
   const status = useSignalValue(rubrikStatus);
   const rubrikKnownOn = useSignalValue(rubrikNavVisible);
   const [base, setBase] = useState<Base>({ kind: "loading" });
-  /** Bumped by Refresh to read Rubrik again. */
-  const [rubrikTick, setRubrikTick] = useState(0);
-  /**
-   * The fetch time of the last Rubrik list this page loaded, per cluster:
-   * what an RSC failure with no earlier answer reports as the last fetch.
-   */
-  const lastFetched = useRef(new Map<string, string>());
-  const [rubrikList, setRubrikList] = useState<RubrikInput>({
-    kind: "loading",
-  });
+  const { list: rubrikList, reload: reloadRubrik } = useRubrikList();
   const baseGen = useRef(0);
-  const rubrikGen = useRef(0);
-  /** The next Rubrik read keeps what is shown (after a write settles). */
-  const quietRubrik = useRef(false);
   /** Writes started from this page, newest first, per namespace. */
   const [ops, setOps] = useState<Record<string, RubrikOperation[]>>({});
   // Held here, so a write re-sent from a dialog opened again keeps its id.
@@ -180,13 +143,8 @@ export default function ProtectionOverview() {
   // A settled write changes the namespace's snapshot, SLA or flags: read
   // Rubrik again without blanking the column.
   const settled = useCallback(() => {
-    quietRubrik.current = true;
-    setRubrikTick((t) => t + 1);
-  }, []);
-
-  useEffect(() => {
-    ensureRubrikStatus();
-  }, []);
+    reloadRubrik({ quiet: true });
+  }, [reloadRubrik]);
 
   // The namespaces and Velero, once per cluster.
   const loadBase = useCallback(async () => {
@@ -230,69 +188,6 @@ export default function ProtectionOverview() {
     };
   }, [cluster, epoch, loadBase]);
 
-  // Rubrik: each status answer (one per cluster switch) decides what to ask.
-  useEffect(() => {
-    const g = ++rubrikGen.current;
-    if (status.kind !== "enabled") {
-      setRubrikList(
-        status.kind === "disabled"
-          ? { kind: "disabled" }
-          : status.kind === "error"
-            ? { kind: "error" }
-            : { kind: "loading" },
-      );
-      return;
-    }
-    const state = status.status.cluster.state;
-    if (state !== "mapped") {
-      setRubrikList(
-        state === "admin_only"
-          ? { kind: "not_applicable" }
-          : state === "unavailable"
-            ? { kind: "error" }
-            : { kind: "not_set_up", setupLink: ADMIN_SETUP.has(state) },
-      );
-      return;
-    }
-    void rubrikTick;
-    const quiet = quietRubrik.current;
-    quietRubrik.current = false;
-    if (!quiet) setRubrikList({ kind: "loading" });
-    const forCluster = selectedCluster.peek();
-    apiGet<RubrikNamespaceList>(RUBRIK_NAMESPACES_URL)
-      .then((res) => {
-        if (rubrikGen.current !== g) return;
-        const fetchedAt = res.data.freshness?.fetchedAt;
-        if (fetchedAt) lastFetched.current.set(forCluster, fetchedAt);
-        setRubrikList({ kind: "loaded", list: res.data });
-      })
-      .catch((err) => {
-        if (rubrikGen.current !== g) return;
-        const reason = err instanceof ApiError ? err.reason : undefined;
-        const code = err instanceof ApiError ? err.status : 0;
-        if (code === 409) {
-          setRubrikList({
-            kind: "not_set_up",
-            setupLink: ADMIN_SETUP.has(reason ?? ""),
-          });
-        } else if (code === 403) {
-          setRubrikList({ kind: "not_applicable" });
-        } else if (reason && RSC_FAILURE[reason]) {
-          setRubrikList({
-            kind: "rsc_failing",
-            reason,
-            // The last answer this page saw, else the connection's own
-            // record (admins only, when the server keeps one).
-            lastFetchedAt:
-              lastFetched.current.get(forCluster) ??
-              status.status.connection?.lastSuccessAt,
-          });
-        } else {
-          setRubrikList({ kind: "error" });
-        }
-      });
-  }, [status, rubrikTick]);
-
   let body: ReactNode;
   if (!isClient || base.kind === "loading") {
     body = <p className="text-sm text-text-muted">Loading namespaces…</p>;
@@ -335,7 +230,7 @@ export default function ProtectionOverview() {
             size="sm"
             onClick={() => {
               void loadBase();
-              setRubrikTick((t) => t + 1);
+              reloadRubrik();
             }}
           >
             Refresh
