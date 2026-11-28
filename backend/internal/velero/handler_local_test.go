@@ -1,6 +1,7 @@
 package velero
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -190,5 +191,156 @@ func TestLocal_FailedAccessCheckStaysADenial(t *testing.T) {
 	}
 	if rr := do(t, localCluster, http.MethodDelete, hs.h.HandleDeleteBackup, backupParams, ""); rr.Code != http.StatusForbidden {
 		t.Errorf("delete: status %d, want 403", rr.Code)
+	}
+}
+
+// A list the user may not read answers the empty list it always did, plus
+// metadata.accessDenied, so a page can tell "you may not see backups" from
+// "there are none". A permitted empty list carries no such flag.
+func TestLocal_DeniedListsSayAccessDenied(t *testing.T) {
+	lists := []struct {
+		resource string
+		handler  func(*Handler) http.HandlerFunc
+	}{
+		{"backups", func(h *Handler) http.HandlerFunc { return h.HandleListBackups }},
+		{"restores", func(h *Handler) http.HandlerFunc { return h.HandleListRestores }},
+		{"schedules", func(h *Handler) http.HandlerFunc { return h.HandleListSchedules }},
+	}
+	type wire struct {
+		Data     json.RawMessage `json:"data"`
+		Metadata *struct {
+			AccessDenied bool `json:"accessDenied"`
+		} `json:"metadata"`
+	}
+	read := func(t *testing.T, hs *harness, h http.HandlerFunc) wire {
+		t.Helper()
+		rr := do(t, localCluster, http.MethodGet, h, nil, "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body.String())
+		}
+		var got wire
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode %q: %v", rr.Body.String(), err)
+		}
+		return got
+	}
+	for _, l := range lists {
+		t.Run(l.resource, func(t *testing.T) {
+			denied := newLocalHarness(t)
+			denied.h.AccessChecker = resources.NewPredicateAccessChecker(func(_, _, resource, _ string) bool {
+				return resource != l.resource
+			})
+			got := read(t, denied, l.handler(denied.h))
+			if string(got.Data) != "[]" {
+				t.Errorf("denied data = %s, want []", got.Data)
+			}
+			if got.Metadata == nil || !got.Metadata.AccessDenied {
+				t.Errorf("denied metadata = %+v, want accessDenied", got.Metadata)
+			}
+
+			allowed := newLocalHarness(t)
+			allowed.h.cachedData = &cachedVeleroData{locations: &LocationsResponse{}, fetchedAt: time.Now()}
+			// Data is [] or null here (the list handlers clone an empty
+			// cache to nil); clients treat both as empty.
+			got = read(t, allowed, l.handler(allowed.h))
+			if got.Metadata != nil && got.Metadata.AccessDenied {
+				t.Error("a permitted empty list says accessDenied")
+			}
+		})
+	}
+}
+
+// listWire is a list response's data and its accessDenied flag.
+type listWire struct {
+	Data     json.RawMessage `json:"data"`
+	Metadata *struct {
+		AccessDenied bool `json:"accessDenied"`
+	} `json:"metadata"`
+}
+
+func readList(t *testing.T, h http.HandlerFunc) listWire {
+	t.Helper()
+	rr := do(t, localCluster, http.MethodGet, h, nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got listWire
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode %q: %v", rr.Body.String(), err)
+	}
+	return got
+}
+
+func (l listWire) denied() bool { return l.Metadata != nil && l.Metadata.AccessDenied }
+
+// A user with no cluster-wide grant but a Role in some namespaces sees the
+// items in those namespaces, the way a schedule's runs are narrowed, and is
+// not told they may not list the resource.
+func TestLocal_NamespacedGrantNarrowsLists(t *testing.T) {
+	hs := newLocalHarness(t)
+	hs.h.cachedData = &cachedVeleroData{
+		backups:   []Backup{{Name: "in-velero", Namespace: veleroNamespace}, {Name: "in-team", Namespace: "team-a"}},
+		restores:  []Restore{{Name: "r-velero", Namespace: veleroNamespace}, {Name: "r-team", Namespace: "team-a"}},
+		schedules: []Schedule{{Name: "s-velero", Namespace: veleroNamespace}, {Name: "s-team", Namespace: "team-a"}},
+		locations: &LocationsResponse{},
+		fetchedAt: time.Now(),
+	}
+	hs.h.AccessChecker = resources.NewPredicateAccessChecker(func(_, _, _, ns string) bool {
+		return ns == "team-a"
+	})
+
+	got := readList(t, hs.h.HandleListBackups)
+	var backups []Backup
+	if err := json.Unmarshal(got.Data, &backups); err != nil {
+		t.Fatal(err)
+	}
+	if names := backupNames(backups); !slices.Equal(names, []string{"in-team"}) || got.denied() {
+		t.Errorf("backups = %v denied=%v, want [in-team] and no denial", names, got.denied())
+	}
+	var restores []Restore
+	got = readList(t, hs.h.HandleListRestores)
+	if err := json.Unmarshal(got.Data, &restores); err != nil {
+		t.Fatal(err)
+	}
+	if len(restores) != 1 || restores[0].Name != "r-team" || got.denied() {
+		t.Errorf("restores = %+v denied=%v, want [r-team] and no denial", restores, got.denied())
+	}
+	var schedules []Schedule
+	got = readList(t, hs.h.HandleListSchedules)
+	if err := json.Unmarshal(got.Data, &schedules); err != nil {
+		t.Fatal(err)
+	}
+	if len(schedules) != 1 || schedules[0].Name != "s-team" || got.denied() {
+		t.Errorf("schedules = %+v denied=%v, want [s-team] and no denial", schedules, got.denied())
+	}
+	if n := len(hs.h.cachedData.backups); n != 2 {
+		t.Errorf("narrowing changed the shared cache: %d backups left, want 2", n)
+	}
+}
+
+// A grant in the Velero namespace with nothing in it is an empty list the
+// user may read, not a denial.
+func TestLocal_GrantInVeleroNamespaceWithNoItemsIsNotADenial(t *testing.T) {
+	hs := newLocalHarness(t)
+	hs.h.cachedData = &cachedVeleroData{locations: &LocationsResponse{}, fetchedAt: time.Now()}
+	hs.h.AccessChecker = resources.NewPredicateAccessChecker(func(_, _, _, ns string) bool {
+		return ns == veleroNamespace
+	})
+	if got := readList(t, hs.h.HandleListBackups); got.denied() || string(got.Data) != "[]" {
+		t.Errorf("data %s denied=%v, want [] and no denial", got.Data, got.denied())
+	}
+}
+
+// On the local cluster a check that could not be made still answers an
+// empty list, as it always has, but does not claim a denial.
+func TestLocal_FailedAccessCheckIsNotADenial(t *testing.T) {
+	hs := newLocalHarness(t)
+	hs.h.AccessChecker = resources.NewErroringAccessChecker(errors.New("apiserver timeout"))
+	for name, h := range map[string]http.HandlerFunc{
+		"backups": hs.h.HandleListBackups, "restores": hs.h.HandleListRestores, "schedules": hs.h.HandleListSchedules,
+	} {
+		if got := readList(t, h); got.denied() || string(got.Data) != "[]" {
+			t.Errorf("%s: data %s denied=%v, want [] and no denial", name, got.Data, got.denied())
+		}
 	}
 }
