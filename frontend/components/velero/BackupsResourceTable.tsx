@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import ResourceTable, {
@@ -7,10 +8,72 @@ import ResourceTable, {
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { phaseTone } from "@/components/velero/velero-utils.ts";
 import { age } from "@/lib/format.ts";
+import type { RubrikInput } from "@/lib/protection-overview.ts";
+import type { RubrikCompliance, RubrikObject } from "@/lib/rubrik-types.ts";
 import type { Backup } from "@/lib/velero-types.ts";
+
+/**
+ * One Rubrik object on the Backups page: a namespace or a protection set,
+ * with its SLA domain, compliance and newest snapshot. `panelNamespace` is
+ * a namespace whose Rubrik detail lists the object, so its snapshots can be
+ * opened; absent when no namespace row the user can see names it.
+ */
+export interface RubrikBackupRow {
+  id: string;
+  name: string;
+  /** "Namespace", or "Protection set" with what it covers. */
+  kind: string;
+  sla: string;
+  compliance: RubrikCompliance;
+  newestSnapshot?: string;
+  relic: boolean;
+  panelNamespace?: string;
+}
+
+/** What a protection set covers, in a few words. */
+function covers(o: RubrikObject): string {
+  if (o.coverage.all) return "every namespace";
+  if (o.coverage.unresolved) return "namespaces RSC does not resolve";
+  const ns = o.coverage.namespaces ?? [];
+  return ns.length > 0 ? ns.join(", ") : "no namespace";
+}
+
+/**
+ * The Rubrik rows for the Backups page: every object the Rubrik answer
+ * shows the user, in its order. Anything but a loaded answer has none; the
+ * page explains those states on its own.
+ */
+export function rubrikBackupRows(input: RubrikInput): RubrikBackupRow[] {
+  if (input.kind !== "loaded" || input.list.noAccess) return [];
+  const { namespaces, objects } = input.list;
+  return objects.map((o) => ({
+    id: o.id,
+    name: o.name,
+    kind:
+      o.family === "protectionSet"
+        ? `Protection set · covers ${covers(o)}`
+        : "Namespace",
+    sla: o.effectiveSla?.name || "No SLA",
+    compliance: o.compliance,
+    newestSnapshot: o.newestSnapshot,
+    relic: !!o.relic,
+    panelNamespace: namespaces.find((r) => r.objectIds.includes(o.id))
+      ?.namespace,
+  }));
+}
+
+const COMPLIANCE: Record<
+  RubrikCompliance,
+  { label: string; tone: "ok" | "crit" | "neutral" }
+> = {
+  in_compliance: { label: "In compliance", tone: "ok" },
+  out_of_compliance: { label: "Out of compliance", tone: "crit" },
+  unknown: { label: "Unknown", tone: "neutral" },
+};
 
 const BACKUPS_COLUMNS: Column[] = [
   { key: "name", label: "Name", width: "2fr" },
+  { key: "provider", label: "Provider", width: "90px" },
   { key: "status", label: "Status", width: "120px" },
   { key: "schedule", label: "Schedule", width: "1fr" },
   { key: "started", label: "Started", width: "80px", align: "right" },
@@ -23,12 +86,18 @@ export function BackupsResourceTable({
   backups,
   deleting,
   onDelete,
+  rubrik = [],
+  onOpenRubrik,
 }: {
   backups: Backup[];
   deleting: string | null;
   onDelete: (ns: string, name: string) => void;
+  /** Rubrik objects shown with the Velero backups, a provider each. */
+  rubrik?: RubrikBackupRow[];
+  /** Opens the Rubrik detail of a namespace (its snapshots). */
+  onOpenRubrik?: (namespace: string) => void;
 }) {
-  if (backups.length === 0) {
+  if (backups.length === 0 && rubrik.length === 0) {
     return (
       <div
         style={{
@@ -66,6 +135,7 @@ export function BackupsResourceTable({
           </div>
         </div>
       ),
+      provider: <Muted>Velero</Muted>,
       status: <StatusBadge label={b.phase} tone={phaseTone(b.phase)} />,
       schedule: (
         <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
@@ -132,7 +202,74 @@ export function BackupsResourceTable({
     },
   }));
 
+  for (const r of rubrik) {
+    const badge = COMPLIANCE[r.compliance] ?? COMPLIANCE.unknown;
+    const panel = r.panelNamespace;
+    rows.push({
+      id: `rubrik/${r.id}`,
+      cells: {
+        name: (
+          <div>
+            <div
+              style={{
+                fontSize: "13px",
+                fontWeight: 500,
+                color: "var(--text-primary)",
+                fontFamily: "var(--font-mono, monospace)",
+              }}
+            >
+              {r.name}
+            </div>
+            <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+              {r.kind}
+              {r.relic ? " · no longer seen by RSC" : ""}
+            </div>
+          </div>
+        ),
+        provider: <Muted>Rubrik</Muted>,
+        status: <StatusBadge label={badge.label} tone={badge.tone} />,
+        schedule: <Muted>SLA {r.sla}</Muted>,
+        started: (
+          <Muted>{r.newestSnapshot ? age(r.newestSnapshot) : "—"}</Muted>
+        ),
+        items: <Muted>—</Muted>,
+        issues: <Muted>—</Muted>,
+        actions:
+          panel && onOpenRubrik ? (
+            <div
+              style={{ display: "flex", gap: "4px" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={`Snapshots of ${r.name}`}
+                onClick={() => onOpenRubrik(panel)}
+              >
+                Snapshots
+              </Button>
+            </div>
+          ) : null,
+      },
+    });
+  }
+
   return (
     <ResourceTable columns={BACKUPS_COLUMNS} rows={rows} chevron={false} />
+  );
+}
+
+function Muted({ children }: { children: ReactNode }) {
+  return (
+    <span
+      style={{
+        fontSize: "13px",
+        color: "var(--text-muted)",
+        fontVariantNumeric: "tabular-nums",
+      }}
+    >
+      {children}
+    </span>
   );
 }
