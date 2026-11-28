@@ -2,7 +2,7 @@
  * Rubrik provider status store.
  *
  * Holds the answer to GET /v1/rubrik/status for the selected cluster. The
- * provider is off by default (rubrik.enabled), and while it is off the backend
+ * provider is on whenever the backend has PostgreSQL; without it the backend
  * mounts no Rubrik route, so the status endpoint answers 404. Only a 404 means
  * "disabled". Any other failure is "error": pages show that the status could
  * not be loaded, never that Rubrik is not enabled.
