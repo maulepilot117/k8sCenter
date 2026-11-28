@@ -25,9 +25,8 @@ import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { ApiError, apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import type {
-  RubrikNamespaceDetail,
+  RubrikNamespaceRow,
   RubrikObject,
-  RubrikObjectDetail,
   RubrikOperation,
   RubrikRestoreTargets,
   RubrikSlaDomain,
@@ -320,15 +319,25 @@ function SlaSelect({
 // ---------------------------------------------------------------------------
 // Namespace controls: snapshot and SLA
 
+/**
+ * What the namespace controls read: the namespace's row and its objects.
+ * The namespace read (GET /rubrik/namespaces/{ns}) and the list behind the
+ * Protection overview both carry it.
+ */
+export interface RubrikNamespaceActions {
+  namespace: RubrikNamespaceRow;
+  objects: RubrikObject[];
+}
+
 /** The objects `flag` allows the action on, in the server's target order. */
 function targets(
-  detail: RubrikNamespaceDetail,
+  detail: RubrikNamespaceActions,
   flag: "canSnapshot" | "canChangeSla",
-): RubrikObjectDetail[] {
+): RubrikObject[] {
   const byId = new Map(detail.objects.map((o) => [o.id, o]));
   return detail.namespace.actionTargets
     .map((id) => byId.get(id))
-    .filter((o): o is RubrikObjectDetail => !!o && o[flag]);
+    .filter((o): o is RubrikObject => !!o && o[flag]);
 }
 
 /** Whether an object is a protection set covering more than one namespace. */
@@ -349,7 +358,7 @@ export function RubrikWriteControls({
   onStarted,
 }: {
   namespace: string;
-  detail: RubrikNamespaceDetail;
+  detail: RubrikNamespaceActions;
   writesEnabled: boolean;
   operationIds: OperationIds;
   onStarted: (op: RubrikOperation) => void;

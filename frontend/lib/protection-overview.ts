@@ -11,8 +11,11 @@
  */
 
 import type {
+  RubrikCompliance,
   RubrikFreshness,
   RubrikNamespaceList,
+  RubrikNamespaceRow,
+  RubrikObject,
 } from "@/lib/rubrik-types.ts";
 import { type Backup, getPhaseCategory } from "@/lib/velero-types.ts";
 
@@ -85,7 +88,14 @@ export type RubrikCell =
   | { kind: "not_set_up"; setupLink: boolean }
   /** RSC is failing: never shown as unprotected (AE6). */
   | { kind: "rsc_failing"; reason?: string; fetchedAt?: string }
-  | { kind: "protected"; lastSnapshot?: string; stale?: RubrikFreshness }
+  | {
+      kind: "protected";
+      lastSnapshot?: string;
+      /** The SLA domains of the objects protecting it, without repeats. */
+      slas: string[];
+      compliance: RubrikCompliance;
+      stale?: RubrikFreshness;
+    }
   | { kind: "unprotected" };
 
 export interface OverviewRow {
@@ -210,6 +220,8 @@ export function rubrikCell(ns: string, input: RubrikInput): RubrikCell {
     return {
       kind: "protected",
       lastSnapshot: row.lastSnapshot,
+      slas: slaNames(row, list.objects),
+      compliance: row.compliance,
       stale: fresh?.stale ? fresh : undefined,
     };
   }
@@ -222,6 +234,42 @@ export function rubrikCell(ns: string, input: RubrikInput): RubrikCell {
     };
   }
   return { kind: "unprotected" };
+}
+
+/**
+ * The effective SLA domain of each object protecting the namespace, in the
+ * answer's order and without repeats. An object with no SLA reads "No SLA",
+ * as on the Rubrik pages.
+ */
+function slaNames(row: RubrikNamespaceRow, objects: RubrikObject[]): string[] {
+  const ids = new Set(row.objectIds);
+  const names: string[] = [];
+  for (const o of objects) {
+    if (!ids.has(o.id)) continue;
+    const name = o.effectiveSla?.name || "No SLA";
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+/**
+ * What the snapshot and SLA actions on one namespace need: its row and the
+ * objects it names (protecting it, or targets of an action on it). Absent
+ * when Rubrik gave no row for the namespace, so no action is offered. The
+ * server checks every write again; the row's flags only decide what shows.
+ */
+export function rubrikActions(
+  ns: string,
+  input: RubrikInput,
+): { namespace: RubrikNamespaceRow; objects: RubrikObject[] } | undefined {
+  if (input.kind !== "loaded" || input.list.noAccess) return undefined;
+  const row = input.list.namespaces.find((r) => r.namespace === ns);
+  if (!row) return undefined;
+  const ids = new Set([...row.objectIds, ...row.actionTargets]);
+  return {
+    namespace: row,
+    objects: input.list.objects.filter((o) => ids.has(o.id)),
+  };
 }
 
 // ---------------------------------------------------------------------------
