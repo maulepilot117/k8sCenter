@@ -31,6 +31,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
+	"github.com/kubecenter/kubecenter/pkg/api"
 )
 
 // dnsLabelRegex validates DNS label names (RFC 1123).
@@ -186,6 +187,98 @@ func (h *Handler) canAccess(r *http.Request, user *auth.User, verb, resource, na
 	)
 }
 
+// writeDeniedList answers a list the user may not read: the empty list it
+// always was (clients reading data see no change), with
+// metadata.accessDenied so a page can say so instead of "no backups".
+func writeDeniedList(w http.ResponseWriter, empty any) {
+	httputil.WriteJSON(w, http.StatusOK, api.Response{
+		Data:     empty,
+		Metadata: &api.Metadata{AccessDenied: true},
+	})
+}
+
+// listScope is what a Velero list endpoint may show the user.
+type listScope int
+
+const (
+	// scopeAll: the user may list the resource cluster-wide.
+	scopeAll listScope = iota
+	// scopeNamespaces: no cluster-wide grant, on the local cluster. The list
+	// is the service account's cache, narrowed to the namespaces the user
+	// may list the resource in (permittedIn).
+	scopeNamespaces
+	// scopeDenied: the user may not list the resource. On a remote cluster
+	// the lists are read as the user, cluster-wide, so there is nothing to
+	// narrow and a missing cluster-wide grant is a denial.
+	scopeDenied
+	// scopeUnknown: the local check could not be made. The list is empty,
+	// as it always was, but it is not reported as a denial.
+	scopeUnknown
+	// scopeFailed: the remote check could not be made; the classified
+	// error has already been written.
+	scopeFailed
+)
+
+// listScopeFor decides what a list of resource may show the user.
+func (h *Handler) listScopeFor(w http.ResponseWriter, r *http.Request, user *auth.User, resource string) listScope {
+	can, err := h.canAccess(r, user, "list", resource, "")
+	local := isLocal(r.Context())
+	switch {
+	case err != nil && !local:
+		writeAccessCheckError(w, err)
+		return scopeFailed
+	case err != nil:
+		return scopeUnknown
+	case can:
+		return scopeAll
+	case !local:
+		return scopeDenied
+	}
+	return scopeNamespaces
+}
+
+// writeEarlyList answers a list whose scope leaves nothing to read, and
+// reports whether it did.
+func writeEarlyList(w http.ResponseWriter, scope listScope, empty any) bool {
+	switch scope {
+	case scopeFailed:
+		return true
+	case scopeDenied:
+		writeDeniedList(w, empty)
+		return true
+	case scopeUnknown:
+		httputil.WriteData(w, empty)
+		return true
+	}
+	return false
+}
+
+// permittedIn keeps the items in namespaces where the user may list
+// resource, one check per namespace, the way listableBackups narrows a
+// schedule's runs. anyAllowed reports whether the user may list it in the
+// Velero namespace or in any item's namespace: when false, the empty
+// result is a denial. items is not modified: it may be the shared cache.
+func permittedIn[T any](h *Handler, r *http.Request, user *auth.User, resource string, items []T, namespaceOf func(T) string) (out []T, anyAllowed bool) {
+	allowed := make(map[string]bool)
+	may := func(ns string) bool {
+		if v, seen := allowed[ns]; seen {
+			return v
+		}
+		can, err := h.canAccess(r, user, "list", resource, ns)
+		allowed[ns] = err == nil && can
+		return allowed[ns]
+	}
+	anyAllowed = may(veleroNamespace)
+	out = make([]T, 0, len(items))
+	for _, it := range items {
+		if may(namespaceOf(it)) {
+			out = append(out, it)
+			anyAllowed = true
+		}
+	}
+	return out, anyAllowed
+}
+
 // allowed is checkAccess for an endpoint that answers a denial with 403. It
 // reports whether the request may proceed.
 func (h *Handler) allowed(w http.ResponseWriter, r *http.Request, user *auth.User, verb, resource, namespace string) bool {
@@ -237,12 +330,8 @@ func (h *Handler) HandleListBackups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RBAC filter
-	switch h.checkAccess(w, r, user, "list", "backups", "") {
-	case accessFailed:
-		return
-	case accessDenied:
-		httputil.WriteData(w, []Backup{})
+	scope := h.listScopeFor(w, r, user, "backups")
+	if writeEarlyList(w, scope, []Backup{}) {
 		return
 	}
 
@@ -254,10 +343,18 @@ func (h *Handler) HandleListBackups(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteData(w, []Backup{})
 		return
 	}
-
-	// Sort a copy by start time descending (newest first): the cached
-	// slice is shared with concurrent requests.
 	backups := slices.Clone(data.backups)
+	if scope == scopeNamespaces {
+		var anyAllowed bool
+		backups, anyAllowed = permittedIn(h, r, user, "backups", data.backups, func(x Backup) string { return x.Namespace })
+		if !anyAllowed {
+			writeDeniedList(w, []Backup{})
+			return
+		}
+	}
+
+	// Sort the copy by start time descending (newest first): the cached
+	// slice is shared with concurrent requests.
 	sort.Slice(backups, func(i, j int) bool {
 		if backups[i].StartTime == nil {
 			return false
@@ -500,12 +597,8 @@ func (h *Handler) HandleListRestores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RBAC filter
-	switch h.checkAccess(w, r, user, "list", "restores", "") {
-	case accessFailed:
-		return
-	case accessDenied:
-		httputil.WriteData(w, []Restore{})
+	scope := h.listScopeFor(w, r, user, "restores")
+	if writeEarlyList(w, scope, []Restore{}) {
 		return
 	}
 
@@ -517,9 +610,17 @@ func (h *Handler) HandleListRestores(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteData(w, []Restore{})
 		return
 	}
-
-	// Sort a copy by start time descending: the cached slice is shared.
 	restores := slices.Clone(data.restores)
+	if scope == scopeNamespaces {
+		var anyAllowed bool
+		restores, anyAllowed = permittedIn(h, r, user, "restores", data.restores, func(x Restore) string { return x.Namespace })
+		if !anyAllowed {
+			writeDeniedList(w, []Restore{})
+			return
+		}
+	}
+
+	// Sort the copy by start time descending: the cached slice is shared.
 	sort.Slice(restores, func(i, j int) bool {
 		if restores[i].StartTime == nil {
 			return false
@@ -690,12 +791,8 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RBAC filter
-	switch h.checkAccess(w, r, user, "list", "schedules", "") {
-	case accessFailed:
-		return
-	case accessDenied:
-		httputil.WriteData(w, []Schedule{})
+	scope := h.listScopeFor(w, r, user, "schedules")
+	if writeEarlyList(w, scope, []Schedule{}) {
 		return
 	}
 
@@ -714,8 +811,17 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 	if failed[BackupGVR.Resource] == nil {
 		backups = h.listableBackups(r, user, data.backups)
 	}
+	all := data.schedules
+	if scope == scopeNamespaces {
+		var anyAllowed bool
+		all, anyAllowed = permittedIn(h, r, user, "schedules", data.schedules, func(x Schedule) string { return x.Namespace })
+		if !anyAllowed {
+			writeDeniedList(w, []Schedule{})
+			return
+		}
+	}
 	// withLastBackups returns a copy, so sorting leaves the shared cache alone.
-	schedules := withLastBackups(data.schedules, backups)
+	schedules := withLastBackups(all, backups)
 	sort.Slice(schedules, func(i, j int) bool {
 		return schedules[i].Name < schedules[j].Name
 	})

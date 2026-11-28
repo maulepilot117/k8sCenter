@@ -492,6 +492,33 @@ test("an empty backup list does not claim a namespace has no backup", async () =
   view.unmount();
 });
 
+test("a backup list the user may not read says so, not that there are none", async () => {
+  routes["GET /api/v1/velero/backups"] = () =>
+    reply(200, { data: [], metadata: { total: 0, accessDenied: true } });
+  const view = await open();
+  expect(cell("team-a", "velero-cell")?.textContent).toBe(
+    "You may not list Velero backups",
+  );
+  expect(body().queryByText("No backups visible to you")).toBeNull();
+  expect(body().queryByText("No backup")).toBeNull();
+  view.unmount();
+});
+
+test("a Velero denial is said once for the page, even with no rows to show it in", async () => {
+  // Namespaces forbidden and no Rubrik rows: the table is empty, so only the
+  // page-level note can say why Velero shows nothing.
+  routes["GET /api/v1/resources/namespaces?limit=500"] = () =>
+    fail(403, undefined, "forbidden");
+  routes["GET /api/v1/rubrik/namespaces"] = () =>
+    ok(rubrikList({ namespaces: [] }));
+  routes["GET /api/v1/velero/backups"] = () =>
+    reply(200, { data: [], metadata: { total: 0, accessDenied: true } });
+  const view = await open();
+  body().getByText("No namespaces to show on this cluster.");
+  body().getByText(/You may not list Velero backups on this cluster/);
+  view.unmount();
+});
+
 test("a backup still finishing in a PartiallyFailed sub-phase is not a failure yet", async () => {
   const cellNow = veleroCell("shop", {
     kind: "loaded",

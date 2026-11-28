@@ -658,6 +658,11 @@ func TestRemote_DeniedAccessCheckIsEmptyListAnd403(t *testing.T) {
 	if rr.Code != http.StatusOK || len(decode[[]Backup](t, rr)) != 0 {
 		t.Errorf("denied list: status %d body %s, want 200 []", rr.Code, rr.Body.String())
 	}
+	// Remote lists are read as the user, cluster-wide: there is nothing to
+	// narrow, so the denial is reported.
+	if !strings.Contains(rr.Body.String(), `"accessDenied":true`) {
+		t.Errorf("denied remote list body %s, want metadata.accessDenied", rr.Body.String())
+	}
 	if rr := do(t, remoteCluster, http.MethodDelete, hs.h.HandleDeleteBackup, backupParams, ""); rr.Code != http.StatusForbidden {
 		t.Errorf("denied delete: status %d, want 403", rr.Code)
 	}
@@ -721,5 +726,22 @@ func TestRemote_UpdateScheduleAndCreateRestoreActOnRemote(t *testing.T) {
 	}
 	if n := hs.localActions(); n != 0 {
 		t.Errorf("local cluster recorded %d actions, want 0", n)
+	}
+}
+
+// A remote cluster's lists are read as the user, cluster-wide, so a grant
+// in one namespace leaves nothing to narrow: the list is reported denied
+// and the remote is not asked for it.
+func TestRemote_NamespacedGrantIsReportedDenied(t *testing.T) {
+	hs := newHarness(t, true, backup("remote-backup"))
+	hs.h.AccessChecker = resources.NewPredicateAccessChecker(func(_, _, _, ns string) bool {
+		return ns == veleroNamespace
+	})
+	rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListBackups, nil, "")
+	if rr.Code != http.StatusOK || len(decode[[]Backup](t, rr)) != 0 || !strings.Contains(rr.Body.String(), `"accessDenied":true`) {
+		t.Errorf("status %d body %s, want 200 [] with accessDenied", rr.Code, rr.Body.String())
+	}
+	if n := countVerb(hs.remoteDyn(), "list", "backups"); n != 0 {
+		t.Errorf("listed backups %d times on the remote, want 0", n)
 	}
 }

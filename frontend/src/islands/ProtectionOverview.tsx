@@ -19,6 +19,7 @@ import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
+import type { APIResponse } from "@/lib/k8s-types.ts";
 import {
   overviewRows,
   providerNamespaces,
@@ -72,7 +73,7 @@ type VeleroStatusWire = VeleroStatus & { reason?: string };
  */
 function veleroFrom(
   st: VeleroStatusWire,
-  backups: PromiseSettledResult<{ data: Backup[] }>,
+  backups: PromiseSettledResult<APIResponse<Backup[]>>,
 ): VeleroInput {
   if (!st.detected) {
     return !st.reason || st.reason === "discovery_missing"
@@ -80,6 +81,7 @@ function veleroFrom(
       : { kind: "error" };
   }
   if (backups.status === "rejected") return { kind: "error" };
+  if (backups.value.metadata?.accessDenied) return { kind: "denied" };
   const data = backups.value.data;
   return { kind: "loaded", backups: Array.isArray(data) ? data : [] };
 }
@@ -313,6 +315,12 @@ export default function ProtectionOverview() {
             The namespace list was cut short, so some namespaces may be missing.
           </Alert>
         )}
+        {base.velero.kind === "denied" && (
+          <Alert variant="info">
+            You may not list Velero backups on this cluster, so the overview
+            cannot show any.
+          </Alert>
+        )}
         {fresh?.stale && (
           <div role="alert">
             <Alert variant="warning">
@@ -418,6 +426,8 @@ function VeleroCellView({ cell }: { cell: VeleroCell }) {
       return <Muted>Could not load</Muted>;
     case "not_installed":
       return <Muted>Velero not installed</Muted>;
+    case "denied":
+      return <Muted>You may not list Velero backups</Muted>;
     case "none":
       return <Muted>No backup</Muted>;
     case "none_visible":

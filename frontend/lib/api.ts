@@ -29,9 +29,15 @@ let refreshPromise: Promise<boolean> | null = null;
 /** Optional callback invoked on 403 responses — used by auth.ts to refresh permissions. */
 let on403Callback: (() => void) | null = null;
 
-/** Register a callback for 403 responses (permission denied). */
-export function onForbidden(cb: () => void) {
+/**
+ * Register a callback for 403 responses (permission denied), replacing the
+ * current one. Returns the callback it replaced, so a caller that swaps it
+ * for a while (a test) can put it back.
+ */
+export function onForbidden(cb: (() => void) | null): (() => void) | null {
+  const previous = on403Callback;
   on403Callback = cb;
+  return previous;
 }
 
 export function setAccessToken(token: string | null) {

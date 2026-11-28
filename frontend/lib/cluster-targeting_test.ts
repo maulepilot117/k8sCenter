@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { effect } from "@/src/lib/signals.ts";
 import {
   api,
@@ -103,6 +103,10 @@ function resetTarget(id: string, generation: string) {
   switchCluster(id, generation);
   setAccessToken(null);
 }
+
+// The cluster selection is module state shared by every test file in the
+// process; leave it on the local cluster for the files after this one.
+afterAll(() => resetTarget(LOCAL_CLUSTER_ID, LOCAL_GENERATION));
 
 test("switchCluster bumps epoch after writing id and generation", () => {
   resetTarget("cluster-a", "gen-a");
@@ -453,7 +457,7 @@ test("a 403 on an auth endpoint does not re-enter the forbidden hook", async () 
   // the guard that is one unthrottled request per round-trip, forever.
   resetTarget("cluster-remote", "gen-remote");
   let hookCalls = 0;
-  onForbidden(() => {
+  const previous = onForbidden(() => {
     hookCalls += 1;
   });
   const forbidden = () => new Response("{}", { status: 403 });
@@ -468,7 +472,9 @@ test("a 403 on an auth endpoint does not re-enter the forbidden hook", async () 
     expect(hookCalls).toBe(1);
   } finally {
     restore();
-    onForbidden(() => {});
+    // Put back auth.ts's handler: api.ts's state is shared by every test
+    // file in the process.
+    onForbidden(previous);
   }
 });
 
@@ -503,4 +509,15 @@ test("RequestTargeting is assignable from a bare object literal", () => {
   // branded/class type, or every call site needs an import just to build one.
   const t: RequestTargeting = { clusterId: "cluster-a" };
   expect(t.clusterId).toBe("cluster-a");
+});
+
+test("onForbidden returns the handler it replaced, so it can be put back", () => {
+  const first = () => {};
+  const second = () => {};
+  const original = onForbidden(first);
+  try {
+    expect(onForbidden(second)).toBe(first);
+  } finally {
+    onForbidden(original);
+  }
 });
